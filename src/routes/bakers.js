@@ -2,9 +2,9 @@ import { Router } from 'express';
 import { serverError } from '../lib/httpError.js';
 import { assertBakerOwns } from '../lib/tenantScope.js';
 import { normalizeWebUrl } from '../lib/safeUrl.js';
-import { randomBytes } from 'crypto';
+import { randomBytes, randomUUID } from 'crypto';
 import { supabase } from '../services/supabase.js';
-import { deleteObject } from '../services/r2.js';
+import { deleteObject, copyObject } from '../services/r2.js';
 import { enqueueLogoBgRemoval } from '../jobs/processors/removeLogoBg.js';
 import { enqueueOptimizePhoto } from '../jobs/processors/optimizePhoto.js';
 import { optimizeImageToWebp } from '../services/imageOptimize.js';
@@ -499,6 +499,58 @@ router.post('/baker/storefront-photos', requireAuth, requireCapability('store:ma
 
     // Convert the uploaded photo to a web-optimised WebP (resize + quality) in the background.
     enqueueOptimizePhoto(data.id, data.storage_key);
+
+    res.json({ id: data.id, key: data.storage_key, url: toPublicUrl(data.storage_key), caption: data.caption, sort_order: data.sort_order });
+  } catch (err) {
+    serverError(req, res, err);
+  }
+});
+
+// ── POST /api/baker/storefront-photos/from-template ───────────────────────────
+// Add a gallery photo by SNAPSHOTTING a cake design's thumbnail. Body: { template_id }.
+// The design's thumbnail R2 object is COPIED into the baker's gallery folder (an independent
+// object) and a photo row is written — so the gallery picture stays exactly as picked even if the
+// design is later re-saved or deleted. The design must be global or owned by this baker.
+router.post('/baker/storefront-photos/from-template', requireAuth, requireCapability('store:manage'), async (req, res) => {
+  try {
+    if (!req.bakerId) return res.status(404).json({ error: 'No baker account found' });
+    const templateId = req.body?.template_id || req.body?.templateId;
+    if (!templateId) return res.status(400).json({ error: 'template_id is required' });
+
+    // Access check: the design must be global (baker_id null) OR this baker's own — mirrors the
+    // catalog read scope so a baker can't snapshot another tenant's private design.
+    const { data: tpl, error: tplErr } = await supabase
+      .from('cake_templates')
+      .select('id, thumbnail_url, baker_id')
+      .eq('id', templateId)
+      .eq('is_active', true)
+      .or(`baker_id.is.null,baker_id.eq.${req.bakerId}`)
+      .maybeSingle();
+    if (tplErr) return serverError(req, res, tplErr);
+    if (!tpl) return res.status(404).json({ error: 'Design not found' });
+    if (!tpl.thumbnail_url) return res.status(400).json({ error: 'This design has no image yet' });
+
+    // Copy the thumbnail into the baker's gallery folder under a fresh key (preserve the extension).
+    const srcKey = tpl.thumbnail_url;   // stored as an R2 key, not a URL
+    const ext = (srcKey.split('.').pop() || 'webp').toLowerCase();
+    const contentType = ext === 'png' ? 'image/png' : (ext === 'jpg' || ext === 'jpeg') ? 'image/jpeg' : 'image/webp';
+    const destKey = `storefront/gallery/${req.bakerId}-${randomUUID()}.${ext}`;
+    await copyObject(srcKey, destKey, contentType);
+
+    const { data: last } = await supabase
+      .from('baker_storefront_photos').select('sort_order')
+      .eq('baker_id', req.bakerId).order('sort_order', { ascending: false }).limit(1).maybeSingle();
+    const sort_order = (last?.sort_order ?? -1) + 1;
+
+    const { data, error } = await supabase
+      .from('baker_storefront_photos')
+      .insert({ baker_id: req.bakerId, storage_key: destKey, caption: null, sort_order })
+      .select('id, storage_key, caption, sort_order')
+      .single();
+    if (error) {
+      try { await deleteObject(destKey); } catch { /* best-effort: don't leave an orphan copy */ }
+      return serverError(req, res, error);
+    }
 
     res.json({ id: data.id, key: data.storage_key, url: toPublicUrl(data.storage_key), caption: data.caption, sort_order: data.sort_order });
   } catch (err) {

@@ -1,4 +1,4 @@
-import { S3Client, PutObjectCommand, GetObjectCommand, DeleteObjectCommand } from '@aws-sdk/client-s3';
+import { S3Client, PutObjectCommand, GetObjectCommand, DeleteObjectCommand, CopyObjectCommand } from '@aws-sdk/client-s3';
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 import { config } from '../config.js';
 
@@ -40,6 +40,22 @@ export async function putObject(key, buffer, contentType) {
 export async function getObjectBuffer(key) {
   const out = await r2.send(new GetObjectCommand({ Bucket: config.r2.bucket, Key: key }));
   return Buffer.from(await out.Body.transformToByteArray());
+}
+
+// Server-side copy of an object to a new key (no download round-trip). Used to SNAPSHOT a shared
+// asset (e.g. a cake-template thumbnail) into a tenant-owned key, so the copy is INDEPENDENT of the
+// source — it survives even if the source is later replaced or deleted. CopySource must be
+// URI-encoded. MetadataDirective REPLACE lets us set our own content-type + immutable cache.
+export async function copyObject(srcKey, destKey, contentType) {
+  await r2.send(new CopyObjectCommand({
+    Bucket:            config.r2.bucket,
+    CopySource:        encodeURIComponent(`${config.r2.bucket}/${srcKey}`),
+    Key:               destKey,
+    ContentType:       contentType || 'application/octet-stream',
+    MetadataDirective: 'REPLACE',
+    CacheControl:      'public, max-age=31536000, immutable',
+  }));
+  return `${config.r2.publicUrl}/${destKey}`;
 }
 
 // Deletes an object by key. R2 treats deleting a missing key as success, so this is
