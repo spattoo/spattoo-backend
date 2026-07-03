@@ -26,40 +26,33 @@ flags this — `closeSupersededSubscriptions` notes the deferred-downgrade path 
   use a `rank`/`level` on `subscription_plans` (or the tier registry) as the single source of ordering.
 
 ## Phase 0 — SPIKE RESULTS (razorpay-node 2.9.6, test mode, 2026-07-03)
-CONFIRMED (API surface + constraints) — **Approach A is viable**:
-- SDK exposes `subscriptions.update(id, { plan_id, schedule_change_at:'now'|'cycle_end' })` — `plan_id` is an
-  updatable field; `now`=immediate, `cycle_end`=at end of current billing cycle. Also `pendingUpdate(id)`
-  (GET retrieve_scheduled_changes) to READ a scheduled change, and `cancelScheduledChanges(id)` to REVERT one.
-- **Hard constraint:** the sub must be in **Authenticated or Active** state to be updated — a freshly `created`
-  (un-authorized) sub is rejected (`400 Can't update subscription when subscription is not in Authenticated or
-  Active state`). So plan changes only apply to a live sub (fine — our changes always target an active baker).
-- Active sub exposes the fields we rely on: `plan_id`, `current_start`/`current_end` (monthly), `charge_at`,
-  `remaining_count`, `has_scheduled_changes`, `change_scheduled_at`.
+### 🔴 DECISIVE FINDING: Approach A (update subscription) is BLOCKED for UPI
+Updating an active **UPI-mandate** subscription is rejected: `400 subscriptions cannot be updated when payment
+mode is upi`. UPI Autopay mandates are locked to a fixed max amount, so a plan (amount) change isn't allowed.
+Since **UPI is the majority payment method in India (our market)**, the elegant single-subscription
+`update()` + `schedule_change_at` model is NOT usable in general — it would only work for CARD mandates.
+→ **Adopt the corrected recreate model (was "Approach B") as the PRIMARY design.** `update()` stays a possible
+card-only optimization, deferred (not worth the up-front branching for v1).
 
-STILL PENDING (behavioral — needs an ACTIVE sub; can only be a live one): (1) proration mechanics on
-`schedule_change_at:'now'` (immediate prorated charge vs. addon on next invoice); (2) that `cycle_end` scheduling
-sets `has_scheduled_changes` + is readable via `pendingUpdate` + revertible via `cancelScheduledChanges`
-(reversible/no-charge — safe to test); (3) which webhook fires when a scheduled change APPLIES at cycle end.
+### Confirmed API surface (useful either way)
+- `update(id, { plan_id, schedule_change_at:'now'|'cycle_end' })`, `pendingUpdate(id)`,
+  `cancelScheduledChanges(id)` all exist — but see the UPI block above. Update also requires the sub be
+  Active/Authenticated (a freshly `created` sub is rejected).
+- **`create({ …, start_at })`** — first charge can be DEFERRED to a future Unix ts (e.g. `current_period_end`).
+- **`cancel(id, true)`** — cancel **at cycle end** (keep access until the current period ends).
+- Active sub exposes `plan_id`, `current_start`/`current_end` (monthly), `charge_at`, `remaining_count`,
+  `has_scheduled_changes`, `payment_method`.
+- Inherent to Razorpay: a NEW subscription needs the customer to authorize a **new mandate** (Checkout). So any
+  recreate-based change requires re-authorization — this is already how today's flow behaves (Checkout per change).
 
-## Phase 0 — SPIKE (decide the mechanism before building)
-Validate in Razorpay **test mode** whether **Update Subscription** (`PATCH /subscriptions/{id}`) supports what
-we need, because Razorpay's proration/plan-change is less automatic than Stripe:
-1. Change `plan_id` on a running subscription with `schedule_change_at: 'now'` — does it apply immediately and
-   how is the delta charged (addon on next invoice vs. immediate prorated charge)?
-2. Change `plan_id` with `schedule_change_at: 'cycle_end'` — does the plan swap at the next cycle with the same
-   subscription id and no immediate charge?
-3. Constraint check: both plans must share the billing interval (monthly↔monthly ✓); confirm allowed states.
-4. Which webhook events fire (`subscription.updated`, `subscription.charged`) and what `sub.plan_id`/period they carry.
+### Still to verify on a live sub (lower priority now)
+Proration is largely moot under recreate (see below). Remaining: exactly which webhook/timing fires when a
+deferred (`start_at`) new sub activates + first-charges at cycle end — validate during build against test mode.
 
-Outcome picks the approach:
-- **Approach A (preferred) — Razorpay Update Subscription.** One persistent subscription id across up/down
-  changes; Razorpay owns proration + cycle-end timing. Far less churn than cancel+recreate.
-- **Approach B (fallback, if A is too limited).** Keep the current sub running to `current_period_end`; at cycle
-  end, cancel it + create the new-plan sub. Deferral driven by a **BullMQ repeatable reconcile job** (NOT a
-  timer) that promotes due scheduled changes, with the webhook as the primary trigger. More moving parts.
-
-The rest of this plan is written for **Approach A**; Approach B reuses the same schema + UI, differing only in
-the Razorpay calls and adding the promote-at-cycle-end job.
+## Mechanism — RESOLVED: recreate with correct timing (UPI-compatible)
+Phase 0 killed the `update()` model for UPI. The primary design is recreate-based, built on `start_at`
+(defer first charge) + `cancel(id, cycle_end)` (keep access to period end). A new mandate authorization
+(Checkout) is required per change — unchanged from today's behaviour.
 
 ## Schema (additive, one migration)
 ```sql
@@ -71,25 +64,45 @@ ALTER TABLE baker_subscriptions
 - NULL = no pending change (today's behaviour). Compact surrogate FK to the bounded plan lookup.
 - No row churn: a plan change now UPDATES the active row / schedules on it, instead of superseding it.
 
-## Flow — `POST /billing/subscribe` (rework)
-Resolve `current` (active row + `billing_subscription_id`) and `target` plan; compute direction by rank.
+## Flow — `POST /billing/subscribe` (rework, recreate model)
+Resolve `current` (active row + `billing_subscription_id`) and `target` plan; direction by explicit rank.
+Every change creates a NEW Razorpay sub the baker authorizes via Checkout; the difference is TIMING.
 
-**Upgrade (target rank > current rank):**
-1. Razorpay: update subscription → target `plan_id`, `schedule_change_at: 'now'`.
-2. DB: keep the same row + `billing_subscription_id`; set `plan_id = target`, clear any `scheduled_*`.
-   (Status stays ACTIVE; if Razorpay requires a re-auth/charge, park the delta and let the webhook confirm —
-   mirror today's PENDING→webhook only if a fresh authorization is actually required.)
-3. Audit: `changeType: 'upgraded'`.
+**Upgrade (target rank > current rank) — immediate:**
+1. Create the new (higher) sub starting now; open Checkout → baker authorizes → first charge now.
+2. On activation webhook: cancel the OLD sub immediately, mark it superseded, promote the new row to ACTIVE.
+3. Proration: with recreate there's no native proration. v1 = charge the full new tier now, old tier's unused
+   remainder is forfeited (simplest, and a fair-value story since they get the higher tier immediately). A
+   goodwill credit (addon/discount for the unused days) is a possible v2.
 
-**Downgrade (target rank < current rank):**
-1. Razorpay: update subscription → target `plan_id`, `schedule_change_at: 'cycle_end'`.
-2. DB: DO NOT change `plan_id` now. Set `scheduled_plan_id = target`, `scheduled_effective_at = current_period_end`.
-3. Baker keeps the current (higher) tier + all its access until `current_period_end`.
-4. Audit: `changeType: 'downgrade_scheduled'`.
+**Downgrade (target rank < current rank) — deferred to cycle end, NO immediate charge.**
+A downgrade is a NEW (lower) UPI mandate the baker must authorize — Razorpay allows a new mandate at a new
+amount; it only forbids editing the *existing* mandate. So order the steps so the baker can never be left
+without a subscription:
+1. Create the new (lower) sub with `start_at = current_period_end` (first charge deferred to the next cycle);
+   open Checkout → baker authorizes the new mandate NOW (no charge yet). Park it as PENDING; DO NOT touch the
+   current sub yet.
+2. **Only after the new mandate is AUTHORIZED (activation webhook confirms it) →** flag the current (higher)
+   sub `cancel(currentSub, cycle_end)` so access stays to `current_period_end`, and record the pending change
+   on the current row: `scheduled_plan_id = target`, `scheduled_effective_at = current_period_end`, + stash the
+   parked sub id.
+3. If the baker **abandons** the Checkout (mandate never authorized) → do NOTHING: the current sub renews on the
+   current plan as usual. No lapse, no half-state. (Sweep/expire the orphan parked sub.)
+4. At cycle end: the current sub ends; the parked lower sub activates + first-charges → its
+   `subscription.activated/charged` webhook promotes it to ACTIVE, applies the plan, clears `scheduled_*`.
+5. Baker keeps the higher tier they paid for until period end; no double charge.
 
-**Cancel a scheduled downgrade** (baker changes their mind before cycle end): Razorpay update back to the
-current plan (or cancel the scheduled change); clear `scheduled_*`. A subsequent **upgrade** implicitly clears
-the scheduled downgrade (upgrade-now wins).
+> ⚠️ **Sequencing rule (the whole point):** authorize the new lower mandate FIRST; cancel-at-cycle-end the old
+> one ONLY after that authorization is confirmed. Cancelling first would strand the baker with nothing if the
+> new mandate is never approved.
+
+**Cancel a scheduled downgrade** (before cycle end): cancel the parked new sub, clear `scheduled_*`, and undo
+`cancel_at_cycle_end` on the current sub (Razorpay `resume`/re-flag) so it renews on the current plan. A
+subsequent **upgrade** supersedes the scheduled downgrade (upgrade-now wins).
+
+UX note: this needs a second Checkout at downgrade time (the new mandate). Acceptable because UPI has no silent
+plan change. Alternative (decide in build): prompt the downgrade Checkout via a reminder near cycle end instead
+of at request time — lighter UX, but risks the baker not completing it (they then just renew on the higher plan).
 
 ## Webhook — `POST /billing/webhook` additions
 - `subscription.charged` at cycle end: if the row has a `scheduled_plan_id` and Razorpay now reports the new
@@ -119,8 +132,11 @@ the scheduled downgrade (upgrade-now wins).
   no 3-subs-in-7-minutes churn, no double-charge on downgrade.
 - `closeSupersededSubscriptions` is reserved for true resubscribe-after-cancel, not plan changes.
 
-## Open decisions for Sandeep
-1. **Proration on upgrade:** charge the prorated difference now (fairest) vs. apply the upgrade now but bill the
-   new rate only from next cycle (simpler, slightly generous)? Depends partly on Phase-0 findings.
-2. **Approach A vs B** — pending the Phase-0 spike result.
+## Open decisions for Sandeep (post-spike)
+1. **Upgrade proration:** under recreate there's no native proration. OK with v1 = charge full new tier now,
+   forfeit the old tier's unused days (simplest)? Or invest in a goodwill credit (addon/discount)?
+2. **Downgrade re-auth UX:** the deferred downgrade needs the baker to authorize the new (lower) mandate via a
+   second Checkout. Authorize **at downgrade time** (parked sub, `start_at`=cycle end) or **prompt near cycle
+   end**? Former is cleaner state; latter is lighter UX but risks lapse if they don't complete it.
 3. Refunds on downgrade: confirmed **none** (baker consumes the paid higher tier to cycle end). OK?
+4. (Deferred) Card-only `update()` optimization — skip for v1, revisit if card share grows.
