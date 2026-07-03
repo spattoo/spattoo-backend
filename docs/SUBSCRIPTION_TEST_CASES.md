@@ -58,6 +58,17 @@ Traces every subscription flow across the four surfaces: **`baker_subscriptions`
 `scheduled_*` on Blaze (and `cancel_at_period_end=false`), then runs the normal upgrade path to Forge.
 Result: parked Flame gone, baker upgrades to Forge; history logs `upgraded / forge`.
 
+**3e. Cancel WHILE a downgrade is scheduled (cancel supersedes the downgrade — last-action-wins):**
+`POST /billing/cancel` sees `Blaze.scheduled_subscription_id` set →
+
+| Surface | Expected |
+|---|---|
+| baker_subscriptions | Parked Flame row → `6`. Blaze row: `scheduled_*` cleared, `cancel_at_period_end=true`, reason=5 — **stays `status 1`** (grace). |
+| Razorpay | Parked Flame → **cancelled**. Blaze already cancelled (from 3b) → the route **tolerates** "already cancelled" (no 502). |
+| Billing screen | Cancel dialog **notes the discard**: "You have a downgrade to Flame scheduled for `<date>` — cancelling discards it." After: "Blaze · Ends `<date>` · won't renew" (no "then Flame"). |
+| subscription_events | `cancelled / blaze / baker`. |
+| Cycle end | Blaze grace expires → **inactive/lapsed** (NOT Flame, NOT Spark). |
+
 ---
 
 ## 4. Standalone cancellation — Flame → free
@@ -65,7 +76,7 @@ Result: parked Flame gone, baker upgrades to Forge; history logs `upgraded / for
 | Step | baker_subscriptions | Razorpay | Billing screen | subscription_events |
 |---|---|---|---|---|
 | **4a. Click Cancel** (`POST /billing/cancel`) | Flame row: `cancel_at_period_end=true`, `cancellation_reason_id=5`, `cancellation_requested_at` set — **`status_id` stays 1** (grace). | Flame → **cancelled** (immediate — NOT cancel-at-cycle-end, which no-ops on UPI). | **"Flame"** · "Ends `<date>` · won't renew" + "Cancellation scheduled — access until this period ends." Cancel button hidden. Cancel email sent. | `cancelled / flame / baker` |
-| **4b. Cycle end** (grace expires) | Derive rule → `expired`; reconcile relabels `status_id=1→6`. No renewal charge. | Flame already cancelled. | Baker on Spark/free; upgrade options shown. | `expired / … / system` (reconcile) |
+| **4b. Cycle end** (grace expires) | Derive rule → `expired`; reconcile relabels `status_id=1→6`. No renewal charge. | Flame already cancelled. | Baker **inactive/lapsed** — floor entitlements, can't accept orders (`BAKER_INACTIVE`). **NOT Spark** (one-time at signup). Must pick a PAID plan to resume; data preserved. | `expired / … / system` (reconcile) |
 
 > Why immediate-cancel not `cancel_at_cycle_end`: verified `cancel(id,true)` is a **silent no-op on UPI**
 > (leaves the sub armed → re-charges at the boundary). Immediate cancel is synchronous + verifiable; the
@@ -100,6 +111,28 @@ Result: parked Flame gone, baker upgrades to Forge; history logs `upgraded / for
 
 ---
 
+## 8. Reactivation after cancel — DURING grace (⬜ PLANNED, not yet built)
+Baker cancelled (Flame, `cancel_at_period_end=true`, still in grace before period end) → resubscribes.
+Expected model: **deferred re-subscribe** — keep the paid grace, first charge at period end, no double
+charge (industry "un-cancel" outcome). A **confirm dialog** must convey the mechanics (amount-agnostic).
+
+| Step | baker_subscriptions | Razorpay | Billing screen | subscription_events |
+|---|---|---|---|---|
+| **8a. Reactivate SAME plan** (Flame) | Clear the cancel intent; park a new Flame sub → `scheduled_subscription_id`, `scheduled_effective_at=period_end`. Current Flame row stays `1` (grace). | new Flame sub `created`(→authenticated), `start_at=period_end`. | Confirm dialog: "…continues, you keep access until `<date>`, then renews as Flame. Re-authorize your payment method now." Then: "Flame · renews `<date>`" (NOT "cancellation scheduled", NOT "then Flame"). | `reactivated / flame` (or `subscribed`) |
+| **8b. Reactivate DIFFERENT lower plan** | as a downgrade — parked lower sub, keep current grace | parked lower `authenticated` | "Current · Until `<date>` · then `<lower>`" | `downgrade_scheduled` |
+| **8c. Reactivate DIFFERENT higher plan** | upgrade path (immediate) supersedes the cancel | new higher sub now | "Higher — Current Plan" | `upgraded` |
+| **8d. Cycle end** | parked promotes; old row → `6`; baker on the chosen plan | parked → active | chosen plan current | `subscribed`/`downgraded` |
+
+**Fixes needed for this scenario:** subscribe route must (1) NOT 409 on the same plan when
+`cancel_at_period_end=true`, and (2) route a winding-down resubscribe through the deferred-reactivation
+path. Confirm dialog + downgrade pre-Checkout note added. **No amount stated in copy** (Razorpay owns it).
+
+## 9. Resubscribe after FULL lapse (inactive)
+Baker's grace already expired (inactive). Resubscribe to any paid plan → **fresh subscribe** (immediate,
+new sub + charge + period), exactly like §1. ✅ works today (no active row → direction null → fresh).
+
+---
+
 ## Required Razorpay webhook events (must be enabled)
 `subscription.authenticated` (deferred-downgrade commit), `subscription.activated`, `subscription.charged`,
 `subscription.cancelled`, `subscription.completed`, `subscription.pending`, `subscription.halted`,
@@ -107,9 +140,13 @@ Result: parked Flame gone, baker upgrades to Forge; history logs `upgraded / for
 (we never call `update()`).
 
 ## Known gaps / follow-ups
+- **Reactivation during grace (§8)** is PLANNED — needs the subscribe-route deferred-reactivation path +
+  same-plan 409 fix + confirm dialog. Reactivation after full lapse (§9) already works.
 - Abandoned **upgrade** Checkout strands the baker (old cancelled immediately). Downgrade already fixed
   (commit-at-auth); upgrade could adopt the same safe-sequencing.
 - **Renewals** aren't written to `subscription_events` (only emailed).
 - **External/dashboard cancels** aren't logged as events (only app cancels via `/billing/cancel`).
+- **Interval switch (monthly↔yearly, same tier)** is blocked as "same plan" — see SUBSCRIPTION_COVERAGE.md B7.
 - Card path is the SAME flow but **not yet verified in test mode**; card-only `update()` optimization deferred.
-- Cycle-end **promotion (step 3c)** unwitnessed without a short test plan.
+- Cycle-end **promotion (§3c)** — VALIDATED via `scripts/simulate_cycle_end.mjs` (fires the charged webhook).
+- Full coverage audit: **SUBSCRIPTION_COVERAGE.md**.
