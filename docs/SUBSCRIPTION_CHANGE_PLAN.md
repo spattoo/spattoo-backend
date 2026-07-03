@@ -104,6 +104,14 @@ UX note: this needs a second Checkout at downgrade time (the new mandate). Accep
 plan change. Alternative (decide in build): prompt the downgrade Checkout via a reminder near cycle end instead
 of at request time — lighter UX, but risks the baker not completing it (they then just renew on the higher plan).
 
+## ⚠️ REQUIRED webhook event — enable `subscription.authenticated`
+The deferred downgrade depends on `subscription.authenticated` (fires when the parked lower mandate is
+authorized) to schedule the old sub's cancel-at-cycle-end. It was NOT in the dev webhook's event list
+(validated 2026-07-03: parked sub reached `authenticated`, but Blaze stayed uncancelled) → **add
+`subscription.authenticated` to every Razorpay webhook (dashboard, dev + prod).** Without it the old
+(higher) sub can RENEW at cycle end before promotion cancels it → wrong/double charge. Follow-up: a
+reconcile backstop that catches "parked sub authenticated but old sub not cancel-at-cycle-end".
+
 ## Webhook — `POST /billing/webhook` additions
 - `subscription.charged` at cycle end: if the row has a `scheduled_plan_id` and Razorpay now reports the new
   `sub.plan_id`, **apply** the scheduled change → `plan_id = scheduled_plan_id`, clear `scheduled_*`, refresh
