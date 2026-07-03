@@ -49,7 +49,8 @@ what Spattoo covers today. Use it to see what's done, what's deliberately differ
 | D2 | Failed payment → retry/dunning | ✅ | `subscription.pending` → past_due |
 | D3 | Retries exhausted → involuntary churn | ✅ | `subscription.halted` → expired (recoverable, same row) |
 | D4 | Payment recovery (retry succeeds) | ✅ | reactivates same row |
-| D5 | **Self-serve update payment method** | ⬜ | payment-failed email links out, but no in-app update flow. On UPI/card, "update" = new mandate |
+| D5a | Update payment method — **reactive** (after a failed charge) | 🟡 | The `payment_failed` email (`sendNotification.js:379`) carries Razorpay's per-sub `short_url` "Update payment method" button. Built + seeded, but only **retries the SAME mandate** (mandate is bound to the sub), and **unexercised live** — no sub has ever hit `pending` |
+| D5b | Update payment method — **proactive** (change card before it fails / dead mandate) | ⬜ | No Razorpay flow exists — swapping the method = a NEW mandate = new subscription. Needs an in-app "Update payment method" action reusing the re-subscribe/reactivation path (fresh Checkout = new mandate) |
 | D6 | **Card-expiry pre-warnings** | ⬜ | Not built |
 | D7 | **Downgrade's first charge fails at cycle end** | ⬜ | Parked sub charge failing → dunning on the new sub; promotion path assumes success — verify |
 
@@ -77,7 +78,7 @@ what Spattoo covers today. Use it to see what's done, what's deliberately differ
 ## Prioritized gaps (what "everything covered" would add)
 **Should-fix (real user-facing gaps):**
 1. **B7 — billing interval switch (monthly↔yearly on same tier)** is blocked. Decide direction by (tier rank, then period) or handle same-tier-different-period as a change.
-2. **D5 — update payment method** self-serve (new mandate flow) — otherwise a failed card = forced cancel.
+2. **D5b — proactive update payment method** (in-app new-mandate flow, reusing re-subscribe) — reactive dunning (D5a) is covered by the emailed `short_url`; the gap is changing the card *before* it fails.
 3. **E5 — GST/tax** on invoices — needed for compliant Indian invoicing at scale.
 4. **D7 — downgrade first-charge failure** at cycle end — confirm the parked sub's dunning + what the baker sees.
 
