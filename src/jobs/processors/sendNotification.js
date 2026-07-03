@@ -82,6 +82,32 @@ function buildInviteEmail({ bakerName, firstName, link, brandColor, logoUrl, not
   return { subject, text, html };
 }
 
+// Shared branded, email-client-safe shell for PLATFORM→baker emails (welcome, subscription
+// lifecycle). Same card chrome as the verify email (auth-email.html) and the invite email — one
+// place so every platform email reads as one system: #EDEAE2 page, white rounded card, Spattoo
+// wordmark, brand-green (#2C4433) accents, footer. Callers pass only the inner body (headings,
+// paragraphs, CTA); table layout + inline styles keep it Outlook/Gmail-safe. Do NOT re-paste this
+// chrome per email — extend this one helper.
+function platformShell(inner) {
+  return `<!DOCTYPE html>
+<html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"></head>
+<body style="margin:0;padding:0;background:#EDEAE2;">
+  <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:#EDEAE2;padding:32px 12px;">
+    <tr><td align="center">
+      <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="max-width:480px;background:#ffffff;border-radius:16px;overflow:hidden;font-family:'Helvetica Neue',Arial,sans-serif;">
+        <tr><td style="padding:36px 36px 8px;text-align:center;">
+          <div style="font-size:24px;font-weight:800;letter-spacing:0.5px;color:#2C4433;font-family:'Helvetica Neue',Arial,sans-serif;">Spattoo</div>
+        </td></tr>
+        <tr><td style="padding:12px 36px 32px;color:#3C4A40;font-size:15px;line-height:1.6;">
+          ${inner}
+        </td></tr>
+      </table>
+      <p style="max-width:480px;margin:16px auto 0;color:#9aa;font-size:11px;font-family:Arial,sans-serif;text-align:center;">Spattoo — the 3D cake designer for bakeries</p>
+    </td></tr>
+  </table>
+</body></html>`;
+}
+
 function orderDetailsHtml(p) {
   const rows = [
     ['Customer',     p.customerName],
@@ -312,18 +338,15 @@ function buildEmail(typeSlug, recipientEmail, payload) {
     return {
       from: config.smtp.from, to: recipientEmail,
       subject: `Welcome to Spattoo${p.bakerName ? `, ${esc(p.bakerName)}` : ''}!`,
-      html: `<div style="font-family:sans-serif;max-width:560px;margin:0 auto;color:#333">
-        <h2 style="color:#2C4433">Welcome to Spattoo, ${who}!</h2>
-        <p>Your account is ready. Here's how to get your bakery live and taking orders:</p>
-        <ol style="padding-left:18px;line-height:1.9;color:#333">
+      html: platformShell(`<h2 style="margin:0 0 12px;font-size:22px;color:#2C4433;font-weight:800;">Welcome to Spattoo, ${who}!</h2>
+        <p style="margin:0 0 14px;">Your account is ready. Here's how to get your bakery live and taking orders:</p>
+        <ol style="margin:0;padding-left:20px;line-height:1.9;">
           <li>Add your branding — logo &amp; colours</li>
-          <li>Add your first cake template or element</li>
+          <li>Explore the 3D cake designer — visualise a cake in seconds</li>
           <li>Publish your storefront${storefrontLc ? ` at <b>${esc(storefrontLc)}</b>` : ''}</li>
           <li>Invite your first customer to design a cake</li>
         </ol>
-        ${dashUrl ? `<p style="margin-top:20px"><a href="${escUrl(dashUrl)}" style="display:inline-block;background:#2C4433;color:#fff;text-decoration:none;padding:12px 28px;border-radius:10px;font-weight:700">Open your dashboard</a></p>` : ''}
-        <p style="color:#888;font-size:12px;margin-top:24px">Spattoo — the 3D cake designer for bakeries</p>
-      </div>`,
+        ${dashUrl ? `<p style="margin:24px 0 0;text-align:center;"><a href="${escUrl(dashUrl)}" style="display:inline-block;background:#2C4433;color:#ffffff;text-decoration:none;font-size:16px;font-weight:700;padding:14px 34px;border-radius:12px;">Open your dashboard &rarr;</a></p>` : ''}`),
     };
   }
 
@@ -331,17 +354,16 @@ function buildEmail(typeSlug, recipientEmail, payload) {
   // from = Spattoo (config.smtp.from) — these are platform→baker, not baker-branded.
   const plan       = titleCase(p.planName) || 'your';
   const billingUrl = config.app.url ? `${config.app.url.replace(/\/+$/, '')}/settings/billing` : null;
-  const billingCta = billingUrl
-    ? `<p style="margin-top:20px"><a href="${escUrl(billingUrl)}" style="display:inline-block;background:#2C4433;color:#fff;text-decoration:none;padding:12px 28px;border-radius:10px;font-weight:700">Manage your plan</a></p>`
-    : '';
-  const footer = `<p style="color:#888;font-size:12px;margin-top:24px">Spattoo — the 3D cake designer for bakeries</p>`;
-  const shell  = inner => `<div style="font-family:sans-serif;max-width:560px;margin:0 auto;color:#333">${inner}${footer}</div>`;
+  // Shared brand-green CTA button (matches the welcome/verify/invite look).
+  const ctaBtn = (href, label) => `<p style="margin:24px 0 0;text-align:center;"><a href="${href}" style="display:inline-block;background:#2C4433;color:#ffffff;text-decoration:none;font-size:16px;font-weight:700;padding:14px 34px;border-radius:12px;">${label} &rarr;</a></p>`;
+  const billingCta = billingUrl ? ctaBtn(escUrl(billingUrl), 'Manage your plan') : '';
+  const shell  = platformShell;   // one branded shell for every platform email
   const hi     = p.bakerName ? `, ${esc(p.bakerName)}` : '';
 
   if (typeSlug === 'subscription_activated') {
     const renews = formatDateTz(p.nextBillingAt, p.timeZone);
     return { from: config.smtp.from, to: recipientEmail, subject: `Your ${plan} plan is active`,
-      html: shell(`<h2 style="color:#2C4433">You're all set${hi}</h2>
+      html: shell(`<h2 style="margin:0 0 12px;font-size:22px;color:#2C4433;font-weight:800;">You're all set${hi}</h2>
         <p>Your <b>${esc(plan)}</b> plan is now active${renews !== '—' ? ` and renews on <b>${renews}</b>` : ''}. Your storefront and 3D cake designer are ready to go.</p>
         ${billingCta}`) };
   }
@@ -349,7 +371,7 @@ function buildEmail(typeSlug, recipientEmail, payload) {
   if (typeSlug === 'subscription_renewed') {
     const renews = formatDateTz(p.nextBillingAt, p.timeZone);
     return { from: config.smtp.from, to: recipientEmail, subject: `Payment received — ${plan} plan renewed`,
-      html: shell(`<h2 style="color:#2C4433">Thanks${hi}</h2>
+      html: shell(`<h2 style="margin:0 0 12px;font-size:22px;color:#2C4433;font-weight:800;">Thanks${hi}</h2>
         <p>We've received your payment${p.amount != null ? ` of <b>${rupees(p.amount)}</b>` : ''} and renewed your <b>${esc(plan)}</b> plan${renews !== '—' ? `. Your next renewal is <b>${renews}</b>` : ''}.</p>
         ${billingCta}`) };
   }
@@ -357,22 +379,22 @@ function buildEmail(typeSlug, recipientEmail, payload) {
   if (typeSlug === 'payment_failed') {
     const updateUrl = escUrl(p.shortUrl);
     return { from: config.smtp.from, to: recipientEmail, subject: `Action needed: payment issue on your ${plan} plan`,
-      html: shell(`<h2 style="color:#2C4433">We couldn't process your payment</h2>
+      html: shell(`<h2 style="margin:0 0 12px;font-size:22px;color:#2C4433;font-weight:800;">We couldn't process your payment</h2>
         <p>Your latest payment for the <b>${esc(plan)}</b> plan didn't go through. To keep your storefront and designer running without interruption, please update your payment method.</p>
-        ${updateUrl ? `<p style="margin-top:20px"><a href="${updateUrl}" style="display:inline-block;background:#2C4433;color:#fff;text-decoration:none;padding:12px 28px;border-radius:10px;font-weight:700">Update payment method</a></p>` : billingCta}`) };
+        ${updateUrl ? ctaBtn(updateUrl, 'Update payment method') : billingCta}`) };
   }
 
   if (typeSlug === 'subscription_cancelled') {
     const until = formatDateTz(p.accessUntil, p.timeZone);
     return { from: config.smtp.from, to: recipientEmail, subject: `Your ${plan} subscription is cancelled`,
-      html: shell(`<h2 style="color:#2C4433">Your subscription is cancelled</h2>
+      html: shell(`<h2 style="margin:0 0 12px;font-size:22px;color:#2C4433;font-weight:800;">Your subscription is cancelled</h2>
         <p>Your <b>${esc(plan)}</b> subscription has been cancelled${until !== '—' ? ` — you'll keep full access until <b>${until}</b>` : ''}. Changed your mind? You can resubscribe anytime${until !== '—' ? ' before then' : ''}.</p>
         ${billingCta}`) };
   }
 
   if (typeSlug === 'subscription_expired') {
     return { from: config.smtp.from, to: recipientEmail, subject: `Your Spattoo subscription has ended`,
-      html: shell(`<h2 style="color:#2C4433">Your subscription has ended</h2>
+      html: shell(`<h2 style="margin:0 0 12px;font-size:22px;color:#2C4433;font-weight:800;">Your subscription has ended</h2>
         <p>Your <b>${esc(plan)}</b> subscription has ended and access is now paused. Resubscribe to pick up right where you left off — your designs and storefront are saved.</p>
         ${billingCta}`) };
   }
