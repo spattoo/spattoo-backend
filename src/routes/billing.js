@@ -576,13 +576,21 @@ router.post('/billing/webhook', async (req, res) => {
         .select('id, billing_subscription_id')
         .eq('scheduled_subscription_id', razorpaySubId).maybeSingle();
       if (oldRow?.billing_subscription_id) {
-        await razorpayCancelSubscription(oldRow.billing_subscription_id, true)   // atCycleEnd = true
-          .catch(e => console.error('[billing] schedule old-sub cancel-at-cycle-end failed:', e.message));
-        // Tag the reason DOWNGRADE now so the cycle-end subscription.cancelled event is recognised as a
-        // downgrade handoff (NOT a real cancellation) and suppresses the "subscription cancelled" email.
+        // Tag reason DOWNGRADE FIRST (before the cancel below fires subscription.cancelled) so that
+        // event is recognised as a downgrade handoff — keeps grace access + suppresses the cancel email.
+        // Ordering matters: the immediate cancel triggers subscription.cancelled quickly, and it must
+        // find the reason already set.
         await supabase.from('baker_subscriptions')
           .update({ cancel_at_period_end: true, cancellation_reason_id: CANCELLATION_REASON.DOWNGRADE })
           .eq('id', oldRow.id);
+        // Cancel the OLD (higher) sub IMMEDIATELY (atCycleEnd=false) — NOT cancel-at-cycle-end, which
+        // Razorpay silently no-ops / leaves invisible on the entity (verified: end_at + charge_at stay
+        // armed → the old sub would re-charge at the boundary). Mirrors /billing/cancel: an immediate
+        // cancel is synchronous + verifiable, and the baker keeps the higher tier LOCALLY as a grace
+        // period until current_period_end (the get_baker_subscription derive rule + the
+        // subscription.cancelled grace-guard). Best-effort; the reconcile backstop is the safety net.
+        await razorpayCancelSubscription(oldRow.billing_subscription_id, false)
+          .catch(e => console.error('[billing] immediate cancel of old sub (downgrade) failed:', e.message));
       }
       return res.json({ ok: true });
     }

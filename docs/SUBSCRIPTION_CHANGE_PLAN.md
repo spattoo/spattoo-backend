@@ -104,6 +104,15 @@ UX note: this needs a second Checkout at downgrade time (the new mandate). Accep
 plan change. Alternative (decide in build): prompt the downgrade Checkout via a reminder near cycle end instead
 of at request time — lighter UX, but risks the baker not completing it (they then just renew on the higher plan).
 
+## ⚠️ Razorpay cancel-at-cycle-end is unreliable → use IMMEDIATE cancel + local grace
+Validated 2026-07-03: `subscriptions.cancel(id, true)` (cancel_at_cycle_end) is a **silent no-op** on a
+UPI sub — it returns OK but leaves `end_at`/`charge_at` armed, so the old sub would re-charge at the
+boundary. (The existing `/billing/cancel` already avoids it for the same reason.) So step 2 cancels the
+old sub **IMMEDIATELY** (`atCycleEnd=false`) and the baker keeps the higher tier LOCALLY as a grace period
+until `current_period_end` (the `get_baker_subscription` derive rule + the `subscription.cancelled`
+grace-guard). Tag the old row `cancellation_reason_id = DOWNGRADE` BEFORE cancelling so the immediate
+`subscription.cancelled` event keeps grace + suppresses the cancel email.
+
 ## ⚠️ REQUIRED webhook event — enable `subscription.authenticated`
 The deferred downgrade depends on `subscription.authenticated` (fires when the parked lower mandate is
 authorized) to schedule the old sub's cancel-at-cycle-end. It was NOT in the dev webhook's event list
