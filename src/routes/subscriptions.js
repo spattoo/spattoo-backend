@@ -56,6 +56,12 @@ export async function deriveSubscription(bakerId) {
     cancellation_requested_at: row.cancellation_requested_at ?? null,
     cancellation_reason:       row.cancellation_reason       ?? null,
     cancellation_note:         row.cancellation_note         ?? null,
+    // Deferred downgrade scheduled on the active row: the lower plan takes effect at
+    // scheduled_effective_at (= current_period_end). Null when no change is pending.
+    scheduled_plan: row.scheduled_plan_id
+      ? { id: row.scheduled_plan_id, name: row.scheduled_plan_name }
+      : null,
+    scheduled_effective_at: row.scheduled_effective_at ?? null,
   };
 }
 

@@ -156,6 +156,10 @@ router.get('/billing/status', requireAuth, requireCapability('billing:manage'), 
       billing_period:       sub.period?.display_name ?? null,
       cancel_at_period_end: sub.cancel_at_period_end ?? false,
       cancellation_requested_at: sub.cancellation_requested_at ?? null,
+      // Deferred downgrade: the baker stays on `tier` until scheduled_downgrade_at, then moves to
+      // scheduled_downgrade_to. Null when no downgrade is scheduled. Drives "X until <date>, then Y".
+      scheduled_downgrade_to: sub.scheduled_plan?.name ?? null,
+      scheduled_downgrade_at: sub.scheduled_effective_at ?? null,
     });
   } catch (err) {
     serverError(req, res, err);
@@ -174,6 +178,12 @@ router.post('/billing/subscribe', requireAuth, requireCapability('billing:manage
     if (!periodName) return res.status(400).json({ error: 'Invalid billing period' });
     const planId = PLAN.ID_BY_NAME[tier];
     if (!planId) return res.status(400).json({ error: `Unknown plan: ${tier}` });
+    // Spark is the FREE baseline — it can't be subscribed to. A paid baker returning to free is a
+    // CANCELLATION (revert to free at period end), which goes through /billing/cancel, not here. This
+    // also fails closed if the UI ever offers Spark as a selectable plan.
+    if (planId === PLAN.SPARK) {
+      return res.status(400).json({ error: 'The free plan can’t be subscribed to. Cancel your plan to return to it.', code: 'free_plan_not_subscribable' });
+    }
 
     const baker = await getBakerForUser(req.user.id, 'id, name, email, billing_subscription_id');
     if (!baker) return res.status(404).json({ error: 'Baker not found' });
