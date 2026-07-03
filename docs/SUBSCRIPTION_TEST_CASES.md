@@ -111,10 +111,12 @@ Result: parked Flame gone, baker upgrades to Forge; history logs `upgraded / for
 
 ---
 
-## 8. Reactivation after cancel — DURING grace (⬜ PLANNED, not yet built)
+## 8. Reactivation after cancel — DURING grace ✅ (deferred re-subscribe)
 Baker cancelled (Flame, `cancel_at_period_end=true`, still in grace before period end) → resubscribes.
-Expected model: **deferred re-subscribe** — keep the paid grace, first charge at period end, no double
-charge (industry "un-cancel" outcome). A **confirm dialog** must convey the mechanics (amount-agnostic).
+Model: **deferred re-subscribe** — keep the paid grace, first charge at period end, no double charge
+(industry "un-cancel" outcome). The subscribe route detects `cancel_at_period_end` → `change='reactivate'`;
+the confirm dialog conveys the mechanics (amount-agnostic). **Reactivating to a HIGHER tier = immediate
+upgrade** (not deferred).
 
 | Step | baker_subscriptions | Razorpay | Billing screen | subscription_events |
 |---|---|---|---|---|
@@ -123,9 +125,12 @@ charge (industry "un-cancel" outcome). A **confirm dialog** must convey the mech
 | **8c. Reactivate DIFFERENT higher plan** | upgrade path (immediate) supersedes the cancel | new higher sub now | "Higher — Current Plan" | `upgraded` |
 | **8d. Cycle end** | parked promotes; old row → `6`; baker on the chosen plan | parked → active | chosen plan current | `subscribed`/`downgraded` |
 
-**Fixes needed for this scenario:** subscribe route must (1) NOT 409 on the same plan when
-`cancel_at_period_end=true`, and (2) route a winding-down resubscribe through the deferred-reactivation
-path. Confirm dialog + downgrade pre-Checkout note added. **No amount stated in copy** (Razorpay owns it).
+**Implemented:** subscribe route (1) no longer 409s on the same plan when `cancel_at_period_end=true`,
+(2) routes a winding-down resubscribe through the deferred-reactivation path (`change='reactivate'`);
+webhook step 2 commits it (reason cleared, old-sub cancel skipped since already cancelled, logs
+`reactivated`); step 3 labels the promotion by transition (reactivated/downgraded/upgraded). UI: confirm
+dialog (reactivation + downgrade), "Reactivate" CTA, "renews" vs "then <plan>" display, `reactivated`
+history label. **No amount stated in copy** (Razorpay owns it).
 
 ## 9. Resubscribe after FULL lapse (inactive)
 Baker's grace already expired (inactive). Resubscribe to any paid plan → **fresh subscribe** (immediate,

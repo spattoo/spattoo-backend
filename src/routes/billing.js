@@ -207,10 +207,14 @@ router.post('/billing/subscribe', requireAuth, requireCapability('billing:manage
       const current   = await deriveSubscription(baker.id);
       const curPlanId = current.plan?.id ?? null;
       const onPaid    = current.status === 'active' && curPlanId != null && curPlanId !== PLAN.SPARK;
+      // Winding down = cancelled but still in the grace window (status 'active' + cancel_at_period_end).
+      // A resubscribe here is a REACTIVATION (un-cancel), which may target the SAME plan.
+      const reactivating = onPaid && current.cancel_at_period_end === true;
       const direction = onPaid
         ? planChangeDirection(PLAN.RANK_BY_ID[curPlanId], PLAN.RANK_BY_ID[planId])
         : null;   // null = fresh subscribe from free/none
-      if (direction === PLAN_CHANGE.SAME) {
+      // Same plan is a no-op — UNLESS reactivating (resubscribe to the plan you cancelled = un-cancel).
+      if (direction === PLAN_CHANGE.SAME && !reactivating) {
         return res.status(409).json({ error: `You're already on the ${tier} plan.` });
       }
 
@@ -233,20 +237,24 @@ router.post('/billing/subscribe', requireAuth, requireCapability('billing:manage
         }
       }
 
-      // ── DOWNGRADE → deferred to cycle end (SUBSCRIPTION_CHANGE_PLAN.md) ─────────
-      // Park a LOWER sub with start_at = current_period_end: authorized now (Checkout), first charge
-      // at the next cycle. Do NOT cancel the old sub or repoint the baker — they keep the higher tier
-      // they paid for until then. The `subscription.authenticated` webhook cancels the old sub AT
-      // CYCLE END, and only AFTER this new mandate is authorized (safe sequencing / option 1). The
-      // activation webhook (at cycle end) promotes this row. Record the pending change on the current
-      // active row so the UI can show "<higher> until <date>, then <lower>".
-      if (direction === PLAN_CHANGE.DOWNGRADE) {
+      // ── DEFERRED to cycle end (SUBSCRIPTION_CHANGE_PLAN.md §8) ─────────────────
+      // Triggered by a DOWNGRADE, or by REACTIVATING (un-cancel) to the same/lower tier while winding
+      // down — both keep the paid grace and defer the first charge to the next cycle. (Reactivating to
+      // a HIGHER tier falls through to the immediate upgrade path.) Park the target sub with
+      // start_at = current_period_end: authorized now (Checkout), first charge next cycle. Do NOT cancel
+      // the old sub or repoint the baker yet — the `subscription.authenticated` webhook commits it AT
+      // CYCLE END and only AFTER the new mandate is authorized (safe sequencing). notes.change tells the
+      // webhook whether it's a 'downgrade' or a 'reactivate' (drives history + reason + display).
+      const deferred = direction === PLAN_CHANGE.DOWNGRADE
+        || (reactivating && direction !== PLAN_CHANGE.UPGRADE);
+      if (deferred) {
         if (!current.current_period_end) {
           return res.status(409).json({ error: 'Your renewal date isn’t known yet — please try again shortly.' });
         }
-        const startAt = Math.floor(new Date(current.current_period_end).getTime() / 1000);
+        const startAt    = Math.floor(new Date(current.current_period_end).getTime() / 1000);
+        const changeKind = reactivating ? 'reactivate' : 'downgrade';
         const parked  = await razorpayCreateSubscription(razorpayPlanId, totalCount,
-          { baker_id: baker.id, tier, period: periodName, change: 'downgrade' }, startAt);
+          { baker_id: baker.id, tier, period: periodName, change: changeKind }, startAt);
 
         const { error: parkErr } = await supabase.from('baker_subscriptions').insert({
           baker_id:                baker.id,
@@ -613,34 +621,41 @@ router.post('/billing/webhook', async (req, res) => {
     // The downgrade is COMMITTED only here (safe sequencing / option 1) — an abandoned Checkout never
     // fires this, so the current plan + UI stay untouched (no phantom "downgrade scheduled"). Recognise
     // the parked sub by its notes.change='downgrade'; the OLD (higher) sub is the baker's ACTIVE row.
-    if (event === 'subscription.authenticated' && sub?.notes?.change === 'downgrade') {
+    const deferredChange = sub?.notes?.change;   // 'downgrade' | 'reactivate' (else undefined)
+    if (event === 'subscription.authenticated' && (deferredChange === 'downgrade' || deferredChange === 'reactivate')) {
+      const isReactivate = deferredChange === 'reactivate';
       const parkedRow = subRow;   // looked up above by billing_subscription_id = this parked sub
       const { data: oldRow } = await supabase.from('baker_subscriptions')
         .select('id, baker_id, plan_id, billing_subscription_id, current_period_end')
         .eq('baker_id', parkedRow.baker_id).eq('status_id', SUBSCRIPTION_STATUS.ACTIVE)
         .order('created_at', { ascending: false }).limit(1).maybeSingle();
       if (oldRow?.billing_subscription_id) {
-        // Commit the schedule on the ACTIVE (higher) row + tag reason DOWNGRADE FIRST (before the cancel
-        // fires subscription.cancelled) so that event is a recognised downgrade handoff — keeps grace
-        // access + suppresses the cancel email. This is the SOURCE OF TRUTH the UI + step 3 read.
+        // Commit the pending change on the current (active) row — the SOURCE OF TRUTH the UI + step 3 read.
+        // DOWNGRADE: tag reason DOWNGRADE FIRST (before the cancel below fires subscription.cancelled) so
+        // that event is a recognised handoff (grace + no cancel email). REACTIVATE (un-cancel): CLEAR the
+        // cancel reason/audit — the cancellation is undone; the current sub is simply superseded by the
+        // resubscribed plan at cycle end.
         await supabase.from('baker_subscriptions').update({
           scheduled_plan_id:         parkedRow.plan_id,
           scheduled_effective_at:    oldRow.current_period_end,
           scheduled_subscription_id: razorpaySubId,
           cancel_at_period_end:      true,
-          cancellation_reason_id:    CANCELLATION_REASON.DOWNGRADE,
+          cancellation_reason_id:    isReactivate ? null : CANCELLATION_REASON.DOWNGRADE,
+          ...(isReactivate ? { cancellation_requested_at: null, cancellation_note: null } : {}),
         }).eq('id', oldRow.id);
-        // Cancel the OLD (higher) sub IMMEDIATELY (atCycleEnd=false) — cancel-at-cycle-end silently
-        // no-ops on UPI (verified: end_at/charge_at stay armed → old would re-charge at the boundary).
-        // Mirrors /billing/cancel: immediate cancel is synchronous + verifiable, and the baker keeps the
-        // higher tier LOCALLY via the current_period_end grace rule + the subscription.cancelled guard.
-        await razorpayCancelSubscription(oldRow.billing_subscription_id, false)
-          .catch(e => console.error('[billing] immediate cancel of old sub (downgrade) failed:', e.message));
-        // History: "Downgrade to <lower> scheduled".
+        // DOWNGRADE: cancel the OLD (active) sub IMMEDIATELY — cancel-at-cycle-end no-ops on UPI (verified:
+        // end_at/charge_at stay armed → old would re-charge). Baker keeps the tier LOCALLY via the
+        // current_period_end grace rule. REACTIVATE: the old sub is already cancelled (baker cancelled
+        // first), so skip — re-cancelling would fire a spurious subscription.cancelled/email.
+        if (!isReactivate) {
+          await razorpayCancelSubscription(oldRow.billing_subscription_id, false)
+            .catch(e => console.error('[billing] immediate cancel of old sub (downgrade) failed:', e.message));
+        }
         await logSubscriptionEvent(oldRow.baker_id, {
-          event: 'downgrade_scheduled', previousTier: PLAN.NAME_BY_ID[oldRow.plan_id] ?? null,
+          event: isReactivate ? 'reactivated' : 'downgrade_scheduled',
+          previousTier: PLAN.NAME_BY_ID[oldRow.plan_id] ?? null,
           newTier: PLAN.NAME_BY_ID[parkedRow.plan_id] ?? null, newStatus: 'active', changedBy: 'razorpay',
-        }).catch(err => console.error('[billing] downgrade_scheduled log failed:', err.message));
+        }).catch(err => console.error('[billing] deferred-change log failed:', err.message));
       }
       return res.json({ ok: true });
     }
@@ -719,10 +734,10 @@ router.post('/billing/webhook', async (req, res) => {
       }
     }
 
-    // ── Deferred downgrade, step 3: the parked LOWER sub activated at cycle end → PROMOTE it ─────
-    // The baker rode the old (higher) plan to period end; now switch them to the new plan, supersede
-    // the old row, and clear the schedule. Guarded by the scheduled_subscription_id link (cleared here)
-    // → idempotent: later renewal charges of this sub won't re-run it.
+    // ── Deferred change, step 3: the parked sub activated at cycle end → PROMOTE it ─────────────
+    // The baker rode the old plan to period end; now switch them to the new plan, supersede the old
+    // row, and clear the schedule. Covers a scheduled DOWNGRADE and a REACTIVATION (same/lower). Guarded
+    // by scheduled_subscription_id (cleared here) → idempotent: later renewal charges won't re-run it.
     if (event === 'subscription.activated' || event === 'subscription.charged') {
       const { data: oldRow } = await supabase.from('baker_subscriptions')
         .select('id, billing_subscription_id, plan_id')
@@ -738,14 +753,17 @@ router.post('/billing/webhook', async (req, res) => {
         }).eq('id', oldRow.id);
         // The old sub was cancel-at-cycle-end; make sure it's really closed now.
         await razorpayCancelSubscription(oldRow.billing_subscription_id, false).catch(() => {});
-        // Promote: the baker is now on THIS (lower) sub + plan.
+        // Promote: the baker is now on THIS sub + plan.
         await supabase.from('bakers').update({
           billing_subscription_id: razorpaySubId,
           subscription_plan_id:    subRow.plan_id,
           subscription_status_id:  SUBSCRIPTION_STATUS.ACTIVE,
         }).eq('id', bakerId);
+        // Label the event by the actual transition: same tier = reactivated, lower = downgraded,
+        // higher = upgraded (a reactivation could be to any of these).
+        const oldRank = PLAN.RANK_BY_ID[oldRow.plan_id], newRank = PLAN.RANK_BY_ID[subRow.plan_id];
         await logSubscriptionEvent(bakerId, {
-          event:        'downgraded',
+          event:        newRank < oldRank ? 'downgraded' : newRank > oldRank ? 'upgraded' : 'reactivated',
           previousTier: PLAN.NAME_BY_ID[oldRow.plan_id] ?? null,
           newTier:      PLAN.NAME_BY_ID[subRow.plan_id] ?? null,
           newStatus:    'active',
