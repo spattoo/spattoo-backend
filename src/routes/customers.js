@@ -171,11 +171,38 @@ router.post('/baker/customers/invite', requireAuth, requireCapability('customer:
       return res.status(409).json({ error: 'Publish your storefront before inviting customers.' });
     }
 
-    const { firstName, lastName, email, phone, channels, note, expiresInDays = 14 } = req.body;
+    const { firstName, lastName, email, phone, channels, note, expiresInDays = 14,
+            templateId, designSnapshot, designThumbnailKey } = req.body;
     const emailNorm = email?.trim().toLowerCase() || null;
     const phoneNorm = phone?.trim() || null;
     if (!firstName?.trim())        return res.status(400).json({ error: 'firstName is required' });
     if (!emailNorm && !phoneNorm)  return res.status(400).json({ error: 'email or phone is required' });
+
+    // ── Resolve the OPTIONAL starting design (frozen onto the invite) ───────────
+    // Path A (templateId): seed from a library template — only a GLOBAL template or
+    // one this baker owns may be shared. Path B (designSnapshot): an inline snapshot
+    // from the designer's "Share the draft". Neither → a blank invite (today's
+    // behaviour). templateId wins if both are somehow supplied. Fail fast (before
+    // creating a customer) on an invalid template. See docs/INVITE_WITH_TEMPLATE_PLAN.md.
+    let inviteDesign = null, inviteThumbKey = null, inviteTemplateId = null;
+    if (templateId) {
+      const { data: tpl, error: tErr } = await supabase
+        .from('cake_templates').select('id, baker_id, design, thumbnail_url').eq('id', templateId).maybeSingle();
+      if (tErr)  return serverError(req, res, tErr);
+      if (!tpl)  return res.status(404).json({ error: 'Template not found' });
+      if (tpl.baker_id != null && tpl.baker_id !== bakerId) {
+        return res.status(403).json({ error: 'Template does not belong to this baker' });
+      }
+      inviteDesign     = tpl.design ?? null;
+      inviteThumbKey   = tpl.thumbnail_url ?? null;
+      inviteTemplateId = tpl.id;
+    } else if (designSnapshot != null) {
+      if (typeof designSnapshot !== 'object' || Array.isArray(designSnapshot)) {
+        return res.status(400).json({ error: 'designSnapshot must be a design object' });
+      }
+      inviteDesign   = designSnapshot;
+      inviteThumbKey = designThumbnailKey?.trim() || null;
+    }
 
     // ── Upsert the customer (the person) — dedupe by email, else phone ──────────
     let lookup = supabase.from('customers').select('id').eq('baker_id', bakerId);
@@ -226,8 +253,13 @@ router.post('/baker/customers/invite', requireAuth, requireCapability('customer:
         note:        note?.trim() || null,
         expires_at:  expiresAt,
         created_by:  appUser?.id ?? null,
+        design_snapshot:      inviteDesign,
+        design_thumbnail_url: inviteThumbKey,
+        template_id:          inviteTemplateId,
       })
-      .select('id, status, channels, note, expires_at, created_at')
+      // design_snapshot is big — echo only the lightweight fields (a client that needs
+      // the design has it already; the customer gets it post-OTP from verify-otp).
+      .select('id, status, channels, note, expires_at, created_at, template_id, design_thumbnail_url')
       .single();
     if (iErr) return serverError(req, res, iErr);
 

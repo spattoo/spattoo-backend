@@ -28,7 +28,7 @@ const verifyOtpPerInvite = rateLimit({
 async function loadValidInvite(id) {
   const { data: invite } = await supabase
     .from('customer_invites')
-    .select('id, status, channels, expires_at, customer_id, baker_id, customers(first_name, email, phone), bakers(slug, name)')
+    .select('id, status, channels, expires_at, customer_id, baker_id, design_snapshot, customers(first_name, email, phone), bakers(slug, name)')
     .eq('id', id)
     .maybeSingle();
   if (!invite) return null;
@@ -149,7 +149,7 @@ router.get('/invite/:id', async (req, res) => {
   try {
     const { data: invite, error } = await supabase
       .from('customer_invites')
-      .select('id, status, channels, expires_at, customers(first_name, email, phone), bakers(name, slug, logo_url, primary_color, accent_color)')
+      .select('id, status, channels, expires_at, design_snapshot, design_thumbnail_url, customers(first_name, email, phone), bakers(name, slug, logo_url, primary_color, accent_color)')
       .eq('id', req.params.id)
       .maybeSingle();
 
@@ -186,6 +186,11 @@ router.get('/invite/:id', async (req, res) => {
         masked_phone: maskPhone(cust?.phone),
         channels: invite.channels,
       },
+      // The baker may have attached a starting design. Expose only a preview here
+      // (this landing is PRE-OTP/public) — the full design_snapshot is handed over
+      // after OTP verify, never on this unauthenticated endpoint.
+      has_design: invite.design_snapshot != null,
+      design_thumbnail_url: toPublicUrl(invite.design_thumbnail_url),
     });
   } catch (err) {
     serverError(req, res, err);
