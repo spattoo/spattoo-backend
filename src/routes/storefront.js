@@ -278,6 +278,10 @@ router.post('/invite/:id/verify-otp', verifyOtpPerInvite, async (req, res) => {
       },
       customer_id: invite.customer_id,
       baker_slug:  invite.bakers?.slug,
+      // The starting design the baker attached (if any) — handed over ONLY here, at
+      // the authenticated moment, so the storefront can seed the designer. Absent =
+      // blank start. NULL-safe: a plain invite has no design_snapshot.
+      design_snapshot: invite.design_snapshot ?? null,
     });
   } catch (err) {
     serverError(req, res, err);
