@@ -372,6 +372,17 @@ router.post('/billing/cancel', requireAuth, requireCapability('billing:manage'),
     if (!baker) return res.status(404).json({ error: 'Baker not found' });
 
     const current = await deriveSubscription(baker.id);
+    const today   = new Date().toISOString().slice(0, 10);
+
+    // If a downgrade is scheduled on the current row, cancellation SUPERSEDES it (last-action-wins,
+    // the industry norm): abort the parked lower sub + clear the schedule so it never promotes. The
+    // baker keeps the current (higher) tier through the grace period, then lapses (never Spark).
+    let parkedDowngradeSubId = null;
+    if (current.id) {
+      const { data: cur } = await supabase.from('baker_subscriptions')
+        .select('scheduled_subscription_id').eq('id', current.id).maybeSingle();
+      parkedDowngradeSubId = cur?.scheduled_subscription_id ?? null;
+    }
 
     // Cancel IMMEDIATELY in Razorpay (atCycleEnd=false). Razorpay's cancel-at-cycle-end is
     // invisible on the subscription entity until the boundary, which is impossible to verify;
@@ -399,12 +410,29 @@ router.post('/billing/cancel', requireAuth, requireCapability('billing:manage'),
       try {
         await razorpayCancelSubscription(baker.billing_subscription_id, false);
       } catch (err) {
-        console.error('[billing] Razorpay cancel failed:', err.message);
-        return res.status(502).json({
-          error: 'Could not cancel with the payment provider. Please try again.',
-          code:  'razorpay_cancel_failed',
-        });
+        // A deferred downgrade cancels the current (higher) sub IMMEDIATELY at authorize time, so it
+        // may already be cancelled here — that's success, not failure. Confirm via a fetch before failing.
+        const already = await razorpay().subscriptions.fetch(baker.billing_subscription_id)
+          .then(s => s.status === 'cancelled').catch(() => false);
+        if (!already) {
+          console.error('[billing] Razorpay cancel failed:', err.message);
+          return res.status(502).json({
+            error: 'Could not cancel with the payment provider. Please try again.',
+            code:  'razorpay_cancel_failed',
+          });
+        }
+        console.warn('[billing] current sub already cancelled (downgrade in progress) — treating cancel as success');
       }
+    }
+
+    // Supersede any scheduled downgrade: cancel the parked lower sub + close its PENDING row so it
+    // can't promote at cycle end. (scheduled_* on the current row is cleared in the mark below.)
+    if (parkedDowngradeSubId) {
+      await razorpayCancelSubscription(parkedDowngradeSubId, false)
+        .catch(e => console.error('[billing] cancel parked downgrade sub failed:', e.message));
+      await supabase.from('baker_subscriptions')
+        .update({ status_id: SUBSCRIPTION_STATUS.CANCELLED, end_date: today })
+        .eq('billing_subscription_id', parkedDowngradeSubId);
     }
 
     // Optional churn-survey input from the cancel dialog. Validate the picked reason against the
@@ -431,6 +459,11 @@ router.post('/billing/cancel', requireAuth, requireCapability('billing:manage'),
         cancellation_requested_at: new Date().toISOString(),
         cancellation_reason_id:    cancellationReasonId,
         cancellation_note:         note ?? null,
+        // A cancel supersedes any scheduled downgrade — clear it so the UI shows a plain cancellation
+        // and the cycle-end promotion can't fire.
+        scheduled_plan_id:         null,
+        scheduled_effective_at:    null,
+        scheduled_subscription_id: null,
       });
     const { error: markErr } = baker.billing_subscription_id
       ? await markQuery.eq('billing_subscription_id', baker.billing_subscription_id)
