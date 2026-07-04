@@ -18,6 +18,8 @@ import { PLAN }                from '../constants/subscriptionPlans.js';
 import { planChangeDirection, PLAN_CHANGE } from '../lib/subscriptionChange.js';
 import { PERIOD }              from '../constants/billingPeriods.js';
 import { CANCELLATION_REASON } from '../constants/cancellationReasons.js';
+import { isValidGstin, normalizeGstin } from '../lib/gstin.js';
+import { emitSaleEvent }       from '../services/billingEvents.js';
 
 const router = Router();
 
@@ -152,7 +154,7 @@ router.get('/billing/cancellation-reasons', requireAuth, requireCapability('bill
 // ── GET /billing/status ───────────────────────────────────────────────────────
 router.get('/billing/status', requireAuth, requireCapability('billing:manage'), async (req, res) => {
   try {
-    const baker = await getBakerForUser(req.user.id, 'id');
+    const baker = await getBakerForUser(req.user.id, 'id, gstin');
     if (!baker) return res.status(404).json({ error: 'Baker not found' });
 
     const sub = await deriveSubscription(baker.id);
@@ -172,7 +174,33 @@ router.get('/billing/status', requireAuth, requireCapability('billing:manage'), 
       // Interval switch (same tier, different period): the period the baker moves to at the boundary.
       // Null unless a same-tier monthly↔yearly change is armed. Drives "Monthly until <date>, then Yearly".
       scheduled_period: sub.scheduled_period?.name ?? null,
+      // Recipient GSTIN (for the checkout screen to prefill + the tax invoice). Null when not provided.
+      gstin: baker.gstin ?? null,
     });
+  } catch (err) {
+    serverError(req, res, err);
+  }
+});
+
+// ── PATCH /billing/tax-profile ────────────────────────────────────────────────
+// Save the baker's GSTIN (captured on the checkout screen). Persisted on the profile so automatic
+// renewals reuse it — the charge event snapshot reads it from here. Send gstin: null/'' to clear it.
+router.patch('/billing/tax-profile', requireAuth, requireCapability('billing:manage'), async (req, res) => {
+  try {
+    const baker = await getBakerForUser(req.user.id, 'id');
+    if (!baker) return res.status(404).json({ error: 'Baker not found' });
+
+    if (!('gstin' in req.body)) return res.status(400).json({ error: 'gstin is required' });
+    const raw = req.body.gstin;
+    let gstin = null;
+    if (raw != null && String(raw).trim() !== '') {
+      gstin = normalizeGstin(raw);
+      if (!isValidGstin(gstin)) return res.status(400).json({ error: 'That GSTIN isn’t valid.', code: 'invalid_gstin' });
+    }
+
+    const { error } = await supabase.from('bakers').update({ gstin }).eq('id', baker.id);
+    if (error) return serverError(req, res, error);
+    res.json({ gstin });
   } catch (err) {
     serverError(req, res, err);
   }
@@ -637,7 +665,7 @@ router.post('/billing/webhook', async (req, res) => {
     // superseded sub mutate the wrong (current) row.
     const { data: subRow, error: subLookupErr } = await supabase
       .from('baker_subscriptions')
-      .select('id, baker_id, plan_id, current_period_end, cancellation_reason_id, cancellation_requested_at, scheduled_subscription_id')
+      .select('id, baker_id, plan_id, billing_period_id, current_period_end, cancellation_reason_id, cancellation_requested_at, scheduled_subscription_id')
       .eq('billing_subscription_id', razorpaySubId).maybeSingle();
     if (subLookupErr) throw new Error(`sub lookup failed: ${subLookupErr.message}`);
     if (!subRow) return res.json({ ok: true });
@@ -646,7 +674,9 @@ router.post('/billing/webhook', async (req, res) => {
     // Only mirror status onto bakers when this IS the baker's current subscription, so a
     // stale event for an old sub can't clobber the live status.
     const { data: bakerRow } = await supabase
-      .from('bakers').select('id, name, email, timezone, billing_subscription_id').eq('id', bakerId).maybeSingle();
+      .from('bakers')
+      .select('id, name, email, timezone, billing_subscription_id, gstin, address_line1, address_line2, city, state, postal_code, country')
+      .eq('id', bakerId).maybeSingle();
     const isCurrent = bakerRow?.billing_subscription_id === razorpaySubId;
 
     // ── Deferred downgrade, step 2: the parked LOWER sub just got its mandate authorized ─────────
@@ -872,6 +902,16 @@ router.post('/billing/webhook', async (req, res) => {
           : new Date().toISOString(),
       }, { onConflict: 'razorpay_payment_id', ignoreDuplicates: true });
       if (payErr) throw new Error(`payments upsert failed: ${payErr.message}`);
+
+      // Raise the accounting event ONLY for a CAPTURED payment (a real taxable supply). The (deferred)
+      // accounting system consumes this to issue the GST invoice. Idempotent + best-effort — see
+      // billingEvents.js. Core stays GST-agnostic; the event carries the gross + snapshot only.
+      if (PAYMENT_EVENT_STATUS[event] === PAYMENT_STATUS.CAPTURED) {
+        await emitSaleEvent({
+          payment, subRow, baker: bakerRow, subscriptionId: razorpaySubId,
+          chargedAt: payment.created_at ? new Date(payment.created_at * 1000).toISOString() : new Date().toISOString(),
+        });
+      }
     }
 
     // ── Lifecycle emails (baker-facing) ───────────────────────────────────────
