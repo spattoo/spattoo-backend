@@ -62,6 +62,11 @@ export async function deriveSubscription(bakerId) {
       ? { id: row.scheduled_plan_id, name: row.scheduled_plan_name }
       : null,
     scheduled_effective_at: row.scheduled_effective_at ?? null,
+    // The parked sub's billing period — the target of an interval switch (monthly↔yearly on the same
+    // tier). Null when no change is pending or the pending change keeps the current period.
+    scheduled_period: row.scheduled_period_name
+      ? { name: row.scheduled_period_name, display_name: row.scheduled_period_display_name }
+      : null,
   };
 }
 

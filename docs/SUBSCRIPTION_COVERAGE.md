@@ -25,7 +25,7 @@ what Spattoo covers today. Use it to see what's done, what's deliberately differ
 | B4 | Downgrade to free = cancel | ✅ | Spark not subscribable → routes to Cancel |
 | B5 | Scheduled change, then change mind (supersede) | ✅ | subscribe-while-scheduled + cancel-while-scheduled both supersede |
 | B6 | Only one pending change at a time (newest wins) | ✅ | our model |
-| B7 | **Switch billing interval on same tier (monthly↔yearly)** | ⬜ | **BLOCKED** — direction is by tier rank only, so same tier = "already on this plan" (409). Standard use case, not handled |
+| B7 | **Switch billing interval on same tier (monthly↔yearly)** | 🟡 | **BUILT** (unvalidated live) — new `interval` deferred-recreate kind: same tier + different period is decided by comparing periods (server-authoritative), parks a fresh mandate at the new period, first charge at cycle end BOTH directions (yearly→monthly can't refund the year; monthly→yearly can't grow the UPI mandate). New `interval_changed` event; `get_baker_subscription` exposes `scheduled_period_*` so the UI shows "Monthly until <date>, then Yearly billing". No immediate proration (Razorpay/UPI limitation, same as B2) |
 | B8 | Quantity / seat changes (per-seat billing) | ⛔ | Team size is a feature cap, not per-seat billing — N/A |
 
 ## C. Cancellation & churn
@@ -77,7 +77,7 @@ what Spattoo covers today. Use it to see what's done, what's deliberately differ
 
 ## Prioritized gaps (what "everything covered" would add)
 **Should-fix (real user-facing gaps):**
-1. **B7 — billing interval switch (monthly↔yearly on same tier)** is blocked. Decide direction by (tier rank, then period) or handle same-tier-different-period as a change.
+1. ~~**B7 — billing interval switch (monthly↔yearly on same tier)**~~ — **BUILT** (deferred `interval` recreate, both directions; new `interval_changed` event; `scheduled_period_*` in the RPC). Pending live validation on UPI + card.
 2. ~~**D5b — proactive update payment method**~~ — **BUILT** (deferred same-plan recreate via `intent='change_method'`, covers UPI↔card); pending live validation. Reactive dunning (D5a) covered by the emailed `short_url`.
 3. **E5 — GST/tax** on invoices — needed for compliant Indian invoicing at scale.
 4. **D7 — downgrade first-charge failure** at cycle end — confirm the parked sub's dunning + what the baker sees.

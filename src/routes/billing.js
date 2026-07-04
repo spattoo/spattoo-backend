@@ -24,8 +24,11 @@ const router = Router();
 // Deferred recreate flows: every one is mechanically cancel-old + park-new-sub with
 // start_at = current_period_end. The `notes.change` intent tag (set at subscribe time) is what
 // tells them apart — NOT tier rank, which collides on the SAME-plan cases (reactivate vs
-// payment-method change). The webhook branches on this set in steps 2/3 + the activation log.
-const DEFERRED_CHANGES = new Set(['downgrade', 'reactivate', 'payment_method']);
+// payment-method change vs interval switch). The webhook branches on this set in steps 2/3 +
+// the activation log. 'interval' = same tier, different billing period (monthly↔yearly): a fresh
+// mandate at the new period authorized now, first charge deferred to cycle end (monthly→yearly
+// can't reuse the UPI mandate — the annual amount exceeds its max — so it's a recreate like the rest).
+const DEFERRED_CHANGES = new Set(['downgrade', 'reactivate', 'payment_method', 'interval']);
 
 // ── Razorpay client + helpers ───────────────────────────────────────────────────
 // Lazily construct the SDK so local/dev boot never fails without keys; the helpers
@@ -166,6 +169,9 @@ router.get('/billing/status', requireAuth, requireCapability('billing:manage'), 
       // scheduled_downgrade_to. Null when no downgrade is scheduled. Drives "X until <date>, then Y".
       scheduled_downgrade_to: sub.scheduled_plan?.name ?? null,
       scheduled_downgrade_at: sub.scheduled_effective_at ?? null,
+      // Interval switch (same tier, different period): the period the baker moves to at the boundary.
+      // Null unless a same-tier monthly↔yearly change is armed. Drives "Monthly until <date>, then Yearly".
+      scheduled_period: sub.scheduled_period?.name ?? null,
     });
   } catch (err) {
     serverError(req, res, err);
@@ -225,9 +231,17 @@ router.post('/billing/subscribe', requireAuth, requireCapability('billing:manage
       // and the old (possibly dead/expiring) method is never charged again.
       const changingMethod = intent === 'change_method' && onPaid
         && direction === PLAN_CHANGE.SAME && !reactivating;
-      // Same plan is a no-op — UNLESS reactivating (un-cancel) or explicitly changing the payment method.
-      if (direction === PLAN_CHANGE.SAME && !reactivating && !changingMethod) {
-        return res.status(409).json({ error: `You're already on the ${tier} plan.` });
+      // Interval switch: SAME tier, DIFFERENT billing period (monthly↔yearly). Decided by comparing
+      // periods (server-authoritative — the client's intent tag is not trusted to gate it). Deferred to
+      // cycle end in BOTH directions: yearly→monthly can't refund the prepaid year, and monthly→yearly
+      // can't grow the UPI mandate, so a fresh mandate at the new period is authorized now with the first
+      // charge at the boundary. Excludes the payment-method case (same period).
+      const switchingInterval = onPaid && direction === PLAN_CHANGE.SAME && !reactivating
+        && !changingMethod && !!current.period?.name && current.period.name !== periodName;
+      // Same plan is a no-op — UNLESS reactivating (un-cancel), changing the payment method, or switching
+      // the billing interval. Only same tier AND same period is the true no-op.
+      if (direction === PLAN_CHANGE.SAME && !reactivating && !changingMethod && !switchingInterval) {
+        return res.status(409).json({ error: `You're already on the ${tier} ${periodName} plan.` });
       }
 
       // If a downgrade is ALREADY scheduled on the current row, this new request supersedes it:
@@ -251,22 +265,26 @@ router.post('/billing/subscribe', requireAuth, requireCapability('billing:manage
 
       // ── DEFERRED to cycle end (SUBSCRIPTION_CHANGE_PLAN.md §8) ─────────────────
       // Triggered by a DOWNGRADE, by REACTIVATING (un-cancel) to the same/lower tier while winding down,
-      // or by a PAYMENT-METHOD change (same plan, new mandate) — all keep the paid grace and defer the
-      // first charge to the next cycle. (Reactivating to a HIGHER tier falls through to the immediate
-      // upgrade path.) Park the target sub with start_at = current_period_end: authorized now (Checkout),
-      // first charge next cycle. Do NOT cancel the old sub or repoint the baker yet — the
-      // `subscription.authenticated` webhook commits it AT CYCLE END and only AFTER the new mandate is
-      // authorized (safe sequencing). notes.change tells the webhook which kind it is ('downgrade' |
-      // 'reactivate' | 'payment_method') — drives history + reason + display.
+      // by a PAYMENT-METHOD change (same plan, new mandate), or by an INTERVAL switch (same tier, new
+      // period) — all keep the paid grace and defer the first charge to the next cycle. (Reactivating to
+      // a HIGHER tier falls through to the immediate upgrade path.) Park the target sub with start_at =
+      // current_period_end: authorized now (Checkout), first charge next cycle. Do NOT cancel the old sub
+      // or repoint the baker yet — the `subscription.authenticated` webhook commits it AT CYCLE END and
+      // only AFTER the new mandate is authorized (safe sequencing). notes.change tells the webhook which
+      // kind it is ('downgrade' | 'reactivate' | 'payment_method' | 'interval') — drives history + reason + display.
       const deferred = direction === PLAN_CHANGE.DOWNGRADE
         || (reactivating && direction !== PLAN_CHANGE.UPGRADE)
-        || changingMethod;
+        || changingMethod
+        || switchingInterval;
       if (deferred) {
         if (!current.current_period_end) {
           return res.status(409).json({ error: 'Your renewal date isn’t known yet — please try again shortly.' });
         }
         const startAt    = Math.floor(new Date(current.current_period_end).getTime() / 1000);
-        const changeKind = reactivating ? 'reactivate' : changingMethod ? 'payment_method' : 'downgrade';
+        const changeKind = reactivating ? 'reactivate'
+          : changingMethod ? 'payment_method'
+          : switchingInterval ? 'interval'
+          : 'downgrade';
         const parked  = await razorpayCreateSubscription(razorpayPlanId, totalCount,
           { baker_id: baker.id, tier, period: periodName, change: changeKind }, startAt);
 
@@ -638,10 +656,11 @@ router.post('/billing/webhook', async (req, res) => {
     // Intent of a deferred recreate, stashed at subscribe time. EVERY paid transition is mechanically
     // cancel-old + new-sub; this tag (NOT tier rank) is what tells the flows apart — critical for the
     // SAME-plan cases (reactivate vs payment-method change) that rank can't distinguish.
-    const deferredChange = sub?.notes?.change;   // 'downgrade' | 'reactivate' | 'payment_method' (else undefined)
+    const deferredChange = sub?.notes?.change;   // 'downgrade' | 'reactivate' | 'payment_method' | 'interval' (else undefined)
     if (event === 'subscription.authenticated' && DEFERRED_CHANGES.has(deferredChange)) {
       const isReactivate    = deferredChange === 'reactivate';
       const isPaymentMethod = deferredChange === 'payment_method';
+      const isInterval      = deferredChange === 'interval';
       const parkedRow = subRow;   // looked up above by billing_subscription_id = this parked sub
       const { data: oldRow } = await supabase.from('baker_subscriptions')
         .select('id, baker_id, plan_id, billing_subscription_id, current_period_end')
@@ -653,28 +672,32 @@ router.post('/billing/webhook', async (req, res) => {
         // below fires subscription.cancelled on the old sub while it's still current — the email + reason
         // handlers recognise that as a HANDOFF (not a real cancel) via the armed scheduled_subscription_id.
         // DOWNGRADE keeps the explicit DOWNGRADE reason (its own suppression + audit); REACTIVATE clears
-        // the baker's cancellation; PAYMENT-METHOD leaves reason null (superseded — the real audit is the
-        // 'payment_method_changed' event logged below).
+        // the baker's cancellation; PAYMENT-METHOD + INTERVAL leave reason null (superseded — the real
+        // audit is the 'payment_method_changed' / 'interval_changed' event logged below). scheduled_plan_id
+        // = parkedRow.plan_id is the SAME tier for interval (the plan continues); the period change is read
+        // from the parked sub in get_baker_subscription (scheduled_period_*).
         await supabase.from('baker_subscriptions').update({
           scheduled_plan_id:         parkedRow.plan_id,
           scheduled_effective_at:    oldRow.current_period_end,
           scheduled_subscription_id: razorpaySubId,
           cancel_at_period_end:      true,
-          cancellation_reason_id:    (isReactivate || isPaymentMethod) ? null : CANCELLATION_REASON.DOWNGRADE,
+          cancellation_reason_id:    (isReactivate || isPaymentMethod || isInterval) ? null : CANCELLATION_REASON.DOWNGRADE,
           ...(isReactivate ? { cancellation_requested_at: null, cancellation_note: null } : {}),
         }).eq('id', oldRow.id);
-        // Cancel the OLD (active) sub IMMEDIATELY for DOWNGRADE and PAYMENT-METHOD — cancel-at-cycle-end
-        // no-ops on UPI (verified: end_at/charge_at stay armed → old would re-charge, on the OLD method).
-        // Baker keeps the tier LOCALLY via the current_period_end grace rule. REACTIVATE skips — the old
-        // sub is already cancelled (baker cancelled first), so re-cancelling would fire a spurious email.
+        // Cancel the OLD (active) sub IMMEDIATELY for DOWNGRADE, PAYMENT-METHOD and INTERVAL — cancel-at-
+        // cycle-end no-ops on UPI (verified: end_at/charge_at stay armed → old would re-charge, on the OLD
+        // method). Baker keeps the tier LOCALLY via the current_period_end grace rule. REACTIVATE skips —
+        // the old sub is already cancelled (baker cancelled first), so re-cancelling would fire a spurious email.
         if (!isReactivate) {
           await razorpayCancelSubscription(oldRow.billing_subscription_id, false)
             .catch(e => console.error('[billing] immediate cancel of old sub (deferred change) failed:', e.message));
         }
         // Log the baker's ACTION here (armed). Downgrade ALSO logs 'downgraded' when it APPLIES (step 3);
-        // reactivate + payment-method are one-moment actions, so step 3 does NOT re-log them.
+        // reactivate + payment-method + interval are one-moment actions, so step 3 does NOT re-log them.
         await logSubscriptionEvent(oldRow.baker_id, {
-          event: isPaymentMethod ? 'payment_method_changed' : isReactivate ? 'reactivated' : 'downgrade_scheduled',
+          event: isPaymentMethod ? 'payment_method_changed'
+            : isInterval ? 'interval_changed'
+            : isReactivate ? 'reactivated' : 'downgrade_scheduled',
           previousTier: PLAN.NAME_BY_ID[oldRow.plan_id] ?? null,
           newTier: PLAN.NAME_BY_ID[parkedRow.plan_id] ?? null, newStatus: 'active', changedBy: 'razorpay',
         }).catch(err => console.error('[billing] deferred-change log failed:', err.message));
@@ -784,10 +807,10 @@ router.post('/billing/webhook', async (req, res) => {
           subscription_status_id:  SUBSCRIPTION_STATUS.ACTIVE,
         }).eq('id', bakerId);
         // Log the APPLIED transition — driven by INTENT (notes.change), NOT tier rank, since same-plan
-        // changes (reactivate vs payment-method) are rank-identical. Reactivate + payment-method are
-        // one-moment actions already logged when armed (step 2), so they DON'T re-log here; downgrade logs
-        // 'downgraded' now (distinct from its 'downgrade_scheduled'). Fall back to rank only if the intent
-        // tag is somehow absent.
+        // changes (reactivate / payment-method / interval) are rank-identical. Reactivate, payment-method
+        // and interval are one-moment actions already logged when armed (step 2), so they DON'T re-log here;
+        // downgrade logs 'downgraded' now (distinct from its 'downgrade_scheduled'). Fall back to rank only
+        // if the intent tag is somehow absent.
         const change = sub?.notes?.change;
         const oldRank = PLAN.RANK_BY_ID[oldRow.plan_id], newRank = PLAN.RANK_BY_ID[subRow.plan_id];
         const appliedEvent = DEFERRED_CHANGES.has(change)
