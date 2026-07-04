@@ -34,6 +34,10 @@ async function loadValidInvite(id) {
   if (!invite) return null;
   const expired = invite.expires_at != null && new Date(invite.expires_at) < new Date();
   if (expired || ['expired', 'revoked'].includes(invite.status)) return null;
+  // An invite is only as alive as its baker's subscription — a lapsed baker can't
+  // take orders, so the invite is dead too (send/verify-otp then return 410).
+  const { accepting } = await getOrderAcceptance(invite.baker_id);
+  if (!accepting) return null;
   return invite;
 }
 
@@ -75,9 +79,14 @@ router.get('/storefront/:slug', async (req, res) => {
       supabase.from('baker_appusers').select('whatsapp_number, phone').eq('baker_id', baker.id).order('is_primary', { ascending: false }).limit(1).maybeSingle(),
     ]);
 
-    // Whether this storefront can take a NEW order right now (trial/cap) — drives a
-    // proactive "not accepting orders" banner so customers aren't blocked at submit.
+    // Whether this storefront can take a NEW order right now — the single active-
+    // subscription signal (grace-aware: an active-but-cancel_at_period_end baker
+    // stays servable until current_period_end, computed live in SQL). A lapsed baker
+    // (cancelled past grace / expired / paused) is not served AT ALL — the storefront
+    // exists only to take orders, so with no way to order there is nothing to show.
+    // Also drives the "not accepting orders" banner in the servable (active) case.
     const { accepting } = await getOrderAcceptance(baker.id);
+    if (!accepting) return res.status(404).json({ error: 'Storefront not found' });
 
     res.json({
       name:             baker.name,
@@ -112,12 +121,16 @@ router.get('/storefront/:slug/settings', async (req, res) => {
   try {
     const { data: baker, error } = await supabase
       .from('bakers')
-      .select('settings, storefront_published')
+      .select('id, settings, storefront_published')
       .eq('slug', req.params.slug)
       .eq('is_active', true)
       .maybeSingle();
     if (error)  return serverError(req, res, error);
     if (!baker || !baker.storefront_published) return res.status(404).json({ error: 'Storefront not found' });
+    // Same active-subscription gate as the storefront itself — a lapsed baker's
+    // settings are not served either (keeps this in lock-step with the main route).
+    const { accepting } = await getOrderAcceptance(baker.id);
+    if (!accepting) return res.status(404).json({ error: 'Storefront not found' });
 
     const s = baker.settings ?? {};
     res.json({
@@ -149,12 +162,17 @@ router.get('/invite/:id', async (req, res) => {
   try {
     const { data: invite, error } = await supabase
       .from('customer_invites')
-      .select('id, status, channels, expires_at, design_snapshot, design_thumbnail_url, customers(first_name, email, phone), bakers(name, slug, logo_url, primary_color, accent_color)')
+      .select('id, status, channels, expires_at, baker_id, design_snapshot, design_thumbnail_url, customers(first_name, email, phone), bakers(name, slug, logo_url, primary_color, accent_color)')
       .eq('id', req.params.id)
       .maybeSingle();
 
     if (error)   return serverError(req, res, error);
     if (!invite) return res.status(404).json({ error: 'Invite not found' });
+
+    // A lapsed baker can't take orders → their invite links stop resolving, same as
+    // the storefront (404). Grace-aware via getOrderAcceptance → getEntitlements.
+    const { accepting } = await getOrderAcceptance(invite.baker_id);
+    if (!accepting) return res.status(404).json({ error: 'Invite not found' });
 
     const expired = invite.expires_at != null && new Date(invite.expires_at) < new Date();
     const dead    = ['expired', 'revoked'].includes(invite.status);
