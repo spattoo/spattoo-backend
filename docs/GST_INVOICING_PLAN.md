@@ -33,6 +33,15 @@ queue for true separation), that owns:
   writer), party snapshots, `place_of_supply`, `sac_code`, taxable value, **CGST 9% + SGST 9%** (Telangana
   recipient) / **IGST 18%** (else), total. Corrections only via linked **credit notes**.
 - **Place of supply** — prefer the recipient GSTIN's own state code, else the address state.
+- **GSTIN enrichment (recipient party details from the GST portal).** Given a recipient GSTIN, fetch the
+  authoritative **legal name of business**, **trade name**, **principal place of business (registered
+  address)**, and **status (Active/Cancelled)** from GSTN — the correct source for the invoice's recipient
+  block (better than a hand-typed name/address). Path: a third-party GSTIN-verification API (Sandbox/Quicko,
+  Masters India, Signzy, Surepass, Cashfree, ClearTax, …) or the official GSTN API via a GSP at scale.
+  Server-side only (secret key); **cache per GSTIN** (registration data changes rarely — enrich once when a
+  GSTIN first appears / changes, not per invoice); **verify status = Active** before trusting; keep a
+  manual-entry fallback for API downtime. Underlying GSTN fields: `lgnm`, `tradeNam`, `pradr.addr`, `sts`.
+  This belongs HERE (tax bounded context), not core — core only captures + snapshots the raw GSTIN.
 - **Artifacts** — render the tax-invoice PDF; **email the recipient copy to the baker** (push; no cross-service
   reads from the baker app).
 - **Internal UI** — sales register (filter by FY/month/state/baker), CGST/SGST/IGST totals, invoice drill-down,
