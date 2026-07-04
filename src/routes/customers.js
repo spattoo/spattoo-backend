@@ -4,7 +4,12 @@ import { supabase } from '../services/supabase.js';
 import { requireAuth } from '../middleware/auth.js';
 import { requireCapability } from '../middleware/rbac.js';
 import { notifyCustomerInvited } from '../services/notifications.js';
+import { normalizePhone } from '../lib/phone.js';
 import { config } from '../config.js';
+
+// Basic email shape check — the authoritative check is the OTP delivery, but reject
+// obvious garbage at the write point so an unreachable address never lands on a customer.
+const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
 const router = Router();
 
@@ -57,9 +62,17 @@ router.post('/baker/customers', requireAuth, requireCapability('customer:manage'
     const bakerId = req.bakerId;
     if (!bakerId) return res.status(403).json({ error: 'Not a baker account' });
 
-    const { firstName, lastName, email, phone } = req.body;
+    const { firstName, lastName, email, phone, phoneCountry } = req.body;
+    const emailNorm = email?.trim().toLowerCase() || null;
     if (!firstName?.trim())                  return res.status(400).json({ error: 'firstName is required' });
-    if (!phone?.trim() && !email?.trim())    return res.status(400).json({ error: 'phone or email is required' });
+    if (!phone?.trim() && !emailNorm)        return res.status(400).json({ error: 'phone or email is required' });
+    if (emailNorm && !EMAIL_RE.test(emailNorm)) return res.status(400).json({ error: 'Enter a valid email address' });
+    let phoneNorm = null;
+    if (phone?.trim()) {
+      const p = normalizePhone(phone, phoneCountry);
+      if (!p.ok) return res.status(400).json({ error: p.error });
+      phoneNorm = p.e164;
+    }
 
     const { data, error } = await supabase
       .from('customers')
@@ -67,8 +80,8 @@ router.post('/baker/customers', requireAuth, requireCapability('customer:manage'
         baker_id:   bakerId,
         first_name: firstName.trim(),
         last_name:  lastName?.trim() || null,
-        email:      email?.trim().toLowerCase() || null,
-        phone:      phone?.trim() || null,
+        email:      emailNorm,
+        phone:      phoneNorm,
         source:     'manual',
         is_active:  true,
       })
@@ -171,12 +184,19 @@ router.post('/baker/customers/invite', requireAuth, requireCapability('customer:
       return res.status(409).json({ error: 'Publish your storefront before inviting customers.' });
     }
 
-    const { firstName, lastName, email, phone, channels, note, expiresInDays = 14,
+    const { firstName, lastName, email, phone, phoneCountry, channels, note, expiresInDays = 14,
             templateId, designSnapshot, designThumbnailKey } = req.body;
     const emailNorm = email?.trim().toLowerCase() || null;
-    const phoneNorm = phone?.trim() || null;
     if (!firstName?.trim())        return res.status(400).json({ error: 'firstName is required' });
-    if (!emailNorm && !phoneNorm)  return res.status(400).json({ error: 'email or phone is required' });
+    if (!emailNorm && !phone?.trim()) return res.status(400).json({ error: 'email or phone is required' });
+    if (emailNorm && !EMAIL_RE.test(emailNorm)) return res.status(400).json({ error: 'Enter a valid email address' });
+    // Validate + canonicalise the phone (libphonenumber /max) so a junk number never reaches an invite.
+    let phoneNorm = null;
+    if (phone?.trim()) {
+      const p = normalizePhone(phone, phoneCountry);
+      if (!p.ok) return res.status(400).json({ error: p.error });
+      phoneNorm = p.e164;
+    }
 
     // ── Resolve the OPTIONAL starting design (frozen onto the invite) ───────────
     // Path A (templateId): seed from a library template — only a GLOBAL template or
