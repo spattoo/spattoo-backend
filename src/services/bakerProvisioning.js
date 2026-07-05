@@ -12,7 +12,7 @@ import { SUBSCRIPTION_STATUS } from '../constants/subscriptionStatuses.js';
 export const RESERVED_SLUGS = new Set([
   'admin', 'api', 'www', 'app', 'dashboard', 'baker', 'bakers', 'signup', 'signin',
   'login', 'logout', 'support', 'help', 'about', 'pricing', 'blog', 'static',
-  'assets', 'storefront', 'orders', 'design', 'invite', 'billing',
+  'assets', 'storefront', 'orders', 'design', 'invite', 'billing', 'accounting',
 ]);
 
 // Canonicalise a free-text business name (or raw slug) into a storefront slug.
