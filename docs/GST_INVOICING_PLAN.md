@@ -21,10 +21,14 @@ independent cadences.
    the profile** so automatic renewals reuse it. 15-char format validated (client + server).
 3. **Checkout review screen** — before opening Razorpay: **Base + GST (18%) + Total** as a single flat tax
    line (NO CGST/SGST/IGST split in core) + the GSTIN field. Then hand the gross to Razorpay Checkout.
-4. **Event seam (placeholder)** — a durable `billing_outbox` row written on `subscription.charged` via one
-   `emitSaleEvent()` call. Carries a **snapshot** (recipient legal name/address/state/GSTIN, gross, currency,
-   plan/period, payment + subscription ids). **No consumer yet.** Core does zero tax math — the event carries
-   raw facts; the accounting system derives base/tax later.
+4. **Event seam** — a durable `billing_outbox` row written on `subscription.charged` via one `emitSaleEvent()`
+   call. Carries a self-contained **snapshot** (recipient legal name/address/state/GSTIN, gross, currency,
+   `plan_label`/`period_label`/`period_months`, `service_period_start`/`_end`, payment + subscription ids).
+   Core does zero tax math — the event carries raw facts; the accounting system derives base/tax later.
+   **Relay (built, Phase 0 of the accounting build):** a BullMQ repeatable job (`jobs/processors/
+   relayBillingOutbox.js`, cron `OUTBOX_RELAY_CRON`) drains `pending` rows → publishes to the `accounting`
+   BullMQ queue on shared Redis → marks `delivered`. The **consumer** lives in the separate `spattoo-accounting`
+   service (`spattoo-accounting/BUILD_PLAN.md`).
 
 ### Wave 2 — before go-live: the accounting system (deferred, still V1)
 A separate deployable (e.g. `spattoo-accounting`) with its own DB + UI, consuming the events (via a message
@@ -57,14 +61,15 @@ and that split is an invoice concern, not the amount charged. So one Razorpay pl
 every Indian baker. Razorpay's subscription Checkout does **not** itemise base+GST — hence our own review screen.
 
 ## Event contract (`sale.charge_captured`)
-Written to `billing_outbox` (idempotent on `event_id = razorpay_payment_id`). Payload (raw facts, no tax math):
+Written to `billing_outbox` (idempotent on `event_id = razorpay_payment_id`), then published to the
+`accounting` queue by the relay. Payload (raw facts, no tax math):
 ```
-{ payment_id, razorpay_payment_id, subscription_id, plan_id, billing_period_id,
-  gross_amount_paise, currency, charged_at,
+{ razorpay_payment_id, subscription_id, plan_id, billing_period_id,
+  plan_label, period_label, period_months,
+  gross_amount_paise, currency, charged_at, service_period_start, service_period_end,
   recipient: { baker_id, legal_name, gstin, address_line1, address_line2, city, state, postal_code, country } }
 ```
-When the accounting system arrives, it drains the outbox (or an MQ replaces it) and derives base = gross ÷ 1.18,
-splits by place of supply, and issues the numbered invoice.
+The accounting consumer derives base = gross ÷ 1.18, splits by place of supply, and issues the numbered invoice.
 
 ## Prerequisites / config
 - Supplier profile (GSTIN, legal name, Telangana address, SAC 9983-series @ 18% — confirm exact SAC with CA)

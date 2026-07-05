@@ -12,5 +12,13 @@ export async function registerJobSchedulers() {
     { pattern: config.jobs.reconcileCron, tz: 'UTC' },
     { name: 'reconcile_subscriptions', opts: { removeOnComplete: true, removeOnFail: 100 } },
   );
-  console.log(`Job schedulers registered (reconcile_subscriptions: "${config.jobs.reconcileCron}" UTC)`);
+  await jobQueue.upsertJobScheduler(
+    'relay-billing-outbox',
+    { pattern: config.jobs.outboxRelayCron, tz: 'UTC' },
+    { name: 'relay_billing_outbox', opts: { removeOnComplete: true, removeOnFail: 100 } },
+  );
+  console.log(
+    `Job schedulers registered (reconcile_subscriptions: "${config.jobs.reconcileCron}" UTC; ` +
+    `relay_billing_outbox: "${config.jobs.outboxRelayCron}" UTC)`,
+  );
 }

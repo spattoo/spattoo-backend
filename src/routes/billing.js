@@ -908,7 +908,7 @@ router.post('/billing/webhook', async (req, res) => {
       // billingEvents.js. Core stays GST-agnostic; the event carries the gross + snapshot only.
       if (PAYMENT_EVENT_STATUS[event] === PAYMENT_STATUS.CAPTURED) {
         await emitSaleEvent({
-          payment, subRow, baker: bakerRow, subscriptionId: razorpaySubId,
+          payment, subRow, baker: bakerRow, sub, subscriptionId: razorpaySubId,
           chargedAt: payment.created_at ? new Date(payment.created_at * 1000).toISOString() : new Date().toISOString(),
         });
       }

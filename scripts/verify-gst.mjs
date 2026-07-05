@@ -10,6 +10,11 @@ import { PLAN } from '../src/constants/subscriptionPlans.js';
 import { PERIOD } from '../src/constants/billingPeriods.js';
 import { SUBSCRIPTION_STATUS } from '../src/constants/subscriptionStatuses.js';
 
+// The relay publishes to a BullMQ queue on Redis. Local dev has no Redis (REDIS_URL=unused), so section
+// [5] is skipped there — importing the queue eagerly would just flood ENOTFOUND retries. Verify the relay
+// on a host that HAS Redis (Render, or a local redis-server) by setting a real REDIS_URL.
+const HAS_REDIS = !!process.env.REDIS_URL && !/^unused$/i.test(process.env.REDIS_URL.trim());
+
 const keyId = process.env.RAZORPAY_KEY_ID || '';
 if (!keyId.startsWith('rzp_test_')) { console.error('Need rzp_test_ keys.'); process.exit(1); }
 
@@ -21,7 +26,7 @@ const VALID_GSTIN = '27AAPFU0939F1ZV';   // canonical valid (checksum OK)
 
 let ok = 0, bad = 0;
 const check = (l, c, x = '') => { console.log(`  ${c ? '✔' : '✘'} ${l}${x ? ' — ' + x : ''}`); c ? ok++ : bad++; };
-let bakerId, authUid, server, token;
+let bakerId, authUid, server, token, PAYID, acctQueue;
 
 const authFetch = (path, method, body) => fetch(`${API}${path}`, {
   method, headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
@@ -34,6 +39,7 @@ try {
   const ex = (await sb.auth.admin.listUsers()).data.users.find(u => u.email === EMAIL);
   if (ex) await sb.auth.admin.deleteUser(ex.id).catch(() => {});
   const slug = 'gst-verify-' + Math.abs([...EMAIL].reduce((a, c) => a * 31 + c.charCodeAt(0) | 0, 7));
+  await sb.from('bakers').delete().eq('slug', slug);   // reclaim a slug orphaned by a crashed prior run
   const { data: baker, error: bErr } = await sb.from('bakers').insert({
     name: 'GST Verify Co', slug, email: EMAIL, primary_color: '#1a1a1a', accent_color: '#333',
     currency_code: 'INR', timezone: 'Asia/Kolkata', state: 'Telangana', city: 'Hyderabad',
@@ -81,12 +87,12 @@ try {
     billing_subscription_id: SUBID,
   });
   await sb.from('bakers').update({ billing_subscription_id: SUBID }).eq('id', bakerId);
-  const PAYID = 'pay_gst_verify_' + Date.now().toString(36);
+  PAYID = 'pay_gst_verify_' + Date.now().toString(36);
   await sb.from('billing_outbox').delete().eq('event_id', PAYID);
   const wbody = JSON.stringify({
     event: 'subscription.charged',
     payload: {
-      subscription: { entity: { id: SUBID, plan_id: 'plan_x', status: 'active', paid_count: 1, current_end: Math.floor(Date.now() / 1000) + 30 * 86400 } },
+      subscription: { entity: { id: SUBID, plan_id: 'plan_x', status: 'active', paid_count: 1, current_start: Math.floor(Date.now() / 1000), current_end: Math.floor(Date.now() / 1000) + 30 * 86400 } },
       payment: { entity: { id: PAYID, amount: 118000, currency: 'INR', status: 'captured', created_at: Math.floor(Date.now() / 1000), subscription_id: SUBID } },
     },
   });
@@ -100,12 +106,40 @@ try {
   check('recipient.gstin snapshotted', ev?.payload?.recipient?.gstin === VALID_GSTIN, ev?.payload?.recipient?.gstin);
   check('recipient.state snapshotted', ev?.payload?.recipient?.state === 'Telangana', ev?.payload?.recipient?.state);
   check('plan_id + period in payload', ev?.payload?.plan_id === PLAN.ID_BY_NAME.flame && ev?.payload?.billing_period_id === PERIOD.MONTHLY);
+  // Enriched snapshot (Phase 0, 6b) — readable labels + service period so accounting needs zero read-back.
+  check('plan_label = flame', ev?.payload?.plan_label === 'flame', ev?.payload?.plan_label);
+  check('period_label = monthly', ev?.payload?.period_label === 'monthly', ev?.payload?.period_label);
+  check('period_months = 1', ev?.payload?.period_months === 1, String(ev?.payload?.period_months));
+  check('service_period_start set', !!ev?.payload?.service_period_start, ev?.payload?.service_period_start);
+  check('service_period_end set', !!ev?.payload?.service_period_end, ev?.payload?.service_period_end);
+
+  // ── 5. relay: pending outbox row → published to the accounting queue + marked delivered ──────
+  console.log('\n[5] Outbox relay → accounting queue + delivered:');
+  if (!HAS_REDIS) {
+    console.log('  ⚠ SKIPPED — no Redis locally (REDIS_URL=unused). Run with a real REDIS_URL to verify the relay.');
+  } else {
+    const { relayBillingOutbox } = await import('../src/jobs/processors/relayBillingOutbox.js');
+    ({ accountingQueue: acctQueue } = await import('../src/jobs/queue.js'));
+    const { data: pre } = await sb.from('billing_outbox').select('status, delivered_at').eq('event_id', PAYID).maybeSingle();
+    check('row pending pre-relay', pre?.status === 'pending', pre?.status);
+    check('delivered_at null pre-relay', pre?.delivered_at == null);
+    await relayBillingOutbox();
+    const { data: post } = await sb.from('billing_outbox').select('status, delivered_at').eq('event_id', PAYID).maybeSingle();
+    check('row delivered post-relay', post?.status === 'delivered', post?.status);
+    check('delivered_at set post-relay', !!post?.delivered_at, post?.delivered_at);
+    const job = await acctQueue.getJob(PAYID);
+    check('accounting queue job created (jobId = payment id)', !!job);
+    check("queue job type = 'sale.charge_captured'", job?.data?.type === 'sale.charge_captured', job?.data?.type);
+    check('queue job payload self-contained (plan_label + gross)',
+      job?.data?.payload?.plan_label === 'flame' && job?.data?.payload?.gross_amount_paise === 118000);
+  }
 
 } catch (e) {
   console.error('\nFATAL:', e.message);
   bad++;
 } finally {
   console.log('\ncleaning up…');
+  try { if (acctQueue && PAYID) { const j = await acctQueue.getJob(PAYID); if (j) await j.remove(); } } catch { /* redis/queue may be down */ }
   try { await sb.from('billing_outbox').delete().like('event_id', 'pay_gst_verify_%'); } catch { /* table may not exist pre-migration */ }
   if (bakerId) await sb.from('baker_subscriptions').delete().eq('baker_id', bakerId);
   if (bakerId) await sb.from('baker_appusers').delete().eq('baker_id', bakerId);

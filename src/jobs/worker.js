@@ -6,6 +6,7 @@ import { sendNotification } from './processors/sendNotification.js';
 import { removeLogoBg } from './processors/removeLogoBg.js';
 import { optimizePhoto } from './processors/optimizePhoto.js';
 import { reconcileSubscriptions } from './processors/reconcileSubscriptions.js';
+import { relayBillingOutbox } from './processors/relayBillingOutbox.js';
 
 const processors = {
   extract_image:           extractImage,
@@ -14,6 +15,7 @@ const processors = {
   remove_logo_bg:          removeLogoBg,
   optimize_photo:          optimizePhoto,
   reconcile_subscriptions: reconcileSubscriptions,
+  relay_billing_outbox:    relayBillingOutbox,
 };
 
 export function startWorker() {

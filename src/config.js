@@ -35,6 +35,14 @@ export const config = {
   // dashboard without a deploy. Consistent with the UTC convention (see DATETIME_CONVENTIONS).
   jobs: {
     reconcileCron: process.env.RECONCILE_CRON || '0 3 * * *',   // 03:00 UTC daily
+    // Billing → accounting outbox relay. A repeatable job drains billing_outbox 'pending' rows and
+    // publishes them to the accounting queue (GST_INVOICING_PLAN.md Wave 2). Runs every minute — the
+    // outbox is the durability layer, so latency here only affects how quickly an invoice is issued,
+    // not correctness. Retime per-env from the Render dashboard without a deploy.
+    outboxRelayCron: process.env.OUTBOX_RELAY_CRON || '* * * * *',
+    // Cross-service queue name the accounting consumer listens on (shared Redis). MUST match the
+    // accounting service's ACCOUNTING_QUEUE_NAME. Never a per-tenant queue — one queue, N events.
+    accountingQueueName: process.env.ACCOUNTING_QUEUE_NAME || 'accounting',
   },
   r2: {
     endpoint:        process.env.R2_ENDPOINT,
