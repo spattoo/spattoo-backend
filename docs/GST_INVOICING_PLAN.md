@@ -67,7 +67,7 @@ Written to `billing_outbox` (idempotent on `event_id = razorpay_payment_id`), th
 { razorpay_payment_id, subscription_id, plan_id, billing_period_id,
   plan_label, period_label, period_months,
   gross_amount_paise, currency, charged_at, service_period_start, service_period_end,
-  recipient: { baker_id, legal_name, gstin, address_line1, address_line2, city, state, postal_code, country } }
+  recipient: { baker_id, legal_name, email, gstin, address_line1, address_line2, city, state, postal_code, country } }
 ```
 The accounting consumer derives base = gross ÷ 1.18, splits by place of supply, and issues the numbered invoice.
 

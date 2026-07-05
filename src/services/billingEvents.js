@@ -42,6 +42,7 @@ export async function emitSaleEvent({ payment, subRow, baker, sub, subscriptionI
     recipient: {
       baker_id:      baker?.id ?? null,
       legal_name:    baker?.name ?? null,
+      email:         baker?.email ?? null,   // recipient copy of the invoice is emailed here (accounting side)
       gstin:         baker?.gstin ?? null,
       address_line1: baker?.address_line1 ?? null,
       address_line2: baker?.address_line2 ?? null,
