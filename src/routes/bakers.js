@@ -21,6 +21,8 @@ import { normalizePhone } from '../lib/phone.js';
 import { sendStaffWelcomeEmail } from '../services/email.js';
 import { getEntitlements } from '../services/entitlements.js';
 import { requireEntitlement } from '../middleware/entitlements.js';
+import { pendingConsents } from '../services/legalConsent.js';
+import { CONSENT_SUBJECT_TYPE } from '../constants/legalDocuments.js';
 
 function toPublicUrl(key) {
   if (!key) return null;
@@ -345,6 +347,11 @@ router.get('/baker/profile', requireAuth, async (req, res) => {
       }
     }
 
+    // Legal docs (ToS/Privacy) whose CURRENT version this baker hasn't accepted → the app
+    // shows the first-login acceptance gate. [] until Layer 1 is published (draft phase),
+    // so the gate stays silent pre-launch. See docs/CONSENT_CAPTURE_PLAN.md.
+    const pending_consents = await pendingConsents(CONSENT_SUBJECT_TYPE.BAKER_APPUSER, req.user.id);
+
     res.json({
       baker: {
         id: baker.id, name: baker.name, slug: baker.slug,
@@ -362,6 +369,7 @@ router.get('/baker/profile', requireAuth, async (req, res) => {
         subscription_end:    sub.end_date   ?? null,
       },
       user: { firstName: contact.first_name, lastName: contact.last_name, email: req.user.email, role: contact.role },
+      pending_consents,
     });
   } catch (err) {
     serverError(req, res, err);

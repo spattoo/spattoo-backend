@@ -21,6 +21,7 @@ import webhooksRouter from './routes/webhooks.js';
 import inspirationRouter from './routes/inspiration.js';
 import texturesRouter from './routes/textures.js';
 import materialsRouter from './routes/materials.js';
+import legalRouter from './routes/legal.js';
 import { requestId } from './middleware/requestId.js';
 import { errorHandler } from './middleware/errorHandler.js';
 import { requireAuth } from './middleware/auth.js';
@@ -72,6 +73,7 @@ app.use('/api', webhooksRouter);
 app.use('/api', inspirationRouter);
 app.use('/api', texturesRouter);
 app.use('/api', materialsRouter);
+app.use('/api', legalRouter);
 
 app.use(errorHandler);   // global safety net — must run last, after all routers
 
