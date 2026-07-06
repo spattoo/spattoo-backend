@@ -43,8 +43,10 @@ async function insertNotification(typeSlug, recipientEmail, payload) {
 
 // The baker's notification email. `bakers.email` is OPTIONAL at onboarding, so don't
 // rely on it alone — fall back to the primary app-user (owner), whose email is always
-// set. Without this, baker order/quote-accepted emails silently never send.
-async function bakerNotifyEmail(baker) {
+// set. Without this, baker order/quote-accepted emails silently never send. Exported so
+// the billing→accounting event (billingEvents.js) snapshots the SAME resolved email onto
+// the invoice recipient, instead of duplicating the primary-appuser lookup.
+export async function bakerNotifyEmail(baker) {
   if (baker?.email) return baker.email;
   if (!baker?.id) return null;
   const { data } = await supabase

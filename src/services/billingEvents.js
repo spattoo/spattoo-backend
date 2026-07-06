@@ -12,6 +12,7 @@
 // failed insert is logged, not thrown, so it never 500s the webhook (a Wave-2 reconcile sweep will
 // backfill any misses once the accounting system exists — nothing consumes the outbox today).
 import { supabase } from './supabase.js';
+import { bakerNotifyEmail } from './notifications.js';
 import { PLAN } from '../constants/subscriptionPlans.js';
 import { PERIOD } from '../constants/billingPeriods.js';
 
@@ -19,6 +20,11 @@ const toIso = unixSeconds => (unixSeconds ? new Date(unixSeconds * 1000).toISOSt
 
 export async function emitSaleEvent({ payment, subRow, baker, sub, subscriptionId, chargedAt }) {
   if (!payment?.id) return;
+  // Resolve the recipient email the SAME way every other baker email does: prefer bakers.email,
+  // else the primary app-user (owner) — bakers.email is optional at onboarding, so the direct
+  // baker.email was always null and the invoice copy never sent. Snapshotted below (frozen at
+  // charge time, like the rest of the recipient block) so accounting needs no read-back into core.
+  const recipientEmail = await bakerNotifyEmail(baker);
   const payload = {
     razorpay_payment_id: payment.id,
     subscription_id:     subscriptionId ?? null,
@@ -42,7 +48,7 @@ export async function emitSaleEvent({ payment, subRow, baker, sub, subscriptionI
     recipient: {
       baker_id:      baker?.id ?? null,
       legal_name:    baker?.name ?? null,
-      email:         baker?.email ?? null,   // recipient copy of the invoice is emailed here (accounting side)
+      email:         recipientEmail,         // recipient copy of the invoice is emailed here (accounting side)
       gstin:         baker?.gstin ?? null,
       address_line1: baker?.address_line1 ?? null,
       address_line2: baker?.address_line2 ?? null,
