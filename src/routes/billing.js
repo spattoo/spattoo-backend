@@ -433,122 +433,118 @@ router.post('/billing/subscribe', requireAuth, requireCapability('billing:manage
   }
 });
 
+// Typed billing error — carries an httpStatus/code so callers (route or account deletion) map it to
+// the right response instead of falsely reporting a cancel we could not send to the provider.
+function billingError(httpStatus, code, message) {
+  const e = new Error(message);
+  e.httpStatus = httpStatus;
+  e.code = code;
+  return e;
+}
+
+// Cancel a baker's subscription — the ONE Razorpay-cancel path, shared by the baker-initiated
+// POST /billing/cancel AND account deletion (routes/account.js). Cancels IMMEDIATELY in Razorpay
+// (certain + auditable) and marks the current row cancel_at_period_end so paid access is preserved
+// as a GRACE period until current_period_end but never renews. FAIL-CLOSED: throws a typed error if
+// a real Razorpay sub can't be cancelled (keys missing / provider rejects) — the caller must NOT
+// report success while Razorpay keeps charging. No-op-safe for free/Spark bakers (no Razorpay sub).
+export async function cancelBakerSubscription(bakerId, { changedBy = 'baker', reasonKey = null, note = null } = {}) {
+  const { data: baker } = await supabase
+    .from('bakers').select('id, billing_subscription_id').eq('id', bakerId).maybeSingle();
+  if (!baker) throw billingError(404, 'baker_not_found', 'Baker not found');
+
+  const current = await deriveSubscription(baker.id);
+  const today   = new Date().toISOString().slice(0, 10);
+
+  // If a downgrade is scheduled on the current row, cancellation SUPERSEDES it (last-action-wins):
+  // abort the parked lower sub + clear the schedule so it never promotes.
+  let parkedDowngradeSubId = null;
+  if (current.id) {
+    const { data: cur } = await supabase.from('baker_subscriptions')
+      .select('scheduled_subscription_id').eq('id', current.id).maybeSingle();
+    parkedDowngradeSubId = cur?.scheduled_subscription_id ?? null;
+  }
+
+  // Cancel IMMEDIATELY in Razorpay (atCycleEnd=false) — flips it to `cancelled` synchronously so the
+  // cancel is verifiable; local grace until current_period_end preserves paid access. Fail-closed if
+  // Razorpay is a real sub we can't reach/cancel.
+  if (baker.billing_subscription_id) {
+    if (!razorpayEnabled()) {
+      console.error('[billing] cancel blocked: Razorpay not configured — refusing to report a cancel we cannot send to the provider');
+      throw billingError(503, 'razorpay_unavailable', 'Billing is temporarily unavailable. Please try again shortly.');
+    }
+    try {
+      await razorpayCancelSubscription(baker.billing_subscription_id, false);
+    } catch (err) {
+      // A deferred downgrade may have already cancelled this sub at authorize time — that's success.
+      const already = await razorpay().subscriptions.fetch(baker.billing_subscription_id)
+        .then(s => s.status === 'cancelled').catch(() => false);
+      if (!already) {
+        console.error('[billing] Razorpay cancel failed:', err.message);
+        throw billingError(502, 'razorpay_cancel_failed', 'Could not cancel with the payment provider. Please try again.');
+      }
+      console.warn('[billing] current sub already cancelled (downgrade in progress) — treating cancel as success');
+    }
+  }
+
+  // Supersede any scheduled downgrade: cancel the parked lower sub + close its PENDING row.
+  if (parkedDowngradeSubId) {
+    await razorpayCancelSubscription(parkedDowngradeSubId, false)
+      .catch(e => console.error('[billing] cancel parked downgrade sub failed:', e.message));
+    await supabase.from('baker_subscriptions')
+      .update({ status_id: SUBSCRIPTION_STATUS.CANCELLED, end_date: today })
+      .eq('billing_subscription_id', parkedDowngradeSubId);
+  }
+
+  // Optional churn reason — validated against the customer-selectable master list; falls back to the
+  // generic customer_requested when omitted/invalid.
+  let cancellationReasonId = CANCELLATION_REASON.CUSTOMER_REQUESTED;
+  if (reasonKey) {
+    const { data: r } = await supabase.from('cancellation_reasons')
+      .select('id').eq('key', reasonKey).eq('is_customer_selectable', true).eq('is_active', true).maybeSingle();
+    if (r) cancellationReasonId = r.id;
+  }
+
+  // Mark the CURRENT row: grace access (status stays active) until current_period_end even though
+  // Razorpay is already cancelled; won't renew. Paid-through boundary (end_date/current_period_end)
+  // is preserved; the daily reconcile relabels to cancelled once it passes.
+  const markQuery = supabase.from('baker_subscriptions')
+    .update({
+      cancel_at_period_end:      true,
+      cancellation_requested_at: new Date().toISOString(),
+      cancellation_reason_id:    cancellationReasonId,
+      cancellation_note:         note ?? null,
+      scheduled_plan_id:         null,
+      scheduled_effective_at:    null,
+      scheduled_subscription_id: null,
+    });
+  const { error: markErr } = baker.billing_subscription_id
+    ? await markQuery.eq('billing_subscription_id', baker.billing_subscription_id)
+    : await markQuery.eq('baker_id', baker.id).eq('status_id', SUBSCRIPTION_STATUS.ACTIVE);
+  if (markErr) throw markErr;
+
+  await logSubscriptionEvent(baker.id, {
+    event:          'cancelled',
+    previousTier:   current.plan?.name ?? null,
+    newTier:        current.plan?.name ?? null,
+    previousStatus: current.status,
+    newStatus:      'cancelled',
+    changedBy,
+  });
+
+  return { ok: true, hadPaidSub: !!baker.billing_subscription_id };
+}
+
 // ── POST /billing/cancel ──────────────────────────────────────────────────────
 router.post('/billing/cancel', requireAuth, requireCapability('billing:manage'), async (req, res) => {
   try {
-    const baker = await getBakerForUser(req.user.id, 'id, billing_subscription_id');
+    const baker = await getBakerForUser(req.user.id, 'id');
     if (!baker) return res.status(404).json({ error: 'Baker not found' });
-
-    const current = await deriveSubscription(baker.id);
-    const today   = new Date().toISOString().slice(0, 10);
-
-    // If a downgrade is scheduled on the current row, cancellation SUPERSEDES it (last-action-wins,
-    // the industry norm): abort the parked lower sub + clear the schedule so it never promotes. The
-    // baker keeps the current (higher) tier through the grace period, then lapses (never Spark).
-    let parkedDowngradeSubId = null;
-    if (current.id) {
-      const { data: cur } = await supabase.from('baker_subscriptions')
-        .select('scheduled_subscription_id').eq('id', current.id).maybeSingle();
-      parkedDowngradeSubId = cur?.scheduled_subscription_id ?? null;
-    }
-
-    // Cancel IMMEDIATELY in Razorpay (atCycleEnd=false). Razorpay's cancel-at-cycle-end is
-    // invisible on the subscription entity until the boundary, which is impossible to verify;
-    // an immediate cancel flips Razorpay to `cancelled` synchronously (certain + auditable),
-    // and the baker's paid access is preserved locally as a GRACE period until
-    // current_period_end (see the DB update below + the get_baker_subscription derive rule).
-    // AUTHORITATIVE: if Razorpay rejects it we must NOT report success — otherwise the baker
-    // thinks they cancelled while Razorpay keeps charging. Surface the failure.
-    //
-    // FAIL CLOSED (mirrors /billing/subscribe's SEC-6): a baker with a
-    // billing_subscription_id has a REAL Razorpay subscription that only Razorpay can
-    // stop. If the keys are missing/rotated out, razorpayEnabled() is false and we CANNOT
-    // honour the cancel — flipping cancel_at_period_end anyway (the old behaviour) told the
-    // baker they'd cancelled while Razorpay kept billing them. Refuse instead of lying.
-    // (Bakers WITHOUT a billing_subscription_id — free/spark/dev rows that never created a
-    // Razorpay sub — need no provider call and fall straight through to the DB update.)
-    if (baker.billing_subscription_id) {
-      if (!razorpayEnabled()) {
-        console.error('[billing] cancel blocked: baker has a Razorpay subscription but Razorpay is not configured — refusing to report a cancel we cannot send to the provider');
-        return res.status(503).json({
-          error: 'Billing is temporarily unavailable. Please try again shortly.',
-          code:  'razorpay_unavailable',
-        });
-      }
-      try {
-        await razorpayCancelSubscription(baker.billing_subscription_id, false);
-      } catch (err) {
-        // A deferred downgrade cancels the current (higher) sub IMMEDIATELY at authorize time, so it
-        // may already be cancelled here — that's success, not failure. Confirm via a fetch before failing.
-        const already = await razorpay().subscriptions.fetch(baker.billing_subscription_id)
-          .then(s => s.status === 'cancelled').catch(() => false);
-        if (!already) {
-          console.error('[billing] Razorpay cancel failed:', err.message);
-          return res.status(502).json({
-            error: 'Could not cancel with the payment provider. Please try again.',
-            code:  'razorpay_cancel_failed',
-          });
-        }
-        console.warn('[billing] current sub already cancelled (downgrade in progress) — treating cancel as success');
-      }
-    }
-
-    // Supersede any scheduled downgrade: cancel the parked lower sub + close its PENDING row so it
-    // can't promote at cycle end. (scheduled_* on the current row is cleared in the mark below.)
-    if (parkedDowngradeSubId) {
-      await razorpayCancelSubscription(parkedDowngradeSubId, false)
-        .catch(e => console.error('[billing] cancel parked downgrade sub failed:', e.message));
-      await supabase.from('baker_subscriptions')
-        .update({ status_id: SUBSCRIPTION_STATUS.CANCELLED, end_date: today })
-        .eq('billing_subscription_id', parkedDowngradeSubId);
-    }
-
-    // Optional churn-survey input from the cancel dialog. Validate the picked reason against the
-    // master list (must be customer-selectable + active) so a client can't set a system reason;
-    // fall back to the generic customer_requested when omitted/invalid.
-    const { reason: reasonKey, note } = req.body ?? {};
-    let cancellationReasonId = CANCELLATION_REASON.CUSTOMER_REQUESTED;
-    if (reasonKey) {
-      const { data: r } = await supabase.from('cancellation_reasons')
-        .select('id').eq('key', reasonKey).eq('is_customer_selectable', true).eq('is_active', true).maybeSingle();
-      if (r) cancellationReasonId = r.id;
-    }
-
-    // Mark the CURRENT subscription row: keep access as a GRACE period (status stays active)
-    // until current_period_end, even though Razorpay is already cancelled. cancellation_requested_at
-    // records that the cancel was issued (audit + confirmation). The daily reconcile job relabels
-    // the row to cancelled once current_period_end passes; access is correct before then via the
-    // derive rule (now() < current_period_end). The billing UI reads cancel_at_period_end to show
-    // "won't renew" and hide the Cancel button. NOTE: we do NOT touch end_date/current_period_end
-    // here — the paid-through boundary is preserved.
-    const markQuery = supabase.from('baker_subscriptions')
-      .update({
-        cancel_at_period_end:      true,
-        cancellation_requested_at: new Date().toISOString(),
-        cancellation_reason_id:    cancellationReasonId,
-        cancellation_note:         note ?? null,
-        // A cancel supersedes any scheduled downgrade — clear it so the UI shows a plain cancellation
-        // and the cycle-end promotion can't fire.
-        scheduled_plan_id:         null,
-        scheduled_effective_at:    null,
-        scheduled_subscription_id: null,
-      });
-    const { error: markErr } = baker.billing_subscription_id
-      ? await markQuery.eq('billing_subscription_id', baker.billing_subscription_id)
-      : await markQuery.eq('baker_id', baker.id).eq('status_id', SUBSCRIPTION_STATUS.ACTIVE);
-    if (markErr) return serverError(req, res, markErr);
-
-    await logSubscriptionEvent(baker.id, {
-      event:          'cancelled',
-      previousTier:   current.plan?.name ?? null,
-      newTier:        current.plan?.name ?? null,
-      previousStatus: current.status,
-      newStatus:      'cancelled',
-      changedBy:      'baker',
-    });
-
+    const { reason, note } = req.body ?? {};
+    await cancelBakerSubscription(baker.id, { changedBy: 'baker', reasonKey: reason, note });
     res.json({ ok: true });
   } catch (err) {
+    if (err.httpStatus) return res.status(err.httpStatus).json({ error: err.message, code: err.code });
     serverError(req, res, err);
   }
 });

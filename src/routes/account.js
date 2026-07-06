@@ -11,6 +11,7 @@ import {
   CONSENT_REQUIRED_DOC_KEYS,
 } from '../constants/legalDocuments.js';
 import { withdrawConsent } from '../services/legalConsent.js';
+import { cancelBakerSubscription } from './billing.js';
 
 // Account erasure lifecycle — the CONTRACT-basis §12 right (DPDP "Layer 3").
 // See docs/CONSENT_WITHDRAWAL_AND_ERASURE_PLAN.md. Deletion is a lifecycle, never an instant hard
@@ -58,6 +59,17 @@ router.post('/baker/account/delete', requireAuth, requireCapability('account:del
     if (readErr) return serverError(req, res, readErr);
     if (baker.deletion_status === DELETION_STATUS.PENDING_ERASURE) return res.json(publicState(baker));
     if (baker.deletion_status === DELETION_STATUS.ERASED) return res.status(410).json({ error: 'already_erased' });
+
+    // Stop billing FIRST, fail-closed: never complete a deletion that implies billing stopped while
+    // Razorpay keeps charging. Reuses the ONE cancel path (immediate Razorpay cancel + grace until
+    // period end). If the provider can't be reached the whole request aborts — the soft-delete is
+    // reversible/retryable, so a momentary Razorpay outage shouldn't leave a half-cancelled account.
+    try {
+      await cancelBakerSubscription(bakerId, { changedBy: 'baker', note: 'account deletion' });
+    } catch (e) {
+      if (e.httpStatus) return res.status(e.httpStatus).json({ error: e.message, code: e.code });
+      return serverError(req, res, e);
+    }
 
     const nowIso     = new Date().toISOString();
     const eraseAfter = new Date(Date.now() + config.retention.accountWindowDays * 86400000).toISOString();
@@ -115,7 +127,9 @@ router.post('/baker/account/delete', requireAuth, requireCapability('account:del
 });
 
 // ── POST /api/baker/account/restore ── cancel a pending erasure within the reversal window. Does
-// NOT auto-republish the storefront (the baker re-publishes deliberately). No-op after erasure.
+// NOT auto-republish the storefront (the baker re-publishes deliberately) and does NOT revive the
+// subscription — the Razorpay cancel from delete is irreversible, so a restored baker keeps grace
+// access until period end, then must re-subscribe via Billing for paid features. No-op after erasure.
 router.post('/baker/account/restore', requireAuth, requireCapability('account:delete'), async (req, res) => {
   try {
     const bakerId = req.bakerId;

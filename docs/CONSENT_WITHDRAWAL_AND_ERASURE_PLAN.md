@@ -104,7 +104,10 @@ violates the retention floor + statutory minimums (§6). The lifecycle (matches
 
 ### Phase 1 — request → **soft-delete now** (synchronous)
 `POST /api/baker/account/delete` (authed, owner-only — a new `account:delete` capability;
-staff cannot delete the baker). Effects, in a transaction:
+staff cannot delete the baker). **Stops billing first, fail-closed** — reuses the shared
+`cancelBakerSubscription()` (the same immediate-Razorpay-cancel path as `POST /billing/cancel`);
+if the provider can't be reached the request aborts (no half-cancelled account). Then, in a
+transaction:
 - `bakers.deletion_status = 'pending_erasure'`, `bakers.deletion_requested_at = now()`,
   `bakers.erase_after = now() + RETENTION_WINDOW` (§6).
 - Deactivate: `storefront_published = false` (storefront goes offline immediately), sessions
