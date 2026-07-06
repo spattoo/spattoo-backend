@@ -10,7 +10,15 @@ import {
   CONSENT_SUBJECT_TYPE,
   CONSENT_SOURCE,
 } from '../constants/legalDocuments.js';
-import { getCurrentVersions, recordConsent } from '../services/legalConsent.js';
+import { getCurrentVersions, recordConsent, withdrawConsent, consentHistory } from '../services/legalConsent.js';
+
+// Resolve the consenting subject (baker app-user vs invited customer) from the authed principal.
+// Shared by consent / withdraw / history so the mapping never drifts. Returns a smallint or null.
+function subjectTypeFor(role) {
+  if (role === 'owner' || role === 'staff') return CONSENT_SUBJECT_TYPE.BAKER_APPUSER;
+  if (role === 'customer') return CONSENT_SUBJECT_TYPE.CUSTOMER;
+  return null;
+}
 
 // Consent capture (DPDP "Layer 2"). See docs/CONSENT_CAPTURE_PLAN.md.
 const router = Router();
@@ -139,10 +147,7 @@ router.get('/legal/:docKey', async (req, res) => {
 // current document versions. Idempotent per (subject, current version).
 router.post('/legal/consent', requireAuth, resolvePrincipal, async (req, res) => {
   try {
-    const subjectType =
-      req.role === 'owner' || req.role === 'staff' ? CONSENT_SUBJECT_TYPE.BAKER_APPUSER
-      : req.role === 'customer' ? CONSENT_SUBJECT_TYPE.CUSTOMER
-      : null;
+    const subjectType = subjectTypeFor(req.role);
     if (!subjectType) return res.status(403).json({ error: 'No consenting principal' });
 
     let docKeys = req.body?.doc_keys;
@@ -161,6 +166,52 @@ router.post('/legal/consent', requireAuth, resolvePrincipal, async (req, res) =>
       userAgent: req.headers['user-agent'] ?? null,
     });
     res.json(result);
+  } catch (err) {
+    serverError(req, res, err);
+  }
+});
+
+// ── POST /api/legal/withdraw ── withdraw consent (DPDP §6(4)) for OPTIONAL documents only.
+// A REQUIRED doc (tos/privacy) is necessary + bundled — you can't withdraw it and keep using the
+// product, so we refuse here and point the client at the account-deletion flow (the account-delete
+// route calls withdrawConsent() internally for those). Append-only: a withdrawal is a new event.
+router.post('/legal/withdraw', requireAuth, resolvePrincipal, async (req, res) => {
+  try {
+    const subjectType = subjectTypeFor(req.role);
+    if (!subjectType) return res.status(403).json({ error: 'No consenting principal' });
+
+    let docKeys = req.body?.doc_keys;
+    if (!Array.isArray(docKeys) || !docKeys.length) return res.status(400).json({ error: 'doc_keys required' });
+    docKeys = [...new Set(docKeys.filter(k => LEGAL_DOC_KEYS.includes(k)))];
+    if (!docKeys.length) return res.status(400).json({ error: 'No valid doc_keys' });
+
+    const required = docKeys.filter(k => CONSENT_REQUIRED_DOC_KEYS.includes(k));
+    if (required.length) {
+      return res.status(409).json({ error: 'necessary_consent', action: 'delete_account', doc_keys: required });
+    }
+
+    const result = await withdrawConsent({
+      subjectType,
+      subjectId: req.user.id,
+      docKeys,
+      source: CONSENT_SOURCE.SETTINGS,
+      ip: req.ip,
+      userAgent: req.headers['user-agent'] ?? null,
+    });
+    res.json(result);
+  } catch (err) {
+    serverError(req, res, err);
+  }
+});
+
+// ── GET /api/legal/consent/history ── the authed subject's OWN consent trail (accept + withdraw),
+// newest first. Powers the "Your agreements" list + downloadable record.
+router.get('/legal/consent/history', requireAuth, resolvePrincipal, async (req, res) => {
+  try {
+    const subjectType = subjectTypeFor(req.role);
+    if (!subjectType) return res.status(403).json({ error: 'No consenting principal' });
+    const events = await consentHistory(subjectType, req.user.id);
+    res.json({ events });
   } catch (err) {
     serverError(req, res, err);
   }

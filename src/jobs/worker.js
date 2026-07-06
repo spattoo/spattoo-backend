@@ -7,6 +7,7 @@ import { removeLogoBg } from './processors/removeLogoBg.js';
 import { optimizePhoto } from './processors/optimizePhoto.js';
 import { reconcileSubscriptions } from './processors/reconcileSubscriptions.js';
 import { relayBillingOutbox } from './processors/relayBillingOutbox.js';
+import { eraseExpiredAccounts } from './processors/eraseExpiredAccounts.js';
 
 const processors = {
   extract_image:           extractImage,
@@ -16,6 +17,7 @@ const processors = {
   optimize_photo:          optimizePhoto,
   reconcile_subscriptions: reconcileSubscriptions,
   relay_billing_outbox:    relayBillingOutbox,
+  erase_expired_accounts:  eraseExpiredAccounts,
 };
 
 export function startWorker() {

@@ -43,6 +43,18 @@ export const config = {
     // Cross-service queue name the accounting consumer listens on (shared Redis). MUST match the
     // accounting service's ACCOUNTING_QUEUE_NAME. Never a per-tenant queue — one queue, N events.
     accountingQueueName: process.env.ACCOUNTING_QUEUE_NAME || 'accounting',
+    // Scheduled sweep that sends the 48h pre-erasure notice + erases accounts past their window
+    // (DPDP "Layer 3", CONSENT_WITHDRAWAL_AND_ERASURE_PLAN.md). UTC. Retime per-env without a deploy.
+    eraseAccountsCron: process.env.ERASE_ACCOUNTS_CRON || '30 3 * * *',   // 03:30 UTC daily
+  },
+  // Data-retention windows (DPDP storage-limitation). CONFIG, not hardcoded — tune per-env and get
+  // counsel sign-off before launch (see plan §6). All in DAYS / HOURS.
+  retention: {
+    // Delay between a baker's delete request and irreversible erasure — the reversal + statutory
+    // floor window. 365d is a conservative PLACEHOLDER pending counsel sign-off.
+    accountWindowDays:     Number(process.env.RETENTION_WINDOW_DAYS || 365),
+    // Lead time for the Rule-8 pre-erasure notice.
+    preErasureNoticeHours: Number(process.env.PRE_ERASURE_NOTICE_HOURS || 48),
   },
   r2: {
     endpoint:        process.env.R2_ENDPOINT,

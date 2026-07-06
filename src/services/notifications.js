@@ -225,6 +225,19 @@ export async function notifyBakerWelcome({ email, firstName, bakerName, slug }) 
   });
 }
 
+// The DPDP Rule-8 pre-erasure notice: tell the baker their account data will be erased in ~48h and
+// that logging in / restoring cancels it. Fired by the erasure sweep (eraseExpiredAccounts.js).
+// `baker` = { id, name, email, timezone }; `eraseAfter` = ISO instant.
+export async function notifyAccountErasureScheduled(baker, { eraseAfter }) {
+  const email = await bakerNotifyEmail(baker);
+  if (!email) return;
+  await insertNotification('account_erasure_notice', email, {
+    bakerName:  baker?.name ?? null,
+    timeZone:   baker?.timezone ?? null,
+    eraseAfter: eraseAfter ?? null,
+  });
+}
+
 export const notifySubscriptionActivated = (baker, p) => notifySubscription('subscription_activated', baker, p);
 export const notifySubscriptionRenewed   = (baker, p) => notifySubscription('subscription_renewed',   baker, p);
 export const notifyPaymentFailed         = (baker, p) => notifySubscription('payment_failed',          baker, p);

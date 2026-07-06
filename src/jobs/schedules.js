@@ -17,8 +17,14 @@ export async function registerJobSchedulers() {
     { pattern: config.jobs.outboxRelayCron, tz: 'UTC' },
     { name: 'relay_billing_outbox', opts: { removeOnComplete: true, removeOnFail: 100 } },
   );
+  await jobQueue.upsertJobScheduler(
+    'erase-expired-accounts',
+    { pattern: config.jobs.eraseAccountsCron, tz: 'UTC' },
+    { name: 'erase_expired_accounts', opts: { removeOnComplete: true, removeOnFail: 100 } },
+  );
   console.log(
     `Job schedulers registered (reconcile_subscriptions: "${config.jobs.reconcileCron}" UTC; ` +
-    `relay_billing_outbox: "${config.jobs.outboxRelayCron}" UTC)`,
+    `relay_billing_outbox: "${config.jobs.outboxRelayCron}" UTC; ` +
+    `erase_expired_accounts: "${config.jobs.eraseAccountsCron}" UTC)`,
   );
 }

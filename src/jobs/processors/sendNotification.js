@@ -399,6 +399,19 @@ function buildEmail(typeSlug, recipientEmail, payload) {
         ${billingCta}`) };
   }
 
+  // ── Account erasure — 48h pre-erasure notice (DPDP Rule 8) ──────────────────
+  if (typeSlug === 'account_erasure_notice') {
+    const when      = formatDateTz(p.eraseAfter, p.timeZone);
+    const restoreUrl = config.app.url ? config.app.url.replace(/\/+$/, '') : null;
+    return { from: config.smtp.from, to: recipientEmail,
+      subject: `Your Spattoo account data will be erased soon`,
+      html: shell(`<h2 style="margin:0 0 12px;font-size:22px;color:#2C4433;font-weight:800;">Your account is scheduled for erasure${hi}</h2>
+        <p>You requested deletion of your Spattoo account. Your data is scheduled to be permanently erased${when !== '—' ? ` on <b>${when}</b>` : ' soon'}.</p>
+        <p><b>Changed your mind?</b> Simply log in and restore your account before then to keep everything. After erasure, this cannot be undone.</p>
+        <p style="color:#6b6b6b;font-size:13px;">Note: records we're required by law to keep (such as tax invoices) are retained for their statutory period.</p>
+        ${restoreUrl ? ctaBtn(escUrl(restoreUrl), 'Log in to restore') : ''}`) };
+  }
+
   throw new Error(`Unknown notification type: ${typeSlug}`);
 }
 
