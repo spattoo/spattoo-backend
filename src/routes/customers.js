@@ -6,6 +6,7 @@ import { requireCapability } from '../middleware/rbac.js';
 import { notifyCustomerInvited } from '../services/notifications.js';
 import { normalizePhone } from '../lib/phone.js';
 import { config } from '../config.js';
+import { DESIGN_SESSION_STATUS } from '../constants/designSessionStatuses.js';
 
 // Basic email shape check — the authoritative check is the OTP delivery, but reject
 // obvious garbage at the write point so an unreachable address never lands on a customer.
@@ -185,7 +186,7 @@ router.post('/baker/customers/invite', requireAuth, requireCapability('customer:
     }
 
     const { firstName, lastName, email, phone, phoneCountry, channels, note, expiresInDays = 14,
-            templateId, designSnapshot, designThumbnailKey } = req.body;
+            templateId, designSnapshot, designThumbnailKey, sessionId } = req.body;
     const emailNorm = email?.trim().toLowerCase() || null;
     if (!firstName?.trim())        return res.status(400).json({ error: 'firstName is required' });
     if (!emailNorm && !phone?.trim()) return res.status(400).json({ error: 'email or phone is required' });
@@ -283,8 +284,26 @@ router.post('/baker/customers/invite', requireAuth, requireCapability('customer:
       .single();
     if (iErr) return serverError(req, res, iErr);
 
+    // ── Live co-design ("Design Together"): bind this customer to the caller's live
+    // session and carry it in the link, so the storefront routes them straight into the
+    // live room after OTP. The baker already started the session (createDesignSession);
+    // an unknown/foreign/ended sessionId is ignored (the invite still works, just not live).
+    let liveSessionParam = '';
+    if (sessionId) {
+      const { data: sess } = await supabase
+        .from('design_sessions')
+        .select('id, baker_id, status_id, customer_id')
+        .eq('id', sessionId).eq('baker_id', bakerId).maybeSingle();
+      if (sess && sess.status_id === DESIGN_SESSION_STATUS.ACTIVE) {
+        if (sess.customer_id !== customer.id) {
+          await supabase.from('design_sessions').update({ customer_id: customer.id }).eq('id', sess.id);
+        }
+        liveSessionParam = `&session=${sess.id}`;
+      }
+    }
+
     // Subdomain link: {slug}.<storefront domain>. The invite id grants nothing — OTP gates access.
-    const link = `${config.storefront.urlTemplate.replace('{slug}', baker.slug)}/?invite=${invite.id}`;
+    const link = `${config.storefront.urlTemplate.replace('{slug}', baker.slug)}/?invite=${invite.id}${liveSessionParam}`;
 
     // Queue the invite email through the durable notification outbox (worker sends it,
     // sweeper retries on failure). The invite is already created — a delivery hiccup
