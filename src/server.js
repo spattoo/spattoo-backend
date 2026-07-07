@@ -23,6 +23,7 @@ import texturesRouter from './routes/textures.js';
 import materialsRouter from './routes/materials.js';
 import legalRouter from './routes/legal.js';
 import accountRouter from './routes/account.js';
+import designSessionsRouter from './routes/designSessions.js';
 import { requestId } from './middleware/requestId.js';
 import { errorHandler } from './middleware/errorHandler.js';
 import { requireAuth } from './middleware/auth.js';
@@ -76,6 +77,7 @@ app.use('/api', texturesRouter);
 app.use('/api', materialsRouter);
 app.use('/api', legalRouter);
 app.use('/api', accountRouter);
+app.use('/api', designSessionsRouter);
 
 app.use(errorHandler);   // global safety net — must run last, after all routers
 
