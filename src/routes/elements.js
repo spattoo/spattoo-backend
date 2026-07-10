@@ -19,6 +19,17 @@ function toPublicUrl(key) {
   return `${config.r2.publicUrl}/${key}`;
 }
 
+// Every element response resolves the same three R2 keys to public URLs. One helper, so a fourth
+// asset column (or a change to how keys resolve) lands in ONE place instead of four call sites.
+function withPublicUrls(el) {
+  return {
+    ...el,
+    image_url:     toPublicUrl(el.image_url),
+    thumbnail_url: toPublicUrl(el.thumbnail_url),
+    thumb_key:     toPublicUrl(el.thumb_key),
+  };
+}
+
 // asset_class is stored as a compact surrogate smallint (hot-table rule); callers speak the readable
 // key. Translate at the API boundary so the DB stays compact and clients stay readable.
 const ASSET_CLASS_ID  = { scatter: 1, decor: 2, topper: 3 };
@@ -158,10 +169,7 @@ router.get('/elements', requireAuth, requireCapability('design:create'), async (
       const { data, error } = await query;
       if (error) return serverError(req, res, error);
       return res.json(data.map(el => ({
-        ...el,
-        image_url:        toPublicUrl(el.image_url),
-        thumbnail_url:    toPublicUrl(el.thumbnail_url),
-        thumb_key:        toPublicUrl(el.thumb_key),
+        ...withPublicUrls(el),
         placement_config: expandPlacementConfig(el.placement_config),
       })));
     }
@@ -182,10 +190,7 @@ router.get('/elements', requireAuth, requireCapability('design:create'), async (
     if (error) return serverError(req, res, error);
 
     res.json(data.map(el => ({
-      ...el,
-      image_url:        toPublicUrl(el.image_url),
-      thumbnail_url:    toPublicUrl(el.thumbnail_url),
-      thumb_key:        toPublicUrl(el.thumb_key),
+      ...withPublicUrls(el),
       placement_config: expandPlacementConfig(el.placement_config),
     })));
   } catch (err) {
@@ -210,22 +215,45 @@ router.post(
   }
 );
 
+// The admin element projection — shared by the list and the by-id read so the two can never drift
+// (a column added for the list is instantly available to whatever opens a single element).
+const ADMIN_ELEM_FIELDS = 'id, name, description, image_url, thumbnail_url, thumb_key, element_type_id, parent_id, allowed_zones, placement_config, allowed_actions, default_color, sort_order, is_active, baker_id, file_size, asset_class, tri_count, texture_max_dim, decoded_mem_kb, optimized_size_kb, over_cap';
+
+// asset_class is a compact surrogate in the DB; admin clients speak the readable key (schema-scale rule).
+const toAdminElement = el => ({ ...withPublicUrls(el), asset_class: ASSET_CLASS_KEY[el.asset_class] ?? null });
+
 router.get('/admin/elements', requireAuth, requireCapability('catalog:admin'), async (req, res) => {
   try {
     const { data, error } = await supabase
       .from('cake_elements')
-      .select('id, name, description, image_url, thumbnail_url, thumb_key, element_type_id, parent_id, allowed_zones, placement_config, allowed_actions, default_color, sort_order, is_active, baker_id, file_size, asset_class, tri_count, texture_max_dim, decoded_mem_kb, optimized_size_kb, over_cap')
+      .select(ADMIN_ELEM_FIELDS)
       .is('baker_id', null)
       .order('sort_order');
 
     if (error) return serverError(req, res, error);
-    res.json(data.map(el => ({
-      ...el,
-      asset_class:   ASSET_CLASS_KEY[el.asset_class] ?? null,
-      image_url:     toPublicUrl(el.image_url),
-      thumbnail_url: toPublicUrl(el.thumbnail_url),
-      thumb_key:     toPublicUrl(el.thumb_key),
-    })));
+    res.json(data.map(toAdminElement));
+  } catch (err) {
+    serverError(req, res, err);
+  }
+});
+
+// Read ONE global element. Exists so an authoring surface (e.g. the Relief Sticker Studio, opened from
+// Manage Elements with ?element=<id>) fetches the row it edits instead of pulling the whole library —
+// the library grows without bound, and each row carries a placement_config that can embed an inline
+// flatMask data-URI, so the list payload is the wrong thing to hang a single-element read off.
+// `.is('baker_id', null)` mirrors the list: this is the GLOBAL catalog, never a baker's private lib.
+router.get('/admin/elements/:id', requireAuth, requireCapability('catalog:admin'), async (req, res) => {
+  try {
+    const { data, error } = await supabase
+      .from('cake_elements')
+      .select(ADMIN_ELEM_FIELDS)
+      .eq('id', req.params.id)
+      .is('baker_id', null)
+      .maybeSingle();
+
+    if (error) return serverError(req, res, error);
+    if (!data) return res.status(404).json({ error: 'Element not found' });
+    res.json(toAdminElement(data));
   } catch (err) {
     serverError(req, res, err);
   }
