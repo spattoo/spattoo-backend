@@ -21,4 +21,56 @@ router.get('/health', (_req, res) => {
   });
 });
 
+// ─────────────────────────────────────────────────────────────────────────────
+// TEMPORARY — DELETE AFTER THE BACKGROUND-REMOVAL TIER DECISION.
+//
+// Measures what a segmentation model ACTUALLY costs on the deploy target. This cannot be measured
+// on the dev machine: onnxruntime-node ships no darwin/x64 binding, so local numbers come from the
+// WASM backend, which carries a large fixed heap (a 4 MB model measured 428 MB RSS). Those numbers
+// are useless for choosing a Render instance tier, and guessing the tier is how we ended up
+// planning to load a 1.5 GB model onto a 512 MB box.
+//
+// Deliberately unauthenticated: every /api/admin route is behind requireAdmin, and there is no admin
+// token available to the one running this. It exposes nothing but memory/timing figures, runs at
+// most once per model per deploy (cached), and executes in a CHILD PROCESS so an OOM kill cannot
+// take the API down — a dead child IS the answer ("did not fit"), not an outage.
+const benchCache = new Map();
+router.get('/health/bg-bench', async (req, res) => {
+  const model = String(req.query.model ?? 'silueta');
+  if (!['silueta', 'isnet', 'u2net', 'u2netp'].includes(model)) {
+    return res.status(400).json({ error: 'model must be silueta|isnet|u2net|u2netp' });
+  }
+  if (benchCache.has(model)) return res.json({ cached: true, ...benchCache.get(model) });
+
+  const { execFile } = await import('node:child_process');
+  const url = String(req.query.image ?? '');
+
+  // HARD MEMORY CAP on the child (`ulimit -v`, in KB). The first attempt at this measurement had no
+  // cap: the child's allocation blew past the 512 MB container, the OOM killer took the whole API,
+  // and dev served 502s until Render restarted it. With a cap, an over-allocating child dies alone
+  // with ENOMEM — the API is untouched, and the cap it died at IS the measurement. Ladder `limitMb`
+  // up until it fits; the smallest limit that succeeds is silueta's real native requirement.
+  // Default is deliberately conservative: it must stay under the container's free headroom.
+  const limitMb = Math.min(400, Math.max(64, Number(req.query.limitMb) || 250));
+  const cmd = `ulimit -v ${limitMb * 1024}; exec "${process.execPath}" scripts/bg-bench.mjs ${model} ${url ? `'${url.replace(/'/g, '')}'` : ''}`;
+  const args = ['-c', cmd];
+
+  execFile('/bin/sh', args, { timeout: 180_000, maxBuffer: 1 << 20 }, (err, stdout, stderr) => {
+    let parsed = null;
+    try { parsed = JSON.parse(String(stdout).trim().split('\n').pop()); } catch { /* child died */ }
+    const result = parsed ?? {
+      ok: false,
+      model,
+      limitMb,
+      // No JSON back = the child hit its ulimit and died alone. That is the RESULT, not a fault:
+      // this model needs more than `limitMb`. Raise it and try again.
+      error: `child died under a ${limitMb} MB cap — needs more than that`,
+      signal: err?.signal ?? null,
+      stderr: String(stderr).slice(-300),
+    };
+    if (result.ok) benchCache.set(model, result);
+    res.json(result);
+  });
+});
+
 export default router;
