@@ -34,6 +34,14 @@ export const config = {
     imageQuality: process.env.OPENAI_IMAGE_QUALITY || 'medium',
   },
   removeBg: { apiKey: process.env.REMOVE_BG_API_KEY },
+  // Background removal for user uploads ("My Decorations"). `removebg` = the paid vendor (metered per
+  // image); `self` = our own model on its own Render service (free per image, not built yet). Env-driven
+  // so the switch is a config change per environment, instantly reversible — see
+  // services/backgroundRemoval.js for why the model can't live in this process.
+  bgRemoval: {
+    provider:   process.env.BG_REMOVAL_PROVIDER || 'removebg',
+    serviceUrl: process.env.BG_REMOVAL_SERVICE_URL || '',
+  },
   // Meshy.ai image-to-3D. Not in `required[]` (like razorpay/smtp) so local boot
   // doesn't fail without a key — services/meshy.js throws a clear error at call time.
   // The completion webhook URL is configured once in the Meshy dashboard (account-global),
