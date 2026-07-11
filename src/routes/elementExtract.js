@@ -69,6 +69,16 @@ router.post('/admin/element-extract/identify', requireAuth, requireCapability('c
         // alone (lower fidelity), and the admin will see there's no crop preview.
         console.error(`crop failed for "${el.label}":`, err.message);
       }
+
+      // Licensed characters and brand logos are DEAD ON ARRIVAL, for two independent reasons, so we
+      // stop them here rather than let the admin spend on them. (1) The image model refuses them: it
+      // moderates at the OUTPUT stage, so the generation is billed and THEN blocked — the worst
+      // possible place to find out. (2) We shouldn't want them anyway: this library is redistributed
+      // to every baker on the platform, and a Boss Baby figurine in it is someone else's copyright.
+      // The candidate is still recorded and still shown (with its crop), so the admin can see it was
+      // spotted and why it's unavailable — it just can't be ticked. Enforced again at /generate.
+      const blocked = el.licensed_ip === true;
+
       rows.push({
         created_by:   req.user?.id ?? null,
         source_key:   sourceKey,
@@ -79,7 +89,12 @@ router.post('/admin/element-extract/identify', requireAuth, requireCapability('c
         color_hex:    el.color_hex ?? null,
         material:     el.material ?? null,
         prompt:       el.prompt ?? null,
-        status:       'identified',
+        status:       blocked ? 'blocked' : 'identified',
+        // `error` carries "why this candidate is unusable" for BOTH failure modes — a generation that
+        // errored, and one we refuse to attempt. One column, one question.
+        error:        blocked
+          ? `Licensed character or brand${el.ip_note ? ` — ${el.ip_note}` : ''}. These can't be regenerated, and shouldn't go in the shared library.`
+          : null,
       });
     }
 
@@ -104,8 +119,11 @@ router.post('/admin/element-extract/generate', requireAuth, requireCapability('c
       return res.status(400).json({ error: 'candidateIds (non-empty array) is required' });
     }
 
-    // Only ever (re)generate candidates that are actually waiting for it — an id the caller made up,
-    // or one already mid-flight, must not enqueue work.
+    // Only ever (re)generate candidates actually waiting for it. An id the caller invented, one
+    // already mid-flight, or one BLOCKED as licensed IP must not enqueue work — the allowlist below
+    // is the enforcement point, so a client that ignores the disabled tick box still can't spend our
+    // money on a generation the model will refuse. ('failed' is included on purpose: a transient
+    // failure is worth retrying.)
     const { data: pending, error: readErr } = await supabase
       .from('element_candidates')
       .select('id')

@@ -11,6 +11,26 @@ export function enqueueExtractImage(jobId) {
   return jobQueue.add('extract_image', { jobId });
 }
 
+// The raw provider error is a wall of JSON, and it lands verbatim on a card in the admin UI. Turn the
+// one failure we actually expect into a sentence a human can act on.
+//
+// Moderation is the interesting case: the model refuses licensed characters and brand logos, and it
+// checks at the OUTPUT stage — so the image is generated and billed, THEN blocked. We now catch most
+// of these at identify time (they never reach this job), but the flag isn't perfect, so anything that
+// slips through should still explain itself rather than dumping `moderation_blocked` at the admin.
+function humanError(message) {
+  const raw = String(message ?? '');
+  if (/moderation_blocked|safety system/i.test(raw)) {
+    return "The image model refused to generate this — it usually means the decoration is a licensed character, a brand logo, or otherwise copyrighted. It can't be added to the library.";
+  }
+  if (/rate.?limit|429/i.test(raw)) {
+    return 'The image model was rate-limited. Try regenerating this one again in a minute.';
+  }
+  // Unknown failure: keep the provider's words (they're the only clue) but bound the length so one
+  // bad response can't blow out the card.
+  return raw.length > 300 ? `${raw.slice(0, 300)}…` : raw;
+}
+
 // Regenerate each selected decoration as a clean, isolated library asset.
 //
 // Per candidate: take the crop phase 1 already stored → run a gpt-image EDIT conditioned on that
@@ -65,7 +85,7 @@ export async function extractImage({ jobId }) {
         console.error(`extract_image: candidate "${c.label}" (${c.id}) failed:`, err.message);
         await supabase.from('element_candidates').update({
           status:     'failed',
-          error:      err.message,
+          error:      humanError(err.message),
           updated_at: new Date().toISOString(),
         }).eq('id', c.id);
       }

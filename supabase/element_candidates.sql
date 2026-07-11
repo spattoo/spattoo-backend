@@ -38,8 +38,10 @@ CREATE TABLE element_candidates (
   material      text,                                          -- buttercream|fondant|acrylic|sugar|chocolate|other
   prompt        text,                                          -- the regeneration prompt GPT wrote for this decoration
   status        text NOT NULL DEFAULT 'identified'
-                  CHECK (status IN ('identified', 'generating', 'ready', 'failed', 'rejected')),
-  error         text,                                          -- failure reason when status = 'failed'
+                  CHECK (status IN ('identified', 'blocked', 'generating', 'ready', 'failed', 'rejected')),
+  -- Why this candidate is unusable — set for BOTH 'failed' (a generation errored) and 'blocked' (we
+  -- refuse to attempt it). One column, one question: "why can't I use this?"
+  error         text,
   element_id    uuid REFERENCES cake_elements(id) ON DELETE SET NULL,  -- set once this candidate is saved as a real element
   created_at    timestamptz NOT NULL DEFAULT now(),
   updated_at    timestamptz NOT NULL DEFAULT now()
@@ -47,6 +49,13 @@ CREATE TABLE element_candidates (
 
 -- The two real access patterns: "show me every candidate from this extraction run" (the UI polls
 -- this while phase 2 runs) and "has this candidate been turned into an element yet?" (provenance).
+-- Applied AFTER the table already existed in dev. Kept here (not squashed into the CREATE above) so
+-- an environment that ran the original version has a statement it can actually apply. Re-running the
+-- whole file on a fresh DB is still correct — the constraint is simply replaced with an identical one.
+ALTER TABLE element_candidates DROP CONSTRAINT IF EXISTS element_candidates_status_check;
+ALTER TABLE element_candidates ADD  CONSTRAINT element_candidates_status_check
+  CHECK (status IN ('identified', 'blocked', 'generating', 'ready', 'failed', 'rejected'));
+
 CREATE INDEX element_candidates_job_idx     ON element_candidates(job_id);
 CREATE INDEX element_candidates_source_idx  ON element_candidates(source_key);
 CREATE INDEX element_candidates_element_idx ON element_candidates(element_id) WHERE element_id IS NOT NULL;

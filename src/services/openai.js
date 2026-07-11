@@ -47,6 +47,8 @@ Return ONLY a JSON object, no explanation:
       "color_hex": "<dominant hex colour>",
       "material": "<buttercream|fondant|acrylic|sugar|chocolate|other>",
       "bbox": { "x": <0..1>, "y": <0..1>, "w": <0..1>, "h": <0..1> },
+      "licensed_ip": <true|false>,
+      "ip_note": "<if licensed_ip, name the character/brand in a few words, e.g. 'Boss Baby (DreamWorks)'. Otherwise omit.>",
       "prompt": "<one sentence naming the decoration and its craft, e.g. 'a piped buttercream rosette made with a 1M tip, swirled creamy texture, dusty pink'. Describe ONLY the decoration itself — never the cake it sits on.>"
     }
   ]
@@ -56,11 +58,20 @@ About "bbox": the axis-aligned box around that ONE decoration, as fractions of t
 (x,y = top-left corner; w,h = width/height; all 0..1). Err on the side of a slightly LARGER box —
 clipping part of the decoration is much worse than including a little cake around it.
 
+About "licensed_ip": true when the decoration depicts INTELLECTUAL PROPERTY someone owns — a
+recognisable cartoon/film/TV/game character (Boss Baby, Elsa, Spider-Man, Peppa Pig…), a brand or
+company logo, a sports team crest, or a film/show title treatment. Judge the SUBJECT, not the craft:
+a fondant figurine of a licensed character is licensed_ip, while a generic fondant teddy bear, a
+plain star, a bow or a number is NOT. When genuinely unsure, prefer false — a generic decoration
+wrongly flagged is a worse outcome than a licensed one slipping through, because a human reviews
+these anyway.
+
 Rules:
 - Max 5 elements.
 - Each PHYSICAL decoration gets its own entry, even if several are the same type in different places.
 - Ignore the cake base, the board, plain frosting, sprinkles and pearls — they aren't standalone assets.
-- Pick decorations that would actually be reusable on another cake.`,
+- Pick decorations that would actually be reusable on another cake.
+- STILL list a licensed decoration (flagged), don't silently omit it — the human wants to see it was seen.`,
           },
         ],
       }],
