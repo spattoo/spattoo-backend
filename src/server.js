@@ -2,6 +2,7 @@ import express from 'express';
 import cors from 'cors';
 import healthRouter from './routes/health.js';
 import elementsRouter from './routes/elements.js';
+import myElementsRouter from './routes/myElements.js';
 import templatesRouter from './routes/templates.js';
 import tagsRouter from './routes/tags.js';
 import storageRouter from './routes/storage.js';
@@ -56,6 +57,7 @@ app.use('/api/admin', requireAuth, requireAdmin);
 
 app.use(healthRouter);
 app.use('/api', elementsRouter);
+app.use('/api', myElementsRouter);   // "My Decorations" — baker/customer-owned elements (NOT /api/admin)
 app.use('/api', templatesRouter);
 app.use('/api', tagsRouter);
 app.use('/api', storageRouter);

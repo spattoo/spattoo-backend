@@ -54,7 +54,10 @@ function glbStatColumns(body) {
 // store its key. Fire-and-forget — never blocks the request, mirrors reindexElement.
 // The master thumbnail (thumbnail_url, now itself a WebP) is retained as the source
 // and the fallback (thumb_key ?? thumbnail_url).
-async function ensureThumbKey(id, thumbnailKey) {
+//
+// EXPORTED so the baker-facing create path (routes/myElements.js) runs the SAME post-create work
+// rather than growing a second copy that drifts. An element is an element, whoever made it.
+export async function ensureThumbKey(id, thumbnailKey) {
   try {
     const webpKey = await generateWebpThumbnail(thumbnailKey);
     if (webpKey) await supabase.from('cake_elements').update({ thumb_key: webpKey }).eq('id', id);
@@ -175,13 +178,16 @@ router.get('/elements', requireAuth, requireCapability('design:create'), async (
     }
 
     // SEC-7: global elements + the caller's own tenant only (never another baker's private lib).
+    // customerScoped: cake_elements also carries a per-CUSTOMER scope, so a customer's own uploads
+    // come back to them and to nobody else — not even to another customer of the same baker.
     let query = scopeCatalogRead(
       supabase
         .from('cake_elements')
-        .select(`${ELEM_FIELDS}, baker_id, parent_id`)
+        .select(`${ELEM_FIELDS}, baker_id, customer_id, parent_id`)
         .eq('is_active', true)
         .order('sort_order'),
       req,
+      { customerScoped: true },
     );
 
     if (element_type_id) query = query.eq('element_type_id', element_type_id);

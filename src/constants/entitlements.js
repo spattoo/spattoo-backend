@@ -17,6 +17,11 @@ export const ENTITLEMENTS = {
   // numeric limits — null (in a plan's features) = unlimited
   max_team_members:       { type: 'int',  fallback: 1, label: 'Team members' },
   max_saved_templates:    { type: 'int',  fallback: 0, label: 'Saved templates (custom)' },                     // Spark 3 / Flame 30 / Blaze+ unlimited
+  // "My Decorations" — the baker's own uploaded elements. Counts BOTH the baker's shared library AND
+  // their customers' private uploads, because both live under the baker's tenant and both cost us
+  // storage. Values per plan are DATA (subscription_plans.features), editable in admin without a
+  // deploy — this registry only declares that the key exists. null in a plan = unlimited.
+  max_custom_elements:    { type: 'int',  fallback: 0, label: 'Own decorations (uploads)' },
 };
 
 // Non-entitlement plan CONFIG that also lives in subscription_plans.features (read by
