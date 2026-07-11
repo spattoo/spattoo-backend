@@ -57,19 +57,3 @@ function normalise(bbox) {
 }
 
 const clamp01 = (v) => Math.max(0, Math.min(1, v));
-
-// True when the image carries a real alpha channel that is actually USED — i.e. the background was
-// genuinely cut out. `hasAlpha` alone is not enough: a fully-opaque PNG still reports an alpha
-// channel. We check the alpha channel's minimum: if nothing is even partially transparent, the
-// "transparent background" request was ignored and the caller should fall back to remove.bg.
-export async function hasTransparency(buffer) {
-  try {
-    const { hasAlpha } = await sharp(buffer).metadata();
-    if (!hasAlpha) return false;
-    const stats = await sharp(buffer).stats();
-    const alpha = stats.channels[3];
-    return Boolean(alpha) && alpha.min < 250;
-  } catch {
-    return false;   // unreadable → treat as opaque so remove.bg gets a shot at it
-  }
-}

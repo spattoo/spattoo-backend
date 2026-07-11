@@ -391,10 +391,10 @@ Return ONLY JSON: { "description": "<comma-separated keywords>" }`;
 // Model choice is env-driven because this family is churning fast: `dall-e-3` was REMOVED from the
 // API on 2026-05-12 (this function used to call it, which is why the old extract job could never
 // have worked), and `gpt-image-1` is deprecated for 2026-10-23. We default to `gpt-image-1.5`.
-// NOTE the constraint that pins us: `gpt-image-2` does NOT support `background: 'transparent'`, so
-// it is not a drop-in successor for cut-out assets. If we are forced onto it, the alpha has to come
-// from remove.bg instead — which the caller already falls back to whenever the returned PNG is
-// opaque, so that switch is a config change, not a code change.
+// `gpt-image-2` does NOT support `background: 'transparent'` — but that does not block a switch to
+// it, because the background cut is not this pipeline's job: an extracted decoration gets its
+// background removed by the standard 2D element pipeline (AddElement) if and when it is actually
+// saved as an element. A transparent result here is a nice-to-have, not a dependency.
 //
 // Returns a PNG Buffer (GPT image models ALWAYS return base64 — `response_format` is a DALL·E-only
 // param and there is no `url` to read).
