@@ -1,6 +1,7 @@
 import { randomUUID } from 'crypto';
 import { getJob, updateJob, supabase } from '../../services/supabase.js';
 import { generateDecorationImage } from '../../services/openai.js';
+import { composeReference } from '../../services/imageCrop.js';
 import { getObjectBuffer, putObject } from '../../services/r2.js';
 import { jobQueue } from '../queue.js';
 
@@ -68,8 +69,12 @@ export async function extractImage({ jobId }) {
     let ready = 0;
     for (const c of candidates ?? []) {
       try {
-        const reference = await getObjectBuffer(c.crop_key || c.source_key);
-        const generated = await generateDecorationImage(reference, c.prompt || c.label || 'a cake decoration');
+        // Compose the crop into a properly-framed reference: an output aspect that matches the
+        // subject, and margin around it. Sending a tall crop with a square output request is what
+        // cut a hanging monkey's legs off — the frame, not the crop, was wrong.
+        const crop = await getObjectBuffer(c.crop_key || c.source_key);
+        const { buffer: reference, size } = await composeReference(crop);
+        const generated = await generateDecorationImage(reference, c.prompt || c.label || 'a cake decoration', size);
 
         const outputKey = `elements/candidates/outputs/${randomUUID()}.png`;
         await putObject(outputKey, generated, 'image/png');

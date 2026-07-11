@@ -409,16 +409,21 @@ Return ONLY JSON: { "description": "<comma-separated keywords>" }`;
 //
 // Returns a PNG Buffer (GPT image models ALWAYS return base64 — `response_format` is a DALL·E-only
 // param and there is no `url` to read).
-export async function generateDecorationImage(cropBuffer, prompt) {
+export async function generateDecorationImage(referenceBuffer, prompt, size = '1024x1024') {
   const form = new FormData();
   form.append('model', config.openai.imageModel);
-  form.append('image', new Blob([cropBuffer], { type: 'image/png' }), 'crop.png');
+  form.append('image', new Blob([referenceBuffer], { type: 'image/png' }), 'reference.png');
   form.append('prompt',
     `Recreate the decoration shown in the reference image as an isolated product photo: ${prompt}. ` +
     'Keep its exact shape, colour, texture and craft. Show ONLY the decoration — remove the cake, ' +
-    'the frosting behind it, any board, hands or props. Fully transparent background, no shadow, ' +
-    'soft even studio lighting, photorealistic, shot straight on.');
-  form.append('size', '1024x1024');
+    'the frosting behind it, any board, hands or props. ' +
+    // Say this explicitly. A tall subject sent to a square frame came back with its legs cut off; the
+    // frame is now matched to the crop (services/imageCrop.js composeReference), and the prompt backs
+    // that up rather than relying on it alone.
+    'Show the decoration COMPLETE and WHOLE, entirely within the frame with a small margin around it — ' +
+    'never crop, cut off or run any part of it past the edge. ' +
+    'Fully transparent background, no shadow, soft even studio lighting, photorealistic, shot straight on.');
+  form.append('size', size);
   form.append('quality', config.openai.imageQuality);
   form.append('background', 'transparent');   // native cut-out; remove.bg is the fallback if ignored
   form.append('output_format', 'png');        // must be png/webp — jpeg cannot carry alpha
