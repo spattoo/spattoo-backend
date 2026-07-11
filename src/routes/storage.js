@@ -14,6 +14,8 @@ const router = Router();
 // take raster images only (SVG excluded on purpose); model folders take GLB/binary.
 const IMAGE_TYPES = ['image/png', 'image/jpeg', 'image/jpg', 'image/webp', 'image/gif'];
 const MODEL_TYPES = ['model/gltf-binary', 'application/octet-stream'];
+// Web fonts render inertly (no script, unlike SVG) — safe to sign from the public asset origin.
+const FONT_TYPES = ['font/woff2', 'font/woff'];
 
 // Single source of truth: each managed folder → the content-types we'll sign for it. ALLOWED_FOLDERS
 // is derived from this so the folder list and the type policy can never drift apart (DRY).
@@ -35,12 +37,16 @@ const FOLDER_CONTENT_TYPES = {
   // can fetch it by URL. Crops + regenerated outputs are written SERVER-side via putObject (no signed
   // upload needed for those), but they share this folder tree — see routes/elementExtract.js.
   'elements/candidates':  IMAGE_TYPES,
+  // The typeface a text_styles row shapes its placeholder glyphs with. The face is DATA, not a
+  // hardcoded family — a new art style is a new font + config row, never a code change.
+  'elements/fonts':       FONT_TYPES,
 };
 const ALLOWED_FOLDERS = Object.keys(FOLDER_CONTENT_TYPES);
 
 const EXT_BY_TYPE = {
   'image/png': 'png', 'image/jpeg': 'jpg', 'image/jpg': 'jpg', 'image/webp': 'webp', 'image/gif': 'gif',
   'model/gltf-binary': 'glb', 'application/octet-stream': 'bin', 'application/json': 'json',
+  'font/woff2': 'woff2', 'font/woff': 'woff',
 };
 
 // Derive a safe, short extension from the client filename (sanitised), falling back to the (already
