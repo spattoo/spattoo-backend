@@ -17,11 +17,20 @@ export const ENTITLEMENTS = {
   // numeric limits — null (in a plan's features) = unlimited
   max_team_members:       { type: 'int',  fallback: 1, label: 'Team members' },
   max_saved_templates:    { type: 'int',  fallback: 0, label: 'Saved templates (custom)' },                     // Spark 3 / Flame 30 / Blaze+ unlimited
-  // "My Decorations" — the baker's own uploaded elements. Counts BOTH the baker's shared library AND
-  // their customers' private uploads, because both live under the baker's tenant and both cost us
-  // storage. Values per plan are DATA (subscription_plans.features), editable in admin without a
-  // deploy — this registry only declares that the key exists. null in a plan = unlimited.
-  max_custom_elements:    { type: 'int',  fallback: 0, label: 'Own decorations (uploads)' },
+  // "My Decorations" uploads. Counts BOTH the baker's shared library AND their customers' private
+  // uploads (both sit in the baker's tenant).
+  //
+  // NOT a pricing lever — it is set to the SAME generous number on every plan, on purpose. Once
+  // background removal is our own model rather than a metered vendor, an upload costs us essentially
+  // nothing (R2 storage is ~$0.015/GB-month with zero egress; the inference is our own CPU on a box we
+  // pay a flat rate for). Charging for something with no marginal cost is an arbitrary limit that only
+  // generates support tickets.
+  //
+  // It exists as a CEILING: element:manage is granted to customers, so the upload endpoint is reachable
+  // from a public storefront, and an unbounded write path is not something to discover after the fact.
+  // A real baker will never approach it; a runaway client will. If it ever needs to become a tier lever,
+  // the machinery is already here — change the numbers, no deploy.
+  max_custom_elements:    { type: 'int',  fallback: 0, label: 'Own decorations (upload ceiling)' },
 };
 
 // Non-entitlement plan CONFIG that also lives in subscription_plans.features (read by

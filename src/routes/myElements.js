@@ -67,8 +67,9 @@ router.post('/elements', requireAuth, requireCapability('element:manage'), async
       return res.status(400).json({ error: 'That decoration kind cannot be uploaded' });
     }
 
-    // Quota. Counted against the BAKER's plan even when a customer uploads (both live in the baker's
-    // tenant). null in the plan = unlimited.
+    // Ceiling — an abuse guard, NOT a paid limit (the same number on every plan; see
+    // constants/entitlements.js). Counted against the BAKER's tenant even when a customer uploads,
+    // because that is whose storage it is. null in the plan = no ceiling.
     const { ent, active } = await getEntitlements(req.bakerId);
     if (!active) {
       return res.status(402).json({ error: 'This bakery’s subscription is not active.', code: 'SUBSCRIPTION_INACTIVE' });
@@ -78,10 +79,13 @@ router.post('/elements', requireAuth, requireCapability('element:manage'), async
       const used = await usedQuota(req.bakerId);
       if (used >= max) {
         return res.status(402).json({
-          error: `This bakery has used all ${max} of its decoration slots.`,
+          // Reaching this is not a normal user outcome — it means something is wrong (a runaway client,
+          // or a library nobody is pruning). Say so plainly rather than pitching an upgrade, since a
+          // higher plan would not help: the ceiling is the same on every plan.
+          error: `This bakery has reached its limit of ${max} uploaded decorations. Remove some to add more.`,
           code: 'CUSTOM_ELEMENT_LIMIT',
           used, max,
-          // The baker can free a slot by removing one; a customer cannot, and must be told to ask.
+          // The baker can free space by removing one; a customer cannot, and must be told to ask.
           canFree: !req.customerId,
         });
       }
