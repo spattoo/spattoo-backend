@@ -29,13 +29,18 @@ const PROVIDERS = {
 
   // Our own model, on its own service. Not built yet; the shape is here so the swap is a one-liner
   // and so nobody is tempted to sprinkle a second remove.bg call somewhere else in the meantime.
+  // Our own model (silueta), on its OWN Render service — repo: spattoo-bgremover. It is separate
+  // because we measured it: >300 MB resident, and loading it in THIS process OOM-killed the API. A
+  // private service, so it has no public hostname; the shared token is defence in depth on top.
   self: async (buffer) => {
-    if (!config.bgRemoval.serviceUrl) {
-      throw new Error('BG_REMOVAL_PROVIDER=self but BG_REMOVAL_SERVICE_URL is not set');
-    }
-    const res = await fetch(`${config.bgRemoval.serviceUrl}/cutout`, {
+    const { serviceUrl, serviceToken } = config.bgRemoval;
+    if (!serviceUrl) throw new Error('BG_REMOVAL_PROVIDER=self but BG_REMOVAL_SERVICE_URL is not set');
+    const res = await fetch(`${serviceUrl}/cutout`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/octet-stream' },
+      headers: {
+        'Content-Type': 'application/octet-stream',
+        ...(serviceToken ? { Authorization: `Bearer ${serviceToken}` } : {}),
+      },
       body: buffer,
     });
     if (!res.ok) throw new Error(`bg-removal service failed: ${res.status} ${await res.text()}`);

@@ -39,8 +39,9 @@ export const config = {
   // so the switch is a config change per environment, instantly reversible — see
   // services/backgroundRemoval.js for why the model can't live in this process.
   bgRemoval: {
-    provider:   process.env.BG_REMOVAL_PROVIDER || 'removebg',
-    serviceUrl: process.env.BG_REMOVAL_SERVICE_URL || '',
+    provider:     process.env.BG_REMOVAL_PROVIDER || 'removebg',
+    serviceUrl:   process.env.BG_REMOVAL_SERVICE_URL || '',      // Render internal host, e.g. http://spattoo-bgremover:3000
+    serviceToken: process.env.BG_REMOVAL_SERVICE_TOKEN || '',    // must match the service's BG_SERVICE_TOKEN
   },
   // Meshy.ai image-to-3D. Not in `required[]` (like razorpay/smtp) so local boot
   // doesn't fail without a key — services/meshy.js throws a clear error at call time.
