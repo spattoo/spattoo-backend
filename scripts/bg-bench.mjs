@@ -11,7 +11,7 @@
 // Usage: node scripts/bg-bench.mjs <silueta|isnet|u2net|u2netp>
 import * as ort from 'onnxruntime-node';
 import sharp from 'sharp';
-import { writeFileSync, existsSync, readFileSync, statSync } from 'fs';
+import { writeFileSync, existsSync, readFileSync, statSync, renameSync } from 'fs';
 
 const MODELS = {
   u2netp:  { size: 320,  mean: [0.485, 0.456, 0.406], std: [0.229, 0.224, 0.225] },
@@ -35,13 +35,18 @@ const TEST_IMAGE = `${process.env.R2_PUBLIC_URL}/elements/candidates/crops/`;
 try {
   out.rss_baseline = mb(rss());
 
-  // fetch the model to the ephemeral disk (cached across requests within a deploy)
+  // Fetch the model to the ephemeral disk (cached across requests within a deploy). Write to a .part
+  // file and rename — ATOMIC. A previous run was killed by the watchdog mid-download, leaving a
+  // truncated file that the next run happily reused, and onnxruntime reported it as "Protobuf parsing
+  // failed" — a corrupt-cache error masquerading as a model error.
   const path = `/tmp/${FILE[name]}`;
   if (!existsSync(path)) {
     const t = Date.now();
     const res = await fetch(`https://github.com/danielgatis/rembg/releases/download/v0.0.0/${FILE[name]}`);
     if (!res.ok) throw new Error(`model download ${res.status}`);
-    writeFileSync(path, Buffer.from(await res.arrayBuffer()));
+    const part = `${path}.part`;
+    writeFileSync(part, Buffer.from(await res.arrayBuffer()));
+    renameSync(part, path);                     // only a COMPLETE file ever appears at `path`
     out.download_ms = Date.now() - t;
   }
   out.model_file_mb = mb(statSync(path).size);
