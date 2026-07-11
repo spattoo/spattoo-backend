@@ -43,58 +43,24 @@ router.get('/health/bg-bench', async (req, res) => {
   if (benchCache.has(model)) return res.json({ cached: true, ...benchCache.get(model) });
 
   const { execFile } = await import('node:child_process');
-  const { readFileSync } = await import('node:fs');
   const url = String(req.query.image ?? '');
-
-  // RSS WATCHDOG — the parent kills the child if its RESIDENT memory crosses `limitMb`.
-  //
-  // Two earlier attempts got this wrong, and both are worth recording:
-  //   1. No cap at all → the child's allocation blew past the 512 MB container, the OOM killer took
-  //      the whole API, and dev served 502s. Never run an unbounded memory experiment on a shared
-  //      service.
-  //   2. `ulimit -v` → caps VIRTUAL address space, and V8 reserves multiple GB of it regardless of
-  //      actual usage, so Node died at startup (SIGTRAP) without ever loading the model. It measured
-  //      nothing.
-  // RSS is what the container's OOM killer actually accounts, so RSS is what we bound. Polling from
-  // the parent (rather than self-limiting in the child) means the guard survives even if the child
-  // is wedged.
-  const limitMb = Math.min(300, Math.max(64, Number(req.query.limitMb) || 250));
   const args = ['scripts/bg-bench.mjs', model, ...(url ? [url] : [])];
 
-  let peakChildMb = 0;
-  let killedByWatchdog = false;
-  const child = execFile(process.execPath, args, { timeout: 180_000, maxBuffer: 1 << 20 }, (err, stdout, stderr) => {
-    clearInterval(watch);
+  execFile(process.execPath, args, { timeout: 180_000, maxBuffer: 1 << 20 }, (err, stdout, stderr) => {
     let parsed = null;
     try { parsed = JSON.parse(String(stdout).trim().split('\n').pop()); } catch { /* child died */ }
     const result = parsed ?? {
       ok: false,
       model,
-      limitMb,
-      // Killed by the watchdog = the RESULT, not a fault: this model needs more resident memory than
-      // `limitMb`. Raise the limit (within the container's headroom) and try again.
-      error: killedByWatchdog
-        ? `watchdog killed the child at ${peakChildMb} MB RSS (cap ${limitMb} MB) — needs more`
-        : `child died: ${err?.message ?? 'no output'}`,
-      peak_child_rss_mb: peakChildMb,
+      // No JSON back = the child was killed. On Render that is almost always the OOM killer, which
+      // is itself the measurement: this model does not fit in this instance's memory.
+      error: err?.killed ? 'child killed (timeout or OOM)' : (err?.message ?? 'no output from child'),
       signal: err?.signal ?? null,
-      stderr: String(stderr).slice(-300),
+      stderr: String(stderr).slice(-400),
     };
-    result.peak_child_rss_mb = peakChildMb;   // what the PARENT observed — independent of the child's own report
     if (result.ok) benchCache.set(model, result);
     res.json(result);
   });
-
-  // Poll the child's real RSS from /proc and kill it before it can threaten the container.
-  const watch = setInterval(() => {
-    try {
-      const status = readFileSync(`/proc/${child.pid}/status`, 'utf8');
-      const kb = Number(/VmRSS:\s+(\d+)\s+kB/.exec(status)?.[1] ?? 0);
-      const rssMb = Math.round(kb / 1024);
-      if (rssMb > peakChildMb) peakChildMb = rssMb;
-      if (rssMb > limitMb) { killedByWatchdog = true; child.kill('SIGKILL'); clearInterval(watch); }
-    } catch { /* child gone, or not linux — nothing to watch */ }
-  }, 50);
 });
 
 export default router;
