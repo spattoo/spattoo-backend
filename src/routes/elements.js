@@ -87,7 +87,9 @@ router.get('/element-types', requireAuth, requireCapability('design:create'), as
   try {
     const { data, error } = await supabase
       .from('element_types')
-      .select('id, slug, name, placement_rules, sort_order, default_allowed_actions')
+      // baker_uploadable: the designer needs it to know which kinds a user may upload into
+      // ("My Decorations"). The list of offered kinds is DATA — never a hardcoded array in the client.
+      .select('id, slug, name, placement_rules, sort_order, default_allowed_actions, baker_uploadable')
       .eq('is_active', true)
       .order('sort_order');
 
