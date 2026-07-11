@@ -13,7 +13,9 @@ import { generateWebpThumbnail } from '../services/thumbnails.js';
 
 const router = Router();
 
-function toPublicUrl(key) {
+// EXPORTED so the baker-facing routes (routes/myElements.js) expand keys the SAME way — one place
+// decides how a stored key becomes a loadable URL.
+export function toPublicUrl(key) {
   if (!key) return null;
   if (/^https?:\/\//i.test(key)) return key;   // already a full URL — don't double-prefix
   return `${config.r2.publicUrl}/${key}`;

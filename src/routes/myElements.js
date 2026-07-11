@@ -7,7 +7,7 @@ import { getEntitlements } from '../services/entitlements.js';
 import { requireAuth } from '../middleware/auth.js';
 import { requireCapability } from '../middleware/rbac.js';
 import { reindexElement } from '../services/elementIndex.js';
-import { ensureThumbKey } from './elements.js';   // reuse the SAME post-create thumbnail step
+import { ensureThumbKey, toPublicUrl } from './elements.js';   // reuse the SAME post-create + URL-expansion helpers
 
 const router = Router();
 
@@ -136,11 +136,16 @@ router.post('/elements', requireAuth, requireCapability('element:manage'), async
   }
 });
 
-// ── DELETE /api/elements/:id — remove one of MINE ────────────────────────────────────────────────
+// ── DELETE /api/elements/:id — remove a decoration in MY tenant ──────────────────────────────────
 // Soft-delete (is_active=false): designs already placed on a cake still reference this element, and a
-// hard delete would silently rewrite history. The scoped .eq() chain IS the guard — a row that isn't
-// yours simply doesn't match, so a wrong-owner id is indistinguishable from a missing one (no
-// enumeration oracle), and there is no check/act race.
+// hard delete would silently rewrite a customer's saved cake. The scoped .eq() chain IS the guard — a
+// row that isn't yours simply doesn't match, so a wrong-owner id is indistinguishable from a missing
+// one (no enumeration oracle), and there is no check/act race.
+//
+// A BAKER may remove ANYTHING in their tenant, including a customer's private upload. It's their
+// storage, their quota (customer uploads count against the baker's plan) and their moderation problem
+// — a baker who cannot remove a customer's image has no way to deal with one they must not host.
+// A CUSTOMER may only remove their own.
 router.delete('/elements/:id', requireAuth, requireCapability('element:manage'), async (req, res) => {
   try {
     if (!req.bakerId) return res.status(403).json({ error: 'No baker context' });
@@ -152,17 +157,55 @@ router.delete('/elements/:id', requireAuth, requireCapability('element:manage'),
       .eq('baker_id', req.bakerId)          // never another tenant's
       .not('baker_id', 'is', null);         // and NEVER a global element, whatever else matches
 
-    // A customer may only remove their OWN upload. A baker (no customerId) may remove the tenant's
-    // shared ones — but not a customer's private upload, which isn't theirs to delete.
-    q = req.customerId
-      ? q.eq('customer_id', req.customerId)
-      : q.is('customer_id', null);
+    // Customers are confined to their own row; a baker principal is not further narrowed, so the
+    // tenant filter above is their whole scope.
+    if (req.customerId) q = q.eq('customer_id', req.customerId);
 
     const { data, error } = await q.select('id');
     if (error) return serverError(req, res, error);
     if (!data?.length) return res.status(404).json({ error: 'Not found' });
 
     res.json({ ok: true, id: data[0].id });
+  } catch (err) {
+    serverError(req, res, err);
+  }
+});
+
+// ── GET /api/elements/customer-uploads — the baker's moderation/print list ───────────────────────
+// Customer uploads deliberately do NOT appear in the baker's decoration picker: a busy storefront
+// would flood it with one-off photos (someone's child, someone's logo) that the baker will never place
+// on another cake. But the baker must still be able to SEE, DOWNLOAD and REMOVE them — it's their
+// tenant and their quota. Same rows, different surface.
+//
+// Note this is not the path the A4 print sheet uses. That reads the images straight off the ORDER
+// (orders/PhotoSheet.jsx → design_snapshot.stickers), because a design embeds its sticker's imageUrl —
+// so printing a customer's decoration already works with no catalog read at all.
+//
+// Baker principals only: a customer has no business enumerating anyone's uploads, including their own
+// via this route (they see their own in the picker already).
+router.get('/elements/customer-uploads', requireAuth, requireCapability('element:manage'), async (req, res) => {
+  try {
+    if (!req.bakerId) return res.status(403).json({ error: 'No baker context' });
+    if (req.customerId) return res.status(403).json({ error: 'Not available' });
+
+    const { data, error } = await supabase
+      .from('cake_elements')
+      .select('id, name, image_url, thumbnail_url, customer_id, created_at, customers(first_name, last_name)')
+      .eq('baker_id', req.bakerId)
+      .not('customer_id', 'is', null)      // customer uploads ONLY — the baker's own library is the picker
+      .eq('is_active', true)
+      .order('created_at', { ascending: false });
+    if (error) return serverError(req, res, error);
+
+    res.json((data ?? []).map(el => ({
+      id:         el.id,
+      name:       el.name,
+      imageUrl:   toPublicUrl(el.image_url),
+      thumbUrl:   toPublicUrl(el.thumbnail_url ?? el.image_url),
+      customerId: el.customer_id,
+      customer:   [el.customers?.first_name, el.customers?.last_name].filter(Boolean).join(' ') || null,
+      createdAt:  el.created_at,
+    })));
   } catch (err) {
     serverError(req, res, err);
   }
