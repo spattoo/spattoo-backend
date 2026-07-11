@@ -23,7 +23,16 @@ export const config = {
     serviceKey: process.env.SUPABASE_SERVICE_KEY,
     anonKey:    process.env.SUPABASE_ANON_KEY,  // public key — for customer OTP (signInWithOtp/verifyOtp)
   },
-  openai:   { apiKey: process.env.OPENAI_API_KEY },
+  openai: {
+    apiKey: process.env.OPENAI_API_KEY,
+    // Image model for "Extract Elements" decoration regeneration. Env-driven because this family
+    // churns: dall-e-3 was REMOVED (2026-05-12) and gpt-image-1 is deprecated (2026-10-23). The
+    // successor gpt-image-2 does NOT support transparent backgrounds, so it can't be swapped in
+    // blindly for cut-out assets — see services/openai.js generateDecorationImage.
+    // Quality on 1024x1024: low ≈ $0.009, medium ≈ $0.034, high ≈ $0.133 per image.
+    imageModel:   process.env.OPENAI_IMAGE_MODEL   || 'gpt-image-1.5',
+    imageQuality: process.env.OPENAI_IMAGE_QUALITY || 'medium',
+  },
   removeBg: { apiKey: process.env.REMOVE_BG_API_KEY },
   // Meshy.ai image-to-3D. Not in `required[]` (like razorpay/smtp) so local boot
   // doesn't fail without a key — services/meshy.js throws a clear error at call time.

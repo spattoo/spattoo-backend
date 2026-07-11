@@ -16,7 +16,8 @@ const ROUTES = join(ROOT, 'src', 'routes');
 // Capabilities only INTERNAL admins should hold. A route guarded by one is a privileged/admin route.
 const ADMIN_CAPS = new Set(['catalog:admin', 'subscription:override', 'baker:onboard']);
 // Documented exceptions: privileged routes not under /admin. Currently NONE — every admin-capability
-// route lives under /api/admin (SEC-15 relocated the last straggler, /jobs/extract). Kept as the
+// route lives under /api/admin. (SEC-15 relocated the last straggler, the old /jobs/extract; that
+// route has since been superseded by /admin/element-extract/*.) Kept as the
 // escape-hatch so a deliberate future exception is explicit and any accidental stray still fails.
 const EXEMPT = new Set([]);
 

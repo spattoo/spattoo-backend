@@ -2,6 +2,16 @@ import { config } from '../config.js';
 
 const sleep = (ms) => new Promise(r => setTimeout(r, ms));
 
+// "Extract Elements" phase 1 — find each distinct decoration on a cake photo and, crucially, WHERE
+// it is, so we can crop it out and use the real pixels as the reference image for regeneration.
+//
+// The bbox is the whole point. The previous version of this prompt asked GPT to write a rich
+// text description and handed that to a text-only image model — the decoration made a round trip
+// through English and came back generic. Now the crop conditions the generation directly, and the
+// prompt only has to say what to CLEAN UP (isolate it, drop the cake behind it), not what it looks
+// like. Vision models are imprecise at boxes, so we ask for a GENEROUS box and pad it further on
+// crop: a little surrounding cake in the reference is harmless (the model is told to exclude it),
+// whereas a tight box that clips the decoration is not recoverable.
 export async function identifyElements(imageUrl) {
   const res = await fetch('https://api.openai.com/v1/chat/completions', {
     method: 'POST',
@@ -15,10 +25,12 @@ export async function identifyElements(imageUrl) {
       messages: [{
         role: 'user',
         content: [
-          { type: 'image_url', image_url: { url: imageUrl } },
+          { type: 'image_url', image_url: { url: imageUrl, detail: 'high' } },
           {
             type: 'text',
-            text: `You are a professional cake decorator. Carefully analyse this cake image.
+            text: `You are a professional cake decorator cataloguing the decorations on this cake so each
+one can be recreated as a reusable library asset.
+
 Return ONLY a JSON object, no explanation:
 {
   "cake": {
@@ -31,21 +43,24 @@ Return ONLY a JSON object, no explanation:
   "elements": [
     {
       "element": "<rose|leaf|drip|topper|macaron|other>",
-      "label": "<short name>",
+      "label": "<short name a baker would use, e.g. 'pink buttercream rosette'>",
       "color_hex": "<dominant hex colour>",
       "material": "<buttercream|fondant|acrylic|sugar|chocolate|other>",
-      "tier": "<top|bottom>",
-      "position": "<topper|top-front-left|top-front-center|top-front-right|top-back-left|top-back-center|top-back-right|top-center|side-front-left|side-front-center|side-front-right|side-left|side-right>",
-      "size": "<small|medium|large>",
-      "prompt": "<rich DALL-E prompt. If buttercream: 'piped buttercream rosette using a 1M piping tip, swirled creamy texture'. If fondant: 'hand-sculpted smooth fondant, matte finish'. Include exact colors, bloom count, leaves. End with: transparent background, no shadows, soft studio lighting, photorealistic product photo, no hands, no cake>"
+      "bbox": { "x": <0..1>, "y": <0..1>, "w": <0..1>, "h": <0..1> },
+      "prompt": "<one sentence naming the decoration and its craft, e.g. 'a piped buttercream rosette made with a 1M tip, swirled creamy texture, dusty pink'. Describe ONLY the decoration itself — never the cake it sits on.>"
     }
   ]
 }
+
+About "bbox": the axis-aligned box around that ONE decoration, as fractions of the image
+(x,y = top-left corner; w,h = width/height; all 0..1). Err on the side of a slightly LARGER box —
+clipping part of the decoration is much worse than including a little cake around it.
+
 Rules:
-- Max 5 elements
-- Each element gets its OWN entry even if there are multiple of the same type at different positions
-- Ignore cake base, board, plain frosting, sprinkles, pearls
-- Toppers are always position "topper", tier "top"`,
+- Max 5 elements.
+- Each PHYSICAL decoration gets its own entry, even if several are the same type in different places.
+- Ignore the cake base, the board, plain frosting, sprinkles and pearls — they aren't standalone assets.
+- Pick decorations that would actually be reusable on another cake.`,
           },
         ],
       }],
@@ -365,24 +380,49 @@ Return ONLY JSON: { "description": "<comma-separated keywords>" }`;
   return (JSON.parse(json).description || '').trim();
 }
 
-export async function generateElementImage(prompt) {
-  const res = await fetch('https://api.openai.com/v1/images/generations', {
+// "Extract Elements" phase 2 — regenerate ONE decoration as a clean, isolated library asset,
+// conditioned on the actual crop from the customer's photo (`/v1/images/edits`, multipart).
+//
+// Why an EDIT and not a generation: the crop is the ground truth. `input_fidelity: 'high'` tells the
+// model to preserve the reference's identity rather than reinterpret it, which is the difference
+// between recreating THIS rosette and inventing a stock one. No `mask` — we are not inpainting a
+// region, we are re-rendering the whole (already cropped) subject in isolation.
+//
+// Model choice is env-driven because this family is churning fast: `dall-e-3` was REMOVED from the
+// API on 2026-05-12 (this function used to call it, which is why the old extract job could never
+// have worked), and `gpt-image-1` is deprecated for 2026-10-23. We default to `gpt-image-1.5`.
+// NOTE the constraint that pins us: `gpt-image-2` does NOT support `background: 'transparent'`, so
+// it is not a drop-in successor for cut-out assets. If we are forced onto it, the alpha has to come
+// from remove.bg instead — which the caller already falls back to whenever the returned PNG is
+// opaque, so that switch is a config change, not a code change.
+//
+// Returns a PNG Buffer (GPT image models ALWAYS return base64 — `response_format` is a DALL·E-only
+// param and there is no `url` to read).
+export async function generateDecorationImage(cropBuffer, prompt) {
+  const form = new FormData();
+  form.append('model', config.openai.imageModel);
+  form.append('image', new Blob([cropBuffer], { type: 'image/png' }), 'crop.png');
+  form.append('prompt',
+    `Recreate the decoration shown in the reference image as an isolated product photo: ${prompt}. ` +
+    'Keep its exact shape, colour, texture and craft. Show ONLY the decoration — remove the cake, ' +
+    'the frosting behind it, any board, hands or props. Fully transparent background, no shadow, ' +
+    'soft even studio lighting, photorealistic, shot straight on.');
+  form.append('size', '1024x1024');
+  form.append('quality', config.openai.imageQuality);
+  form.append('background', 'transparent');   // native cut-out; remove.bg is the fallback if ignored
+  form.append('output_format', 'png');        // must be png/webp — jpeg cannot carry alpha
+  form.append('input_fidelity', 'high');      // preserve the reference decoration's identity
+  form.append('n', '1');
+
+  const res = await fetch('https://api.openai.com/v1/images/edits', {
     method: 'POST',
-    headers: {
-      'Authorization': `Bearer ${config.openai.apiKey}`,
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify({
-      model: 'dall-e-3',
-      prompt: prompt + ' Pure white background, no shadows, no hands, no cake, isolated decoration only. Photorealistic, soft studio lighting, product photography.',
-      n: 1,
-      size: '1024x1024',
-      quality: 'standard',
-      response_format: 'url',
-    }),
+    headers: { 'Authorization': `Bearer ${config.openai.apiKey}` },   // no Content-Type — FormData sets the boundary
+    body: form,
   });
 
-  if (!res.ok) throw new Error(`DALL-E failed: ${await res.text()}`);
+  if (!res.ok) throw new Error(`${config.openai.imageModel} edit failed: ${await res.text()}`);
   const data = await res.json();
-  return data.data[0].url;
+  const b64 = data?.data?.[0]?.b64_json;
+  if (!b64) throw new Error(`${config.openai.imageModel} returned no image data`);
+  return Buffer.from(b64, 'base64');
 }

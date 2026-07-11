@@ -31,6 +31,10 @@ const FOLDER_CONTENT_TYPES = {
   'customer/photos':      IMAGE_TYPES,   // customer-uploaded photo for a photo-cake frame (public → designer textures it)
   'meshy/source':         IMAGE_TYPES,   // uploaded 2D image for the image→3D wizard (public so Meshy can fetch it)
   'meshy/outputs':        MODEL_TYPES,   // our copy of the Meshy-generated GLB (written server-side via putObject)
+  // "Extract Elements": the uploaded cake photo we identify decorations in. Public so GPT-4o vision
+  // can fetch it by URL. Crops + regenerated outputs are written SERVER-side via putObject (no signed
+  // upload needed for those), but they share this folder tree — see routes/elementExtract.js.
+  'elements/candidates':  IMAGE_TYPES,
 };
 const ALLOWED_FOLDERS = Object.keys(FOLDER_CONTENT_TYPES);
 
