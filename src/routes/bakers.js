@@ -17,6 +17,8 @@ import { PLAN }                from '../constants/subscriptionPlans.js';
 import { PERIOD }              from '../constants/billingPeriods.js';
 import { SUBSCRIPTION_STATUS } from '../constants/subscriptionStatuses.js';
 import { createBakerForUser, slugTaken, primaryOwnerConflict, findAppuserByIdentity, normalizeSlug, isValidSlug, RESERVED_SLUGS, generateUniqueSlug } from '../services/bakerProvisioning.js';
+import { recordAttestation, attestationMissing, publishError } from '../services/contentAttestation.js';
+import { ATTESTATION_TARGET_TYPE } from '../constants/legalDocuments.js';
 import { normalizePhone } from '../lib/phone.js';
 import { sendStaffWelcomeEmail } from '../services/email.js';
 import { getEntitlements } from '../services/entitlements.js';
@@ -484,6 +486,11 @@ router.get('/baker/storefront-photos', requireAuth, async (req, res) => {
 // ── POST /api/baker/storefront-photos ─────────────────────────────────────────
 // Add one gallery photo (already uploaded to R2). Body: { storage_key | key, caption? }.
 // A row is written immediately on upload so every R2 object is tracked + manageable.
+//
+// NO rights attestation here: a gallery photo is not public until the STOREFRONT is published
+// (until then GET /api/storefront/:slug 404s). The single gate is the Publish button below, whose
+// attestation stands over the storefront's content as a whole — including photos added later while
+// already published (their created_at dates them). See supabase/content_attestations.sql.
 router.post('/baker/storefront-photos', requireAuth, requireCapability('store:manage'), async (req, res) => {
   try {
     const { data: contact } = await supabase
@@ -654,17 +661,51 @@ router.put('/baker/storefront-photos', requireAuth, requireCapability('store:man
 // ── POST /api/baker/storefront/publish  +  /unpublish ─────────────────────────
 // Flip the storefront live/draft. Required before the public page renders or the
 // baker can invite customers.
+//
+// PUBLISH IS THE ONE RIGHTS GATE (IP/copyright). This is the exact moment the baker's content
+// becomes visible to the WORLD — until storefront_published is true, GET /api/storefront/:slug
+// 404s, so templates, gallery photos and the hero are all still baker<->customer only. Cake themes
+// are overwhelmingly third-party IP, and Spattoo does not pre-screen, so the baker must affirm
+// they have the right to publish (ToS 6.4/6.5, B5.4-B5.6) and we keep the evidence
+// (content_attestations). Every Publish click appends a fresh attestation — a re-publish after
+// adding new cakes is a new affirmation, against whatever statement version is current then.
+//
+// UNPUBLISH is NOT gated: taking your storefront down needs no permission, and refusing it would
+// be perverse (it is the remedy we would ask for on a takedown).
 async function setPublished(req, res, published) {
   try {
     const { data: contact } = await supabase
       .from('baker_appusers').select('baker_id').eq('auth_user_id', req.user.id).maybeSingle();
     if (!contact) return res.status(404).json({ error: 'No baker account found' });
+
+    if (published && attestationMissing(req.body)) {
+      return res.status(400).json({
+        error: 'Confirm you have the right to publish this content.',
+        code: 'ATTESTATION_REQUIRED',
+      });
+    }
+
+    // Evidence BEFORE exposure: attest first, then go live. If the attestation write fails the
+    // storefront stays private, so nothing is ever world-visible without a record of who vouched
+    // for it. (Ordering it this way is why no rollback is needed — cf. the Supabase REST client
+    // having no cross-table transaction.)
+    if (published) {
+      await recordAttestation({
+        subjectId:  req.user.id,
+        bakerId:    contact.baker_id,
+        targetType: ATTESTATION_TARGET_TYPE.STOREFRONT,
+        targetId:   contact.baker_id,      // the storefront IS the baker
+        ip:         req.ip,
+        userAgent:  req.headers['user-agent'] ?? null,
+      });
+    }
+
     const { error } = await supabase.from('bakers')
       .update({ storefront_published: published }).eq('id', contact.baker_id);
     if (error) return serverError(req, res, error);
     res.json({ ok: true, storefront_published: published });
   } catch (err) {
-    serverError(req, res, err);
+    publishError(req, res, err);
   }
 }
 router.post('/baker/storefront/publish',   requireAuth, requireCapability('store:manage'), requireEntitlement('storefront'), (req, res) => setPublished(req, res, true));

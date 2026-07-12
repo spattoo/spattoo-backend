@@ -9,6 +9,9 @@ import { notifyOrderPlaced, notifyDesignUpdated, notifyQuoteIssued, notifyQuoteA
 import { getOrderStatuses, getValidStatusKeys, isQuotePhase, idForKey } from '../lib/orderStatuses.js';
 import { getOrderAcceptance } from '../services/entitlements.js';
 import { deleteObject } from '../services/r2.js';
+import { logError } from '../lib/telemetry.js';
+import { recordConsent } from '../services/legalConsent.js';
+import { CONSENT_SUBJECT_TYPE, CONSENT_SOURCE, CONSENT_REQUIRED_DOC_KEYS } from '../constants/legalDocuments.js';
 
 // Baker may attach at most this many finished-cake photos to an order.
 const MAX_FINISHED_PHOTOS = 3;
@@ -371,6 +374,26 @@ router.post('/customer/orders', requireAuth, async (req, res) => {
       customerContact: { first_name: customer.first_name, last_name: customer.last_name, email: customer.email, phone: customer.phone },
       body:            req.body,
     });
+
+    // ── Customer consent (DPDP "Layer 2", source 'quote') ───────────────────
+    // Requesting a quote IS the affirmative act — the designer shows "By requesting a quote you
+    // agree to the Terms of Service and Privacy Policy" directly above this button. Recorded HERE,
+    // server-side, rather than by a client call the browser could skip: this is the ONLY moment a
+    // storefront customer accepts anything, and it is what makes the ToS content warranties
+    // (6.3/6.4 — "you have the right to use this image") actually bind them. It is also why we do
+    // NOT prompt on every photo upload: ask once, prove it forever.
+    //
+    // Idempotent per (subject, current version), so re-quoting never duplicates a row, and a no-op
+    // while the docs are still draft. Deliberately NON-FATAL: the order is the customer's, and an
+    // audit write must not lose them their cake. A failure is logged, not surfaced.
+    recordConsent({
+      subjectType: CONSENT_SUBJECT_TYPE.CUSTOMER,
+      subjectId:   req.user.id,
+      docKeys:     [...CONSENT_REQUIRED_DOC_KEYS],
+      source:      CONSENT_SOURCE.QUOTE,
+      ip:          req.ip,
+      userAgent:   req.headers['user-agent'] ?? null,
+    }).catch(err => logError(err, req));
 
     res.status(201).json({ orderId: order.id, createdAt: order.created_at });
   } catch (err) {

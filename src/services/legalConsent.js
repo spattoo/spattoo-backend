@@ -1,5 +1,69 @@
 import { supabase } from './supabase.js';
+import { legalContentHash } from '../lib/legalHash.js';
 import { CONSENT_ACTION, CONSENT_SOURCE, CONSENT_REQUIRED_DOC_KEYS } from '../constants/legalDocuments.js';
+
+// Publish (register) a document version and make it the sole current one.
+//
+// IMMUTABLE: re-registering the same (doc_key, version) with DIFFERENT text throws — bump the
+// version instead. Re-registering identical text is idempotent, so a publish script is safe to
+// re-run. `content` must be the FINAL, token-substituted text the user actually sees (never raw
+// {{PLACEHOLDER}} markdown) — the hash has to reproduce from what was shown.
+//
+// Lives here, not in the route, because TWO callers need identical semantics: POST
+// /api/admin/legal/versions and scripts/publish-legal-version.mjs. A second copy of the
+// unset-then-set is exactly how the one-current-per-doc invariant would drift.
+export async function publishVersion({ docKey, version, effectiveAt, content }) {
+  const contentHash = legalContentHash(content);
+
+  const { data: existing } = await supabase
+    .from('legal_document_versions')
+    .select('id, content_hash, effective_at')
+    .eq('doc_key', docKey)
+    .eq('version', version)
+    .maybeSingle();
+
+  let row;
+  if (existing) {
+    if (existing.content_hash !== contentHash) {
+      const err = new Error('version already published with different content — bump the version');
+      err.code = 'VERSION_CONTENT_MISMATCH';
+      throw err;
+    }
+    row = existing;                                   // idempotent re-register of identical text
+  } else {
+    const { data: inserted, error } = await supabase
+      .from('legal_document_versions')
+      .insert({ doc_key: docKey, version, effective_at: effectiveAt, content_hash: contentHash, content, is_current: false })
+      .select('id, effective_at')
+      .single();
+    if (error) throw error;
+    row = inserted;
+  }
+
+  // Unset the others FIRST so the one-current-per-doc partial unique index is never violated
+  // mid-flight.
+  const un = await supabase
+    .from('legal_document_versions')
+    .update({ is_current: false })
+    .eq('doc_key', docKey)
+    .neq('id', row.id);
+  if (un.error) throw un.error;
+  const cur = await supabase
+    .from('legal_document_versions')
+    .update({ is_current: true })
+    .eq('id', row.id);
+  if (cur.error) throw cur.error;
+
+  return {
+    id: row.id,
+    docKey,
+    version,
+    effectiveAt: row.effective_at ?? effectiveAt,
+    contentHash,
+    isCurrent: true,
+    created: !existing,
+  };
+}
 
 // Consent-log helpers (DPDP "Layer 2"). See docs/CONSENT_CAPTURE_PLAN.md.
 // consent_events is append-only: a withdrawal is a NEW row, so "is this accepted?" means

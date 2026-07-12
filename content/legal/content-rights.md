@@ -1,0 +1,1 @@
+I confirm I have the right to publish this content, and that it does not infringe anyone else's copyright, trademark, or other rights. Licensed characters, film and TV themes, sports club and brand logos, and celebrity likenesses generally require permission from the rights holder — Spattoo does not provide that permission. I accept responsibility for what I publish.

@@ -6,11 +6,12 @@ import { requireCapability, resolvePrincipal } from '../middleware/rbac.js';
 import { legalContentHash } from '../lib/legalHash.js';
 import {
   LEGAL_DOC_KEYS,
+  PUBLISHABLE_DOC_KEYS,
   CONSENT_REQUIRED_DOC_KEYS,
   CONSENT_SUBJECT_TYPE,
   CONSENT_SOURCE,
 } from '../constants/legalDocuments.js';
-import { getCurrentVersions, recordConsent, withdrawConsent, consentHistory } from '../services/legalConsent.js';
+import { getCurrentVersions, recordConsent, withdrawConsent, consentHistory, publishVersion } from '../services/legalConsent.js';
 
 // Resolve the consenting subject (baker app-user vs invited customer) from the authed principal.
 // Shared by consent / withdraw / history so the mapping never drifts. Returns a smallint or null.
@@ -32,7 +33,9 @@ const router = Router();
 router.post('/admin/legal/versions', requireCapability('legal:manage'), async (req, res) => {
   try {
     const { doc_key, version, effective_at, content, content_hash: providedHash } = req.body ?? {};
-    if (!LEGAL_DOC_KEYS.includes(doc_key)) return res.status(400).json({ error: 'Invalid doc_key' });
+    // PUBLISHABLE_ (not LEGAL_) — the content-rights attestation statement is versioned + hashed
+    // through this same route, but is NOT consentable (see POST /legal/consent below).
+    if (!PUBLISHABLE_DOC_KEYS.includes(doc_key)) return res.status(400).json({ error: 'Invalid doc_key' });
     if (!version || typeof version !== 'string') return res.status(400).json({ error: 'version required' });
     if (!content || typeof content !== 'string') return res.status(400).json({ error: 'content required' });
     if (!effective_at || Number.isNaN(Date.parse(effective_at))) {
@@ -44,55 +47,22 @@ router.post('/admin/legal/versions', requireCapability('legal:manage'), async (r
       return res.status(400).json({ error: 'content_hash mismatch', expected: contentHash });
     }
 
-    const { data: existing } = await supabase
-      .from('legal_document_versions')
-      .select('id, content_hash, effective_at')
-      .eq('doc_key', doc_key)
-      .eq('version', version)
-      .maybeSingle();
+    // Register + flip is_current — shared with scripts/publish-legal-version.mjs so the
+    // immutability + one-current-per-doc rules exist in exactly one place.
+    const result = await publishVersion({ docKey: doc_key, version, effectiveAt: effective_at, content });
 
-    let row;
-    if (existing) {
-      if (existing.content_hash !== contentHash) {
-        return res.status(409).json({
-          error: 'version already published with different content — bump the version',
-          version,
-        });
-      }
-      row = existing; // idempotent re-register of identical text
-    } else {
-      const { data: inserted, error } = await supabase
-        .from('legal_document_versions')
-        .insert({ doc_key, version, effective_at, content_hash: contentHash, content, is_current: false })
-        .select('id, effective_at')
-        .single();
-      if (error) throw error;
-      row = inserted;
-    }
-
-    // Make it the sole current version. Unset the others FIRST so the one-current-per-doc
-    // partial unique index is never violated mid-flight.
-    const un = await supabase
-      .from('legal_document_versions')
-      .update({ is_current: false })
-      .eq('doc_key', doc_key)
-      .neq('id', row.id);
-    if (un.error) throw un.error;
-    const cur = await supabase
-      .from('legal_document_versions')
-      .update({ is_current: true })
-      .eq('id', row.id);
-    if (cur.error) throw cur.error;
-
-    res.status(existing ? 200 : 201).json({
-      id: row.id,
-      doc_key,
-      version,
-      effective_at: row.effective_at ?? effective_at,
-      content_hash: contentHash,
+    res.status(result.created ? 201 : 200).json({
+      id: result.id,
+      doc_key: result.docKey,
+      version: result.version,
+      effective_at: result.effectiveAt,
+      content_hash: result.contentHash,
       is_current: true,
     });
   } catch (err) {
+    if (err?.code === 'VERSION_CONTENT_MISMATCH') {
+      return res.status(409).json({ error: err.message, version: req.body?.version });
+    }
     serverError(req, res, err);
   }
 });
@@ -122,7 +92,9 @@ router.get('/legal/current', async (req, res) => {
 router.get('/legal/:docKey', async (req, res) => {
   try {
     const { docKey } = req.params;
-    if (!LEGAL_DOC_KEYS.includes(docKey)) return res.status(404).json({ error: 'Unknown document' });
+    // PUBLISHABLE_ — this is also how the designer fetches the current content-rights statement
+    // to SHOW the baker the exact sentence they are about to affirm at publish time.
+    if (!PUBLISHABLE_DOC_KEYS.includes(docKey)) return res.status(404).json({ error: 'Unknown document' });
     const { data, error } = await supabase
       .from('legal_document_versions')
       .select('doc_key, version, effective_at, content, content_hash')

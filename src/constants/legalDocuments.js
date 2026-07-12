@@ -8,6 +8,34 @@ export const LEGAL_DOC_KEYS = ['tos', 'privacy', 'refund', 'grievance'];
 // informational (surfaced, not gated).
 export const CONSENT_REQUIRED_DOC_KEYS = ['tos', 'privacy'];
 
+// ── Content-rights attestation (IP / copyright) ────────────────────────────────
+// The short sentence a baker affirms when PUBLISHING a template or storefront photo
+// ("I have the right to publish this…"). It is a published, versioned, hashed text like any
+// other legal doc, so it is stored in legal_document_versions and registered through the same
+// POST /api/admin/legal/versions — no parallel machinery. See supabase/content_attestations.sql.
+//
+// It is deliberately NOT in LEGAL_DOC_KEYS: that list is what POST /api/legal/consent accepts,
+// and an attestation is not a DPDP consent (it is per-item, and not withdrawable). Keeping it
+// out is what stops it polluting the consent trail / "Your agreements" list.
+export const ATTESTATION_DOC_KEY = 'content-rights';
+
+// Everything registerable + publicly readable as a versioned document. Used by the admin
+// register route and GET /api/legal/:docKey — NOT by the consent route.
+export const PUBLISHABLE_DOC_KEYS = [...LEGAL_DOC_KEYS, ATTESTATION_DOC_KEY];
+
+// What the baker attested about. Compact smallint on content_attestations.target_type.
+//
+// ONE target today: the STOREFRONT, attested when the baker clicks Publish — the only moment
+// content becomes visible to the WORLD (until storefront_published, /api/storefront/:slug 404s).
+// Templates, shared designs, quotes and customer uploads are baker<->customer and already the
+// baker's responsibility under the ToS, so they are deliberately NOT attested — see the header of
+// supabase/content_attestations.sql. A future public surface (custom domain, marketplace listing)
+// is a NEW target_type here, not a new column.
+export const ATTESTATION_TARGET_TYPE = {
+  STOREFRONT: 1,
+  NAME_BY_ID: { 1: 'storefront' },
+};
+
 // Who is consenting. Compact smallint stored on consent_events.subject_type.
 export const CONSENT_SUBJECT_TYPE = {
   BAKER_APPUSER: 1,

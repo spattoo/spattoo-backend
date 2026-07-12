@@ -95,6 +95,74 @@ router.get('/templates/:id', requireAuth, requireCapability('design:create'), as
   }
 });
 
+// ── POST /api/baker/templates ─────────────────────────────────────────────────
+// A baker saves one of their own designs as a template ("Save as Template" in the designer).
+//
+// This route EXISTS because the designer used to insert into cake_templates DIRECTLY from the
+// browser, resolving baker_id CLIENT-side — a tenancy hole: the caller chose which baker it was
+// writing for. Here baker_id is SERVER-RESOLVED from the token and can't be spoofed.
+//
+// NO rights attestation here, deliberately. A template is the baker's DESIGN LIBRARY (this is how
+// they save any design), and it is only ever seen by that baker's own invited customers — never by
+// the open web. The single attestation gate is the storefront Publish button, which is the one
+// moment content becomes world-visible (see supabase/content_attestations.sql). A checkbox on every
+// design save would fire constantly, and a tick clicked fifty times is reflex, not evidence.
+router.post('/baker/templates', requireAuth, requireCapability('template:manage'), attachBakerContext, async (req, res) => {
+  try {
+    if (!req.bakerId) return res.status(404).json({ error: 'No baker account found' });
+
+    const { name, shape, tier_count, offering, design, thumbnail_url,
+            min_weight_kg, min_age, max_age, occasion_tag_ids } = req.body ?? {};
+    if (!name || typeof name !== 'string') return res.status(400).json({ error: 'name is required' });
+    if (!design || typeof design !== 'object') return res.status(400).json({ error: 'design is required' });
+
+    const { data, error } = await supabase
+      .from('cake_templates')
+      .insert({
+        name:          name.trim(),
+        shape:         shape ?? 'round',
+        tier_count:    tier_count ?? 1,
+        type:          'basic',
+        offering:      offering ?? 'standard',
+        baker_id:      req.bakerId,          // server-resolved — never from the client
+        design,
+        thumbnail_url: thumbnail_url ?? null,
+        sort_order:    0,
+        is_active:     true,
+      })
+      .select('id')
+      .single();
+    if (error) return serverError(req, res, error);
+
+    // Optional attrs + occasion tags — same shape the designer wrote directly before.
+    const hasAttrs = min_weight_kg != null || min_age != null || max_age != null;
+    if (hasAttrs) {
+      const { error: attrsErr } = await supabase.from('cake_template_attrs').upsert({
+        template_id:   data.id,
+        min_weight_kg: min_weight_kg ?? null,
+        min_age:       min_age ?? null,
+        max_age:       max_age ?? null,
+      }, { onConflict: 'template_id' });
+      if (attrsErr) return serverError(req, res, attrsErr);
+    }
+
+    if (Array.isArray(occasion_tag_ids) && occasion_tag_ids.length) {
+      const { error: tagErr } = await supabase
+        .from('template_tags')
+        .insert(occasion_tag_ids.map(tag_id => ({ template_id: data.id, tag_id })));
+      if (tagErr) return serverError(req, res, tagErr);
+    }
+
+    if (thumbnail_url) {
+      jobQueue.add('auto_tag', { entityType: 'template', entityId: data.id, thumbnailKey: thumbnail_url, name }).catch(() => {});
+    }
+
+    res.status(201).json({ id: data.id });
+  } catch (err) {
+    serverError(req, res, err);
+  }
+});
+
 router.post('/admin/templates', requireAuth, requireCapability('catalog:admin'), async (req, res) => {
   try {
     const { name, shape, tier_count, type, offering, baker_id, parent_template_id, design, thumbnail_url, sort_order } = req.body;
