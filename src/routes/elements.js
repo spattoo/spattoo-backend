@@ -111,7 +111,7 @@ router.get('/admin/element-types', requireAuth, requireCapability('catalog:admin
   try {
     const { data, error } = await supabase
       .from('element_types')
-      .select('id, slug, name, description, placement_rules, sort_order, is_active')
+      .select('id, slug, name, description, placement_rules, sort_order, is_active, baker_uploadable, default_for_uploads')
       .order('sort_order');
 
     if (error) return serverError(req, res, error);
@@ -129,7 +129,7 @@ router.post('/admin/element-types', requireAuth, requireCapability('catalog:admi
     const { data, error } = await supabase
       .from('element_types')
       .insert({ name, slug, description: description ?? null, placement_rules: placement_rules ?? {}, sort_order: sort_order ?? 0, is_active: true })
-      .select('id, slug, name, description, placement_rules, sort_order, is_active')
+      .select('id, slug, name, description, placement_rules, sort_order, is_active, baker_uploadable, default_for_uploads')
       .single();
 
     if (error) return serverError(req, res, error);
@@ -139,16 +139,33 @@ router.post('/admin/element-types', requireAuth, requireCapability('catalog:admi
   }
 });
 
+// baker_uploadable + default_for_uploads are AUTHORED HERE, not set by hand in the DB. They are master
+// data (which kinds a user may upload; which kind an un-promoted upload behaves as when placed on a
+// cake), and master data is authored in admin → API → DB.
+//
+// default_for_uploads is EXACTLY-ONE, enforced by a unique partial index. So turning it on is a MOVE,
+// not a set: clear the incumbent first, or the insert trips the constraint and the admin sees a raw
+// 23505. Doing it here — rather than asking the UI to untick the old one first — is what makes the
+// invariant true no matter who calls the route.
 router.patch('/admin/element-types/:id', requireAuth, requireCapability('catalog:admin'), async (req, res) => {
   try {
     const { id } = req.params;
-    const { name, slug, description, placement_rules, sort_order, is_active } = req.body;
+    const { name, slug, description, placement_rules, sort_order, is_active, baker_uploadable, default_for_uploads } = req.body;
+
+    if (default_for_uploads === true) {
+      const { error: clearErr } = await supabase
+        .from('element_types')
+        .update({ default_for_uploads: false })
+        .eq('default_for_uploads', true)
+        .neq('id', id);
+      if (clearErr) return serverError(req, res, clearErr);
+    }
 
     const { data, error } = await supabase
       .from('element_types')
-      .update({ ...(name != null && { name }), ...(slug != null && { slug }), ...(description !== undefined && { description }), ...(placement_rules != null && { placement_rules }), ...(sort_order != null && { sort_order }), ...(is_active != null && { is_active }) })
+      .update({ ...(name != null && { name }), ...(slug != null && { slug }), ...(description !== undefined && { description }), ...(placement_rules != null && { placement_rules }), ...(sort_order != null && { sort_order }), ...(is_active != null && { is_active }), ...(baker_uploadable != null && { baker_uploadable }), ...(default_for_uploads != null && { default_for_uploads }) })
       .eq('id', id)
-      .select('id, slug, name, description, placement_rules, sort_order, is_active')
+      .select('id, slug, name, description, placement_rules, sort_order, is_active, baker_uploadable, default_for_uploads')
       .single();
 
     if (error) return serverError(req, res, error);
