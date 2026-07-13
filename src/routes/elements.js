@@ -13,7 +13,7 @@ import { generateWebpThumbnail } from '../services/thumbnails.js';
 
 const router = Router();
 
-// EXPORTED so the baker-facing routes (routes/myElements.js) expand keys the SAME way — one place
+// EXPORTED so the baker-facing routes (routes/uploads.js) expand keys the SAME way — one place
 // decides how a stored key becomes a loadable URL.
 export function toPublicUrl(key) {
   if (!key) return null;
@@ -57,7 +57,7 @@ function glbStatColumns(body) {
 // The master thumbnail (thumbnail_url, now itself a WebP) is retained as the source
 // and the fallback (thumb_key ?? thumbnail_url).
 //
-// EXPORTED so the baker-facing create path (routes/myElements.js) runs the SAME post-create work
+// EXPORTED so the baker-facing create path (routes/uploads.js) runs the SAME post-create work
 // rather than growing a second copy that drifts. An element is an element, whoever made it.
 export async function ensureThumbKey(id, thumbnailKey) {
   try {
@@ -182,16 +182,16 @@ router.get('/elements', requireAuth, requireCapability('design:create'), async (
     }
 
     // SEC-7: global elements + the caller's own tenant only (never another baker's private lib).
-    // customerScoped: cake_elements also carries a per-CUSTOMER scope, so a customer's own uploads
-    // come back to them and to nobody else — not even to another customer of the same baker.
+    // This is the LIBRARY: admin-authored elements plus whatever the baker has PROMOTED into their own.
+    // A user's uploads are NOT here — they live in baker_uploads, private, and are read from
+    // GET /api/uploads (see supabase/baker_uploads.sql for why they were moved out).
     let query = scopeCatalogRead(
       supabase
         .from('cake_elements')
-        .select(`${ELEM_FIELDS}, baker_id, customer_id, parent_id`)
+        .select(`${ELEM_FIELDS}, baker_id, parent_id`)
         .eq('is_active', true)
         .order('sort_order'),
       req,
-      { customerScoped: true },
     );
 
     if (element_type_id) query = query.eq('element_type_id', element_type_id);

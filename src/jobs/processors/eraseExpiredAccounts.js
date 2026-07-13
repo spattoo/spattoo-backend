@@ -2,6 +2,7 @@ import { supabase } from '../../services/supabase.js';
 import { config } from '../../config.js';
 import { DELETION_STATUS, ERASURE_MANIFEST } from '../../constants/accountDeletion.js';
 import { notifyAccountErasureScheduled } from '../../services/notifications.js';
+import { deleteObject } from '../../services/r2.js';
 
 // Scheduled sweep for the account-erasure lifecycle (DPDP "Layer 3"), run as a BullMQ repeatable
 // job (jobs/schedules.js) — NOT an in-process timer. Two passes, both idempotent:
@@ -78,6 +79,42 @@ async function eraseDueAccounts(nowIso) {
   }
 }
 
+// Erase every image uploaded into a tenant: deactivate the promoted library copies (via the
+// source_upload_id link), delete the R2 objects, then drop the rows.
+//
+// HARD delete, not the soft delete the routes use. Elsewhere `deleted_at` is right — a baker removing an
+// image wants a trail, and moderation wants to know what was taken down. Erasure is the opposite: the
+// user asked us to STOP HOLDING IT, and a soft-deleted row still holds the storage_key of a live object.
+// The audit trail that survives is deletion_requests, which records that the erasure happened — the
+// right thing to keep, without keeping the photograph.
+async function eraseUploads(bakerId) {
+  const { data: uploads, error } = await supabase
+    .from('baker_uploads')
+    .select('id, storage_key')
+    .eq('baker_id', bakerId);
+  if (error) throw new Error(`upload erase query failed: ${error.message}`);
+  if (!uploads?.length) return;
+
+  const { error: unlinkErr } = await supabase
+    .from('cake_elements')
+    .update({ is_active: false })
+    .in('source_upload_id', uploads.map(u => u.id));
+  if (unlinkErr) throw new Error(`unlink promoted uploads failed: ${unlinkErr.message}`);
+
+  // Object deletes are isolated: one missing key (already gone, or never written) must not abort the
+  // erasure of the rest. Losing the ROW while the object lingers would be the bad failure, so rows go last.
+  for (const u of uploads) {
+    try {
+      await deleteObject(u.storage_key);
+    } catch (e) {
+      console.error(`[erase-accounts] R2 delete ${u.storage_key} failed:`, e.message);
+    }
+  }
+
+  const { error: delErr } = await supabase.from('baker_uploads').delete().eq('baker_id', bakerId);
+  if (delErr) throw new Error(`upload row delete failed: ${delErr.message}`);
+}
+
 async function eraseOneBaker(bakerId) {
   // Capture auth logins BEFORE anonymizing, so we can delete them (removes email/phone from
   // auth.users too — that PII lives outside our tables).
@@ -92,6 +129,15 @@ async function eraseOneBaker(bakerId) {
     const { error } = await supabase.from(table).update(patch).eq(bakerFk, bakerId);
     if (error) throw new Error(`manifest erase ${table} failed: ${error.message}`);
   }
+
+  // UPLOADED IMAGES — the manifest cannot reach these. It nulls COLUMNS, but an upload is an OBJECT in
+  // R2 (a customer's photo: personal data, and often a child's). Nulling a column would leave the image
+  // sitting in the bucket, publicly addressable, after we told the user it was erased.
+  //
+  // The library copy must go too. If an upload had been PROMOTED, deleting only the upload row would
+  // leave the promoted cake_elements row live in every customer's picker — a deletion that did not
+  // delete. Promotion links back (source_upload_id) precisely so erasure can follow it.
+  await eraseUploads(bakerId);
 
   // Delete the Supabase Auth users (blocks login + erases their auth-side PII).
   for (const u of appusers ?? []) {

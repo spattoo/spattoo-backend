@@ -13,32 +13,17 @@ import { supabase } from '../services/supabase.js';
 //
 // Kept as ONE helper (not pasted per route) so the rule can't drift across call sites — the exact
 // duplication class that let SEC-7 exist (list routes were scoped, by-id routes were not).
-// `customerScoped` opts a table into the NARROWER second scope (cake_elements only — see
-// supabase/element_ownership.sql). Without it, behaviour is exactly as before, so cake_templates and
-// every other caller are untouched. The flag exists because a table that lacks the column must not be
-// filtered on it, and because "does this table have per-customer rows?" is a property of the TABLE,
-// not of the request.
 //
-// The rule it adds: a customer sees global rows, their baker's SHARED rows, and their OWN rows — and
-// never another customer's. A BAKER principal (no customerId) sees global + shared, but NOT their
-// customers' private uploads; those aren't the baker's to browse, and the baker doesn't need them in
-// the picker anyway, because a design embeds the sticker's imageUrl and renders fine without the
-// catalog row.
-export function scopeCatalogRead(query, req, { customerScoped = false } = {}) {
-  if (req.isAdmin) return query;                                   // admin: unrestricted
-  if (!req.bakerId) return query.is('baker_id', null);             // no tenant: global only
-
-  if (!customerScoped) {
-    return query.or(`baker_id.is.null,baker_id.eq.${req.bakerId}`);   // global + own tenant
-  }
-  const mine = req.customerId
-    ? `,and(baker_id.eq.${req.bakerId},customer_id.eq.${req.customerId})`   // …plus my own uploads
-    : '';
-  return query.or(
-    `baker_id.is.null,` +                                              // global
-    `and(baker_id.eq.${req.bakerId},customer_id.is.null)` +            // my baker's SHARED library
-    mine,
-  );
+// THE `customerScoped` BRANCH IS GONE (was: cake_elements' per-customer scope). It existed only to make
+// USER UPLOADS fit a table they never belonged in, and it is what leaked: a baker's upload landed with
+// `customer_id = NULL` — the value meaning "the whole tenant sees it" — so a photo a customer sent her
+// baker over WhatsApp appeared in every OTHER customer's picker. Uploads now live in `baker_uploads`,
+// private by construction (supabase/baker_uploads.sql), and this helper goes back to the one thing a
+// CATALOG scope should say: you see the global library, plus your own tenant's.
+export function scopeCatalogRead(query, req) {
+  if (req.isAdmin) return query;                                  // admin: unrestricted
+  if (!req.bakerId) return query.is('baker_id', null);            // no tenant: global only
+  return query.or(`baker_id.is.null,baker_id.eq.${req.bakerId}`); // global + own tenant
 }
 
 // SEC-14 — assert that a specific row in a TENANT-PRIVATE table (orders, customers, storefront
