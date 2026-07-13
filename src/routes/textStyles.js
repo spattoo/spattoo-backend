@@ -7,7 +7,7 @@ import { requireCapability } from '../middleware/rbac.js';
 const router = Router();
 
 const FIELDS = 'id, key, label, algorithm, config, is_active, sort_order, updated_at';
-const ALGORITHMS = ['scribble', 'flat'];   // the data↔code seam — must match textSlots.js ALGORITHMS
+const ALGORITHMS = ['scribble', 'flat', 'fondant'];   // the data↔code seam — must match textSlots.js ALGORITHMS
 
 // Validate + normalize a text style `config` — the look of an editable placeholder. Unknown keys are
 // dropped so the stored shape stays predictable (same contract as cake_textures.normalizeConfig).
@@ -21,6 +21,7 @@ function normalizeConfig(input) {
 
   const hatch = c.hatch && typeof c.hatch === 'object' ? c.hatch : {};
   const outline = c.outline && typeof c.outline === 'object' ? c.outline : {};
+  const fondant = c.fondant && typeof c.fondant === 'object' ? c.fondant : {};
 
   return {
     ok: true,
@@ -41,6 +42,17 @@ function normalizeConfig(input) {
         color: str(outline.color, '#3F230A'),
         width: num(outline.width, 0.05),
         wobble: num(outline.wobble, 0.35),
+      },
+      // 'fondant' only — the puffy-icing shading. Stored for every style (harmless to the other
+      // algorithms, which ignore it) so switching Look never loses what was already tuned.
+      fondant: {
+        light: num(fondant.light, 135),
+        bevel: num(fondant.bevel, 0.5),      // a fraction of the STROKE's thickness, not of glyph height
+        gloss: num(fondant.gloss, 0.55),
+        ao: num(fondant.ao, 0.45),
+        shadow_blur: num(fondant.shadow_blur, 0.08),
+        shadow_dy: num(fondant.shadow_dy, 0.04),
+        shadow_alpha: num(fondant.shadow_alpha, 0.35),
       },
       tracking: num(c.tracking, 0),
       fit: num(c.fit, 0.92),
