@@ -1,5 +1,6 @@
 import { supabase } from './supabase.js';
 import { serverError } from '../lib/httpError.js';
+import { logError } from '../lib/telemetry.js';
 import { getCurrentVersions } from './legalConsent.js';
 import {
   ATTESTATION_DOC_KEY,
@@ -83,6 +84,28 @@ export async function recordAttestation({
 // rather than inventing its own.
 export function attestationMissing(body) {
   return body?.rights_attested !== true;
+}
+
+// Error responder for routes whose failure can be an UNPUBLISHABLE attestation (i.e. any route
+// gated on recordAttestation). Kept beside the error it translates, so a second gated surface
+// (custom domain, marketplace listing) reports the refusal identically instead of inventing its own
+// status code.
+//
+// The unavailable case is OURS, not the caller's: the wording isn't published, so there is nothing
+// to attest against and we refuse to expose content without evidence. That is a server-side gap —
+// 503, not 4xx — and the code lets the client say "publishing is briefly unavailable" rather than
+// blaming the baker for a valid tick. It still routes through serverError's telemetry path, because
+// a live storefront that cannot be published is an alert, not a normal outcome.
+export function publishError(req, res, err) {
+  if (err instanceof AttestationUnavailableError) {
+    logError(err, req);
+    return res.status(503).json({
+      error: 'Publishing is temporarily unavailable. Please try again shortly.',
+      code: err.code,
+      request_id: req?.id,
+    });
+  }
+  return serverError(req, res, err);
 }
 
 // The attestation trail for one baker (newest first) — what we hand a rights holder, or the

@@ -9,10 +9,11 @@
     "start": "node src/index.js",
     "dev": "nodemon src/index.js",
     "prepare": "git config core.hooksPath .githooks 2>/dev/null || true",
+    "check:boot": "node scripts/check-boot.mjs",
     "check:schema": "node scripts/check-schema.mjs",
     "check:admin-routes": "node scripts/check-admin-routes.mjs",
     "check:feature-docs": "node ../spattoo-docs/bin/check-feature-docs.mjs --repo spattoo-api",
-    "check": "npm run check:schema && npm run check:admin-routes && npm run check:feature-docs"
+    "check": "npm run check:boot && npm run check:schema && npm run check:admin-routes && npm run check:feature-docs"
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.1036.0",
