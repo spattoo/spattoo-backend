@@ -32,17 +32,18 @@ comment on table cake_shapes is
 
 create index if not exists cake_shapes_active_order on cake_shapes (is_active, sort_order);
 
--- ── Seed rows — MUST match the code seed in spattoo-core/src/designer/cakeShapes.js ────────────────
+-- ── Seed rows — ONLY the two that must exist ──────────────────────────────────────────────────────
 -- `round` and `rect` are LOAD-BEARING: existing designs already store them (or nothing, which means
--- round). They are the two ANALYTIC families and must never be renamed or removed.
+-- round). They are the two ANALYTIC families and must never be renamed or removed. They mirror the code
+-- seed in spattoo-core/src/designer/cakeShapes.js, which is the no-DB fallback.
+--
+-- NOTHING ELSE IS SEEDED, deliberately. A heart is not a constant — it is an authored shape: admin picks
+-- the `heart` CURVE (which is code) in the Cake Shape Studio, tunes its proportions against a real cake,
+-- and saves the row when it looks right. Seeding one here would be the migration deciding what a heart
+-- looks like, and nobody would ever have looked at it.
 insert into cake_shapes (key, label, family, config, sort_order) values
-  ('round',     'Round',     'circle',       '{}',                              1),
-  ('rect',      'Rectangle', 'rounded_rect', '{}',                              2),
-  ('square',    'Square',    'rounded_rect', '{"square": true}',                3),
-  ('heart',     'Heart',     'heart',        '{"plump": 1, "cleft": 1}',        4),
-  ('butterfly', 'Butterfly', 'butterfly',    '{"wing": 1}',                     5),
-  ('hexagon',   'Hexagon',   'polygon',      '{"sides": 6, "rotation": 0}',     6),
-  ('oval',      'Oval',      'oval',         '{}',                              7)
+  ('round', 'Round',     'circle',       '{}', 1),
+  ('rect',  'Rectangle', 'rounded_rect', '{}', 2)
 on conflict (key) do nothing;
 
 -- ── RLS ───────────────────────────────────────────────────────────────────────

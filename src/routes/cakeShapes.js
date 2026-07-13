@@ -29,7 +29,11 @@ function normalizeConfig(family, input) {
   };
   switch (family) {
     case 'heart':
-      return { plump: num(c.plump, 1, 0.4, 2), cleft: num(c.cleft, 1, 0.2, 2.5) };
+      return {
+        plump: num(c.plump, 1, 0.4, 2),
+        cleft: num(c.cleft, 1, 0.2, 2.5),
+        tip: num(c.tip, 0.12, 0, 0.35),      // the radius on the heart's point — a knife edge is not a cake
+      };
     case 'butterfly':
       return { wing: num(c.wing, 1, 0.4, 2) };
     case 'polygon':

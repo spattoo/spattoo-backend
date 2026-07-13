@@ -3,6 +3,8 @@ import express from 'express';
 import { serverError } from '../lib/httpError.js';
 import { supabase } from '../services/supabase.js';
 import { cutOutSubject } from '../services/backgroundRemoval.js';
+import { getObjectBuffer, putObject, deleteObject } from '../services/r2.js';
+import { randomUUID } from 'node:crypto';
 import { requireAuth } from '../middleware/auth.js';
 import { requireCapability } from '../middleware/rbac.js';
 import { reindexElement } from '../services/elementIndex.js';
@@ -302,6 +304,56 @@ router.delete('/uploads/:id/promote', requireAuth, requireCapability('element:ma
     if (error) return serverError(req, res, error);
 
     res.json({ ok: true, unlinked: (data ?? []).length });
+  } catch (err) {
+    serverError(req, res, err);
+  }
+});
+
+// ── POST /api/uploads/:id/remove-bg — cut the background out of an image I already uploaded ──────
+// A TREATMENT OF AN IMAGE, not a step in a wizard. It used to run only on the local file at upload
+// time, inside "Add your own" — so a CUSTOMER, who cannot promote, had no way to cut out a decoration
+// she had already uploaded, and it would sit on the frosting looking like a photo of a butterfly on a
+// desk. It belongs where the images are.
+//
+// Runs server-side on the stored object: the bytes never travel back through the browser, and the row
+// is what gets updated, so every design that references the image picks up the cut version.
+//
+// REPLACES the object rather than keeping both. An uncut original serves nobody once the user has said
+// "cut it", and keeping it doubles the storage for every decoration. The delete is best-effort — losing
+// the row's link to a live object would be the bad failure, so the row is updated FIRST and the old
+// object swept afterwards.
+router.post('/uploads/:id/remove-bg', requireAuth, requireCapability('element:manage'), async (req, res) => {
+  try {
+    if (!req.bakerId) return res.status(403).json({ error: 'No baker context' });
+
+    let q = supabase
+      .from('baker_uploads')
+      .select('id, name, storage_key, uploaded_by_type, uploaded_by_id, for_customer_id, created_at')
+      .eq('id', req.params.id).eq('baker_id', req.bakerId).is('deleted_at', null);
+    if (req.customerId) q = q.eq('uploaded_by_id', req.customerId);   // customers: their own only
+    const { data: upload, error: upErr } = await q.maybeSingle();
+    if (upErr) return serverError(req, res, upErr);
+    if (!upload) return res.status(404).json({ error: 'Not found' });
+
+    const original = upload.storage_key;
+    const cut      = await cutOutSubject(await getObjectBuffer(original));
+    const cutKey   = `elements/files/2D/${randomUUID()}.png`;
+    await putObject(cutKey, cut, 'image/png');
+
+    const { data, error } = await supabase
+      .from('baker_uploads')
+      .update({ storage_key: cutKey })
+      .eq('id', upload.id)
+      .select('id, name, storage_key, uploaded_by_type, for_customer_id, created_at')
+      .single();
+    if (error) return serverError(req, res, error);
+
+    const promoted = await promotedAmong([upload.id]);
+    res.json(shape(data, promoted));
+
+    // The old object is now unreferenced. Best-effort — a leaked object is a housekeeping gap, a lost
+    // row would be a broken image.
+    deleteObject(original).catch(e => console.error('remove-bg: old object not swept:', e.message));
   } catch (err) {
     serverError(req, res, err);
   }
