@@ -58,15 +58,31 @@ async function visibleUploadIds(req) {
   return (data ?? []).map(r => r.upload_id);
 }
 
-function shape(u) {
+// `promoted` = this image is CURRENTLY in the baker's library (an active element links back to it).
+// The UI needs it to offer "show in my decorations" vs "remove from decorations", and it must reflect
+// the LIVE state, not "was it ever promoted" — an unlinked upload can be promoted again.
+function shape(u, promotedIds = new Set()) {
   return {
     id:        u.id,
     name:      u.name,
     url:       toPublicUrl(u.storage_key),
     uploadedBy: UPLOADED_BY.NAME_BY_ID[u.uploaded_by_type] ?? String(u.uploaded_by_type),
     forCustomerId: u.for_customer_id,
+    promoted:  promotedIds.has(u.id),
     createdAt: u.created_at,
   };
+}
+
+// Which of these uploads are live in the library. ONE query for the whole page, not one per row.
+async function promotedAmong(uploadIds) {
+  if (!uploadIds.length) return new Set();
+  const { data, error } = await supabase
+    .from('cake_elements')
+    .select('source_upload_id')
+    .in('source_upload_id', uploadIds)
+    .eq('is_active', true);
+  if (error) throw new Error(error.message);
+  return new Set((data ?? []).map(r => r.source_upload_id));
 }
 
 // ── POST /api/uploads — register an uploaded image ───────────────────────────────────────────────
@@ -102,7 +118,7 @@ router.post('/uploads', requireAuth, requireCapability('element:manage'), async 
       .single();
     if (error) return serverError(req, res, error);
 
-    res.status(201).json(shape(data));
+    res.status(201).json(shape(data));   // fresh row: never promoted
   } catch (err) {
     serverError(req, res, err);
   }
@@ -134,7 +150,8 @@ router.get('/uploads', requireAuth, requireCapability('element:manage'), async (
       .order('created_at', { ascending: false });
     if (error) return serverError(req, res, error);
 
-    res.json((data ?? []).map(shape));
+    const promoted = await promotedAmong((data ?? []).map(u => u.id));
+    res.json((data ?? []).map(u => shape(u, promoted)));
   } catch (err) {
     serverError(req, res, err);
   }

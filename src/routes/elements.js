@@ -91,7 +91,12 @@ router.get('/element-types', requireAuth, requireCapability('design:create'), as
       .from('element_types')
       // baker_uploadable: the designer needs it to know which kinds a user may upload into
       // ("My Decorations"). The list of offered kinds is DATA — never a hardcoded array in the client.
-      .select('id, slug, name, placement_rules, sort_order, default_allowed_actions, baker_uploadable')
+      //
+      // default_for_uploads: which type an UN-PROMOTED upload behaves as when placed straight onto a
+      // cake (it carries no placement of its own — behaviour is authored at promotion). The designer
+      // finds it by FILTERING THIS LIST for the flag: no id, no slug, no constant in the client, so the
+      // answer can differ per environment and is changed by flipping a boolean, never a deploy.
+      .select('id, slug, name, placement_rules, sort_order, default_allowed_actions, baker_uploadable, default_for_uploads')
       .eq('is_active', true)
       .order('sort_order');
 
