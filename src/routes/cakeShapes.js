@@ -3,10 +3,21 @@ import { serverError } from '../lib/httpError.js';
 import { supabase } from '../services/supabase.js';
 import { requireAuth } from '../middleware/auth.js';
 import { requireCapability } from '../middleware/rbac.js';
+import { toPublicUrl } from './elements.js';
 
 const router = Router();
 
-const FIELDS = 'id, key, label, family, config, is_active, sort_order, updated_at';
+const FIELDS = 'id, key, label, family, config, tiers, thumbnail_key, is_active, sort_order, updated_at';
+
+// The designer caps a cake at 4 tiers (useCakeDesign.addTier), so a shape that starts you with more
+// would seed a cake you cannot rebuild. Clamped here rather than trusted from the client.
+const MAX_TIERS = 4;
+
+// The DB stores an R2 KEY; a caller wants something it can put in an <img src>. Same contract as every
+// element/template response — resolved on the way out, in ONE place, so a caller never has to know where
+// the bucket lives. (toPublicUrl is reused, not re-derived: a second copy of the prefix rule is a second
+// thing to get wrong when the bucket moves.)
+const withThumb = (row) => ({ ...row, thumbnail_key: toPublicUrl(row.thumbnail_key) });
 
 // The data↔code seam — must match OUTLINE_FAMILIES in spattoo-core's geometry/shapes.js, plus the two
 // ANALYTIC families (circle, rounded_rect) that keep their own math in surface.js. A family is a curve
@@ -45,6 +56,30 @@ function normalizeConfig(family, input) {
   }
 }
 
+// The STACK a shape starts a cake with: [{width, depth, height}, …] in world units. `[]` means "one
+// tier at the designer's default size" — the behaviour of every row that predates this column, so an
+// empty stack is a valid, meaningful answer and not a missing value.
+//
+// A tier here carries no footprint of its own: every tier of a shape IS that shape (a two-tier heart is
+// the heart outline stacked twice). Unknown keys are dropped, the same contract as normalizeConfig, so
+// the stored jsonb stays predictable — and so an optional per-tier `shape` can be added later without a
+// migration having to clean up whatever a client once posted.
+function normalizeTiers(input) {
+  if (!Array.isArray(input)) return [];
+  const num = (v, d, lo, hi) => {
+    const n = v != null && !Number.isNaN(Number(v)) ? Number(v) : d;
+    return Math.max(lo, Math.min(hi, n));
+  };
+  return input.slice(0, MAX_TIERS).map(t => {
+    const o = t && typeof t === 'object' ? t : {};
+    return {
+      width:  num(o.width,  2.4,  0.4, 8),
+      depth:  num(o.depth,  2.4,  0.4, 8),
+      height: num(o.height, 1.45, 0.2, 4),
+    };
+  });
+}
+
 // ── Read (any authenticated designer user — the designer needs the catalog to render a tier) ──
 // GET /api/cake-shapes — active shapes, ordered.
 router.get('/cake-shapes', requireAuth, requireCapability('design:create'), async (req, res) => {
@@ -55,7 +90,7 @@ router.get('/cake-shapes', requireAuth, requireCapability('design:create'), asyn
       .eq('is_active', true)
       .order('sort_order');
     if (error) return serverError(req, res, error);
-    res.json(data);
+    res.json((data ?? []).map(withThumb));
   } catch (err) {
     serverError(req, res, err);
   }
@@ -70,7 +105,7 @@ router.get('/admin/cake-shapes', requireAuth, requireCapability('catalog:admin')
       .select(FIELDS)
       .order('sort_order');
     if (error) return serverError(req, res, error);
-    res.json(data);
+    res.json((data ?? []).map(withThumb));
   } catch (err) {
     serverError(req, res, err);
   }
@@ -95,6 +130,8 @@ router.post('/admin/cake-shapes', requireAuth, requireCapability('catalog:admin'
         label: label.trim(),
         family,
         config: normalizeConfig(family, req.body.config),
+        tiers: normalizeTiers(req.body.tiers),
+        thumbnail_key: req.body.thumbnail_key ? String(req.body.thumbnail_key).trim() : null,
         sort_order: Number.isFinite(sort_order) ? sort_order : 0,
         is_active: true,
       })
@@ -105,7 +142,7 @@ router.post('/admin/cake-shapes', requireAuth, requireCapability('catalog:admin'
       const status = error.code === '23505' ? 409 : 500;   // 23505 = unique key violation
       return res.status(status).json({ error: error.message });
     }
-    res.json(data);
+    res.json(withThumb(data));
   } catch (err) {
     serverError(req, res, err);
   }
@@ -148,6 +185,8 @@ router.patch('/admin/cake-shapes/:id', requireAuth, requireCapability('catalog:a
     if (req.body.config != null) {
       updates.config = normalizeConfig(updates.family ?? existing.family, req.body.config);
     }
+    if (req.body.tiers != null) updates.tiers = normalizeTiers(req.body.tiers);
+    if (req.body.thumbnail_key != null) updates.thumbnail_key = String(req.body.thumbnail_key).trim() || null;
 
     const { data, error } = await supabase
       .from('cake_shapes')
@@ -160,7 +199,7 @@ router.patch('/admin/cake-shapes/:id', requireAuth, requireCapability('catalog:a
       const status = error.code === '23505' ? 409 : 500;
       return res.status(status).json({ error: error.message });
     }
-    res.json(data);
+    res.json(withThumb(data));
   } catch (err) {
     serverError(req, res, err);
   }

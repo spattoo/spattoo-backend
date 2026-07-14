@@ -39,6 +39,10 @@ const FOLDER_POLICY = {
   'elements/thumbnails':  { types: IMAGE_TYPES, maxBytes: IMAGE_MAX },
   'templates/files':      { types: [...MODEL_TYPES, 'application/json'], maxBytes: MODEL_MAX },
   'templates/thumbnails': { types: IMAGE_TYPES, maxBytes: IMAGE_MAX },
+  // Front view of a cake shape, captured through the real designer renderer when admin saves the shape.
+  // The New-cake picker shows these as <img> — one image per shape, rather than one WebGL context per
+  // shape (browsers cap those around 16, so a live-3D grid blanks tiles once the catalog grows).
+  'shapes/thumbnails':    { types: IMAGE_TYPES, maxBytes: IMAGE_MAX },
   'logos':                { types: IMAGE_TYPES, maxBytes: IMAGE_MAX },
   'portraits':            { types: IMAGE_TYPES, maxBytes: IMAGE_MAX },   // baker portrait for the storefront "Our story" section
   'storefront/gallery':   { types: IMAGE_TYPES, maxBytes: IMAGE_MAX },   // baker cake photos for the storefront slideshow
