@@ -197,6 +197,47 @@ router.delete('/uploads/:id', requireAuth, requireCapability('element:manage'), 
   }
 });
 
+// ── PATCH /api/uploads/:id — rename ──────────────────────────────────────────────────────────────
+// The name is how a person finds their own picture again, and it arrives as whatever the file was
+// called: "Screenshot 2026-07-14 at 10.42.59 AM". That is not a name, it is a timestamp.
+//
+// Only the NAME is patchable, and deliberately so: this is not a general "update the row" route. The
+// storage key, the attribution and the tenant are all server-derived (the invariant at the top of this
+// file), and a PATCH that accepted arbitrary columns would be the one place a client could talk its way
+// past them.
+//
+// Same scoping as delete — the tenant fence always, and a customer may touch only her own. A rename
+// does NOT reach the promoted copy: the library element carries the name the baker gave it AT
+// promotion, and silently re-titling a decoration his customers are already using would be a change to
+// their picker made by a act he thought was private housekeeping.
+const MAX_UPLOAD_NAME = 60;
+
+router.patch('/uploads/:id', requireAuth, requireCapability('element:manage'), async (req, res) => {
+  try {
+    if (!req.bakerId) return res.status(403).json({ error: 'No baker context' });
+
+    const name = String(req.body?.name ?? '').trim().slice(0, MAX_UPLOAD_NAME);
+    if (!name) return res.status(400).json({ error: 'Give it a name.' });
+
+    let q = supabase
+      .from('baker_uploads')
+      .update({ name })
+      .eq('id', req.params.id)
+      .eq('baker_id', req.bakerId)          // never another tenant's
+      .is('deleted_at', null);
+    if (req.customerId) q = q.eq('uploaded_by_id', req.customerId);   // customers: their own only
+
+    const { data, error } = await q.select('id, name, storage_key, uploaded_by_type, for_customer_id, created_at');
+    if (error) return serverError(req, res, error);
+    if (!data?.length) return res.status(404).json({ error: 'Not found' });
+
+    const promoted = await promotedAmong([data[0].id]);
+    res.json(shape(data[0], promoted));
+  } catch (err) {
+    serverError(req, res, err);
+  }
+});
+
 // ── POST /api/uploads/:id/promote — release an image into the baker's library ────────────────────
 // This is the ONLY way an image becomes visible to a baker's other customers. It COPIES into
 // cake_elements and links back (source_upload_id), so unlink never breaks a cake already designed with
