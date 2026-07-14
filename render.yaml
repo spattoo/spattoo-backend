@@ -21,6 +21,24 @@ services:
       # within a Redis, so a shared instance would let workers cross-process jobs.
       - key: REDIS_URL
         sync: false
+      # ── Upload ceilings, in MB (config.uploads) ──────────────────────────
+      # Declared here so the knob is DISCOVERABLE — a limit nobody knows is tunable
+      # gets "fixed" by editing code. Values live in the dashboard (sync: false), not
+      # in this file: a value here could only be changed by a commit + redeploy, and
+      # the whole point is to retune the cap during an incident WITHOUT one. Unset in
+      # the dashboard = the code default (5 / 75 / 5 — src/config.js).
+      #
+      # Measured against the file the USER PICKS. What reaches R2 is far smaller (the
+      # designer downscales to 2048 + WebP first). The API signs the length into the
+      # presigned URL and serves the same number to the browser via
+      # GET /api/storage/limits, so the client's refusal and the server's 413 agree.
+      # Raise IMAGE if real customers on 48-200MP phones start getting refused.
+      - key: UPLOAD_MAX_IMAGE_MB
+        sync: false
+      - key: UPLOAD_MAX_MODEL_MB
+        sync: false
+      - key: UPLOAD_MAX_FONT_MB
+        sync: false
 
   # ── Dev API — auto-deploys from `dev` ─────────────────────────────────────
   - type: web
@@ -41,6 +59,15 @@ services:
         sync: false
       # SEPARATE dev Redis instance — its own URL, isolated from prod's queue.
       - key: REDIS_URL
+        sync: false
+      # Upload ceilings — per-service, NOT in the shared group, so dev can be loosened
+      # for testing without touching what customers are held to in prod. See the prod
+      # service above for what these mean. Unset = the code default (5 / 75 / 5).
+      - key: UPLOAD_MAX_IMAGE_MB
+        sync: false
+      - key: UPLOAD_MAX_MODEL_MB
+        sync: false
+      - key: UPLOAD_MAX_FONT_MB
         sync: false
 
 # Truly-shared config only (same value across dev + prod today). Env-specific
