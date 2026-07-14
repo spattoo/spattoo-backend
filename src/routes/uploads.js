@@ -6,6 +6,8 @@ import { cutOutSubject } from '../services/backgroundRemoval.js';
 import { getObjectBuffer, putObject, deleteObject } from '../services/r2.js';
 import { randomUUID } from 'node:crypto';
 import { requireAuth } from '../middleware/auth.js';
+import { recordAttestation, attestationMissing, publishError } from '../services/contentAttestation.js';
+import { ATTESTATION_TARGET_TYPE } from '../constants/legalDocuments.js';
 import { requireCapability } from '../middleware/rbac.js';
 import { reindexElement } from '../services/elementIndex.js';
 import { ensureThumbKey, toPublicUrl } from './elements.js';   // reuse the SAME post-create + URL helpers
@@ -200,10 +202,20 @@ router.delete('/uploads/:id', requireAuth, requireCapability('element:manage'), 
 // cake_elements and links back (source_upload_id), so unlink never breaks a cake already designed with
 // it, and erasure can still reach the copy.
 //
-// NOT GATED, and deliberately so: no checkbox, no review. Spattoo is an intermediary (ToS 6.5) and the
-// baker has already accepted responsibility for what he publishes (ToS B5.4-B5.6). A tick clicked on
-// every promotion is the habituated tick that is worthless as evidence. We RECORD who did it
-// (promoted_by/at) and move on.
+// ATTESTED. Promotion is a PUBLICATION: the image lands in the picker every customer of this bakery
+// designs from. It is not world-visible (that is the storefront), but it is republication to an
+// audience the baker does not know individually — and it is the act in this product most likely to
+// carry someone else's IP, because the thing a baker wants to reuse across cakes is exactly the
+// cartoon character or the brand logo. When a rights holder sends a notice naming that image, we must
+// be able to say who released it, when, and against which words. So the baker ticks, and we record it
+// (content_attestations, target_type = decoration).
+//
+// This is a THIRD gate, alongside ToS acceptance at onboarding and the storefront publish — and it is
+// the only per-item one, which the original design argued against on the grounds that a habituated
+// tick is weak evidence. That argument holds for "Save as Template" (a baker saves constantly, to his
+// own library, seen only by customers he invited). It does not hold here: promoting is rare,
+// deliberate, and it hands the image to people he has never met. A tick that is asked for rarely, at
+// the moment of exposure, is exactly the considered affirmation the record is for.
 //
 // ONE RULE — a baker may promote only HIS OWN uploads, never a customer's. Not a privacy gate: the
 // LICENCE does not exist. ToS 6.2 licenses a customer's Content "solely ... to carry out the actions you
@@ -234,6 +246,13 @@ router.post('/uploads/:id/promote', requireAuth, requireCapability('element:mana
     const { element_type_id, allowed_zones, placement_config, name } = req.body ?? {};
     if (!element_type_id) return res.status(400).json({ error: 'element_type_id is required' });
 
+    if (attestationMissing(req.body)) {
+      return res.status(400).json({
+        error: 'Confirm you have the right to share this decoration with your customers.',
+        code: 'ATTESTATION_REQUIRED',
+      });
+    }
+
     // Placement is INHERITED from the type's admin-authored template; the baker only NARROWS it. A
     // client cannot widen its own placement by sending extra zones. (Same rule as the old upload path —
     // it just runs at promotion now, where the baker actually chooses.)
@@ -254,6 +273,19 @@ router.post('/uploads/:id/promote', requireAuth, requireCapability('element:mana
     for (const z of allowedZones) builtConfig[z] = inheritedModes[z] ?? 'hug';
     if (placement_config?.recolor) builtConfig.recolor = placement_config.recolor;   // the caller may add ONLY this
     if (placement_config?.r != null) builtConfig.r = placement_config.r;
+
+    // Evidence BEFORE exposure — the same ordering as the storefront publish. If the attestation write
+    // fails, no element is created and the image stays private, so nothing ever reaches a customer's
+    // picker without a record of who released it. (This is also why no rollback is needed: the Supabase
+    // REST client has no cross-table transaction, so the only safe order is evidence first.)
+    await recordAttestation({
+      subjectId:  req.user.id,
+      bakerId:    req.bakerId,
+      targetType: ATTESTATION_TARGET_TYPE.DECORATION,
+      targetId:   upload.id,        // the IMAGE is what a notice will name — not the element copy
+      ip:         req.ip,
+      userAgent:  req.headers['user-agent'] ?? null,
+    });
 
     const imageUrl = upload.storage_key;
     const { data: el, error } = await supabase
@@ -282,7 +314,10 @@ router.post('/uploads/:id/promote', requireAuth, requireCapability('element:mana
     reindexElement(el.id).catch(e => console.error('reindex(promote) failed:', e.message));
     ensureThumbKey(el.id, imageUrl);
   } catch (err) {
-    serverError(req, res, err);
+    // publishError, not serverError: if the attestation WORDING is unpublished there is nothing to
+    // point the record at, and we refuse to expose the image rather than release it without evidence.
+    // That is our gap, not the baker's — 503 with a "try again shortly", never a 4xx blaming his tick.
+    publishError(req, res, err);
   }
 });
 

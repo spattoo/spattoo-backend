@@ -31,9 +31,19 @@ export const PUBLISHABLE_DOC_KEYS = [...LEGAL_DOC_KEYS, ATTESTATION_DOC_KEY];
 // baker's responsibility under the ToS, so they are deliberately NOT attested — see the header of
 // supabase/content_attestations.sql. A future public surface (custom domain, marketplace listing)
 // is a NEW target_type here, not a new column.
+// WHAT was vouched for. Each value is a surface on which a baker exposes content to people who are
+// not him — the only moments an attestation is worth taking.
+//
+//   storefront  the world (until published, GET /api/storefront/:slug 404s)
+//   decoration  every customer of that bakery: promoting an upload puts it in the picker they design
+//               from. It is not world-visible, but it IS republication to an audience the baker does
+//               not know individually, and it is the exact act most likely to carry someone else's
+//               IP — a baker uploads a cartoon character or a brand logo and releases it for reuse.
+//               A takedown notice will name that image, so we must be able to say who released it.
 export const ATTESTATION_TARGET_TYPE = {
   STOREFRONT: 1,
-  NAME_BY_ID: { 1: 'storefront' },
+  DECORATION: 2,
+  NAME_BY_ID: { 1: 'storefront', 2: 'decoration' },
 };
 
 // Who is consenting. Compact smallint stored on consent_events.subject_type.

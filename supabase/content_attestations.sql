@@ -7,18 +7,23 @@
 -- 6.4/6.5, B5.4-B5.6). That defence only holds if, when a rights holder sends a notice, we can
 -- produce WHO published, WHEN, and WHAT THEY VOUCHED. This table is that record.
 --
--- ONE GATE: THE STOREFRONT PUBLISH BUTTON. This is the only moment content becomes visible to the
--- WORLD — until `bakers.storefront_published` is true, GET /api/storefront/:slug 404s, so even
--- gallery photos and the hero image are not public. Everything else (templates, shared designs,
--- quotes, customer photo uploads) is baker<->customer, invite-gated, and already the baker's
--- responsibility under the ToS. So we attest ONCE, at publish, over the storefront as a whole —
--- NOT per template and NOT per photo.
+-- THE GATES ARE THE MOMENTS OF EXPOSURE — the points where content reaches people the baker does not
+-- individually know. There are two (target_type):
 --
--- Why not per item: "Save as Template" is how a baker saves ANY design (it IS their design
+--   1 storefront  Visible to the WORLD. Until `bakers.storefront_published` is true,
+--                 GET /api/storefront/:slug 404s, so even gallery photos and the hero are not public.
+--   2 decoration  Promoting an upload puts it in the picker EVERY customer of that bakery designs
+--                 from. Not world-visible, but it is republication to an audience he has never met —
+--                 and it is the act most likely to carry someone else's IP, because the image a baker
+--                 wants to reuse across cakes is precisely the cartoon character or the brand logo.
+--                 A takedown notice will name THAT image; we must be able to say who released it.
+--
+-- Why not per item everywhere: "Save as Template" is how a baker saves ANY design (it IS their design
 -- library — the storefront gallery picker reads from it), so a per-save checkbox would fire
 -- constantly. A tick clicked fifty times becomes reflex, and a habituated tick is WEAK evidence.
--- The value of an attestation is that it was considered. One considered affirmation at the moment
--- of publication beats fifty reflexive ones.
+-- The value of an attestation is that it was considered. Promotion is different from a template save
+-- in the way that matters: it is rare, it is deliberate, and it hands the image to strangers. Asked
+-- rarely, at the moment of exposure, the tick stays a considered affirmation rather than a reflex.
 --
 -- APPEND-ONLY, one row per PUBLISH EVENT. Re-publishing appends another row, so the trail reads
 -- "published 3 Aug, re-published 20 Sep" — each with the statement version in force at the time.
@@ -38,10 +43,10 @@
 create table if not exists content_attestations (
   id                  bigserial    primary key,
   subject_type        smallint     not null,           -- 1=baker_appuser (constants/legalDocuments.js)
-  subject_id          uuid         not null,           -- auth_user_id of the human who clicked Publish
+  subject_id          uuid         not null,           -- auth_user_id of the human who published/promoted
   baker_id            uuid         not null references bakers (id) on delete cascade,
-  target_type         smallint     not null,           -- 1=storefront (the published surface)
-  target_id           uuid         not null,           -- storefront => the baker's id
+  target_type         smallint     not null,           -- 1=storefront, 2=decoration (see above)
+  target_id           uuid         not null,           -- storefront => baker id; decoration => baker_uploads.id
   document_version_id smallint     not null references legal_document_versions (id),
   attested_at         timestamptz  not null default now(),
   ip                  inet,
