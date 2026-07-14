@@ -17,31 +17,42 @@ const MODEL_TYPES = ['model/gltf-binary', 'application/octet-stream'];
 // Web fonts render inertly (no script, unlike SVG) — safe to sign from the public asset origin.
 const FONT_TYPES = ['font/woff2', 'font/woff'];
 
-// Single source of truth: each managed folder → the content-types we'll sign for it. ALLOWED_FOLDERS
-// is derived from this so the folder list and the type policy can never drift apart (DRY).
-const FOLDER_CONTENT_TYPES = {
-  'elements/files/2D':    IMAGE_TYPES,
-  'elements/files/3D':    MODEL_TYPES,
-  'elements/thumbnails':  IMAGE_TYPES,
-  'templates/files':      [...MODEL_TYPES, 'application/json'],
-  'templates/thumbnails': IMAGE_TYPES,
-  'logos':                IMAGE_TYPES,
-  'portraits':            IMAGE_TYPES,   // baker portrait for the storefront "Our story" section
-  'storefront/gallery':   IMAGE_TYPES,   // baker cake photos for the storefront slideshow
-  'orders/thumbnails':    IMAGE_TYPES,
-  'orders/photos':        IMAGE_TYPES,   // baker-uploaded finished-cake photos (public → inline in order-ready email)
-  'customer/photos':      IMAGE_TYPES,   // customer-uploaded photo for a photo-cake frame (public → designer textures it)
-  'meshy/source':         IMAGE_TYPES,   // uploaded 2D image for the image→3D wizard (public so Meshy can fetch it)
-  'meshy/outputs':        MODEL_TYPES,   // our copy of the Meshy-generated GLB (written server-side via putObject)
+// SEC-5: the ceiling on a single signed upload, per KIND of asset. The body never passes through this
+// process — it goes browser → R2 — so this is enforced by SIGNING the length (services/r2.js), not by
+// trusting the number a client sends. Sized to the largest LEGITIMATE asset of each kind plus room:
+// an image is downscaled client-side before it is ever offered here (spattoo-core shared/image.js caps
+// at 25MB and re-encodes to WebP), a GLB is the one genuinely heavy artefact, a woff2 is tiny.
+const MB = 1024 * 1024;
+const IMAGE_MAX = 25 * MB;
+const MODEL_MAX = 75 * MB;
+const FONT_MAX  = 5 * MB;
+
+// Single source of truth: each managed folder → the content-types we'll sign for it AND the byte
+// ceiling. ALLOWED_FOLDERS is derived from this so the folder list, the type policy and the size
+// policy can never drift apart (DRY).
+const FOLDER_POLICY = {
+  'elements/files/2D':    { types: IMAGE_TYPES, maxBytes: IMAGE_MAX },
+  'elements/files/3D':    { types: MODEL_TYPES, maxBytes: MODEL_MAX },
+  'elements/thumbnails':  { types: IMAGE_TYPES, maxBytes: IMAGE_MAX },
+  'templates/files':      { types: [...MODEL_TYPES, 'application/json'], maxBytes: MODEL_MAX },
+  'templates/thumbnails': { types: IMAGE_TYPES, maxBytes: IMAGE_MAX },
+  'logos':                { types: IMAGE_TYPES, maxBytes: IMAGE_MAX },
+  'portraits':            { types: IMAGE_TYPES, maxBytes: IMAGE_MAX },   // baker portrait for the storefront "Our story" section
+  'storefront/gallery':   { types: IMAGE_TYPES, maxBytes: IMAGE_MAX },   // baker cake photos for the storefront slideshow
+  'orders/thumbnails':    { types: IMAGE_TYPES, maxBytes: IMAGE_MAX },
+  'orders/photos':        { types: IMAGE_TYPES, maxBytes: IMAGE_MAX },   // baker-uploaded finished-cake photos (public → inline in order-ready email)
+  'customer/photos':      { types: IMAGE_TYPES, maxBytes: IMAGE_MAX },   // customer-uploaded photo for a photo-cake frame (public → designer textures it)
+  'meshy/source':         { types: IMAGE_TYPES, maxBytes: IMAGE_MAX },   // uploaded 2D image for the image→3D wizard (public so Meshy can fetch it)
+  'meshy/outputs':        { types: MODEL_TYPES, maxBytes: MODEL_MAX },   // our copy of the Meshy-generated GLB (written server-side via putObject)
   // "Extract Elements": the uploaded cake photo we identify decorations in. Public so GPT-4o vision
   // can fetch it by URL. Crops + regenerated outputs are written SERVER-side via putObject (no signed
   // upload needed for those), but they share this folder tree — see routes/elementExtract.js.
-  'elements/candidates':  IMAGE_TYPES,
+  'elements/candidates':  { types: IMAGE_TYPES, maxBytes: IMAGE_MAX },
   // The typeface a text_styles row shapes its placeholder glyphs with. The face is DATA, not a
   // hardcoded family — a new art style is a new font + config row, never a code change.
-  'elements/fonts':       FONT_TYPES,
+  'elements/fonts':       { types: FONT_TYPES,  maxBytes: FONT_MAX },
 };
-const ALLOWED_FOLDERS = Object.keys(FOLDER_CONTENT_TYPES);
+const ALLOWED_FOLDERS = Object.keys(FOLDER_POLICY);
 
 const EXT_BY_TYPE = {
   'image/png': 'png', 'image/jpeg': 'jpg', 'image/jpg': 'jpg', 'image/webp': 'webp', 'image/gif': 'gif',
@@ -59,17 +70,27 @@ function safeExt(filename, contentType) {
 
 router.post('/storage/sign-upload', requireAuth, requireCapability('design:create'), async (req, res) => {
   try {
-    const { folder, filename, contentType } = req.body;
+    const { folder, filename, contentType, contentLength } = req.body;
     if (!folder || !filename || !contentType) {
       return res.status(400).json({ error: 'folder, filename and contentType are required' });
     }
-    const allowedTypes = FOLDER_CONTENT_TYPES[folder];
-    if (!allowedTypes) {
+    const policy = FOLDER_POLICY[folder];
+    if (!policy) {
       return res.status(400).json({ error: `Invalid folder. Allowed: ${ALLOWED_FOLDERS.join(', ')}` });
     }
     // SEC-5: reject anything not on the folder's allowlist (blocks text/html, image/svg+xml, …).
-    if (!allowedTypes.includes(String(contentType).toLowerCase())) {
-      return res.status(400).json({ error: `Content-type "${contentType}" not allowed for ${folder}. Allowed: ${allowedTypes.join(', ')}` });
+    if (!policy.types.includes(String(contentType).toLowerCase())) {
+      return res.status(400).json({ error: `Content-type "${contentType}" not allowed for ${folder}. Allowed: ${policy.types.join(', ')}` });
+    }
+    // SEC-5: the size ceiling. REQUIRED — a request without a length cannot be signed with one, and an
+    // unbounded PUT to a bucket we pay for and serve publicly is exactly what this exists to stop. The
+    // number is not trusted: it is signed into the URL, so a body of any other length fails at R2.
+    const bytes = Number(contentLength);
+    if (!Number.isInteger(bytes) || bytes <= 0) {
+      return res.status(400).json({ error: 'contentLength (bytes) is required' });
+    }
+    if (bytes > policy.maxBytes) {
+      return res.status(413).json({ error: `File is too large for ${folder} (max ${Math.round(policy.maxBytes / (1024 * 1024))}MB).` });
     }
 
     // SEC-5: the key is derived SERVER-SIDE with an unguessable random component, so a client can
@@ -77,7 +98,7 @@ router.post('/storage/sign-upload', requireAuth, requireCapability('design:creat
     // client-supplied filename only contributes a sanitised extension. Callers already use the
     // RETURNED key/publicUrl (never the name they sent), so this is transparent to every caller.
     const key = `${folder}/${randomUUID()}.${safeExt(filename, contentType)}`;
-    const url = await getSignedUploadUrl(key, contentType);
+    const url = await getSignedUploadUrl(key, contentType, bytes);
     // publicUrl: the directly-loadable URL for `key`, so a client that needs to render the asset
     // immediately (e.g. a photo-cake frame texture persisted inside design JSON) can store a stable
     // URL without re-deriving the R2 base. Bare `key` is still returned for DB columns the API expands.

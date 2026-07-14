@@ -13,14 +13,23 @@ export const r2 = new S3Client({
   responseChecksumValidation:  'WHEN_REQUIRED',
 });
 
-// Returns a signed URL the frontend can PUT a file to directly (expires in 1 hour)
-export async function getSignedUploadUrl(key, contentType) {
+// Returns a signed URL the frontend can PUT a file to directly (expires in 1 hour).
+//
+// SEC-5: `contentLength` is signed INTO the signature, not merely checked. A presigned PUT otherwise
+// constrains the key and the content-type and NOTHING ELSE — the body goes straight from the browser
+// to R2 and never passes through us, so a size limit enforced in the client is advice, not a limit:
+// any authenticated caller (customers included — sign-upload needs only `design:create`) could PUT a
+// multi-GB object into a bucket we pay for and serve publicly. Signing Content-Length makes R2 itself
+// the enforcer: the PUT must send exactly the length we signed, so a client that under-declares its
+// size to slip past the cap produces a signature mismatch and is rejected at the edge.
+export async function getSignedUploadUrl(key, contentType, contentLength) {
   const command = new PutObjectCommand({
-    Bucket:      config.r2.bucket,
-    Key:         key,
-    ContentType: contentType,
+    Bucket:        config.r2.bucket,
+    Key:           key,
+    ContentType:   contentType,
+    ContentLength: contentLength,
   });
-  return getSignedUrl(r2, command, { expiresIn: 3600 });
+  return getSignedUrl(r2, command, { expiresIn: 3600, signableHeaders: new Set(['content-length']) });
 }
 
 // Uploads a Buffer directly from the server (no signed URL round-trip)
