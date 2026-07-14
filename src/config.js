@@ -74,6 +74,24 @@ export const config = {
     // Lead time for the Rule-8 pre-erasure notice.
     preErasureNoticeHours: Number(process.env.PRE_ERASURE_NOTICE_HOURS || 48),
   },
+  // The ceiling on a single signed upload, in MB, per KIND of asset. CONFIG, not a constant: this is a
+  // number we will want to MOVE — a customer on a 200MP phone hits it, or an abuse pattern says tighten
+  // it — and neither should cost a deploy. Retune it in the Render dashboard, restart, done.
+  //
+  // The API is the ONE source of truth: the browser needs the same number (to refuse a file at the
+  // moment it is picked, rather than after an upload it will then reject), so it READS it from
+  // GET /api/storage/limits. Hardcoding it in the client too would mean two numbers that silently
+  // disagree — the client would go on accepting what the server 413s.
+  //
+  // 5MB for an image is measured against the file the user PICKS. What lands in R2 is far smaller: the
+  // designer downscales to 2048 and re-encodes to WebP first (~200-500KB). The exception is a browser
+  // with no canvas WebP encoder, where the original is uploaded untouched — which is exactly why the
+  // server's ceiling and the client's pick limit must be the SAME number.
+  uploads: {
+    maxImageMb: Number(process.env.UPLOAD_MAX_IMAGE_MB || 5),
+    maxModelMb: Number(process.env.UPLOAD_MAX_MODEL_MB || 75),   // GLB — admin-only today; no user path uploads one
+    maxFontMb:  Number(process.env.UPLOAD_MAX_FONT_MB  || 5),
+  },
   r2: {
     endpoint:        process.env.R2_ENDPOINT,
     accessKeyId:     process.env.R2_ACCESS_KEY_ID,

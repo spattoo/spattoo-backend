@@ -19,13 +19,16 @@ const FONT_TYPES = ['font/woff2', 'font/woff'];
 
 // SEC-5: the ceiling on a single signed upload, per KIND of asset. The body never passes through this
 // process — it goes browser → R2 — so this is enforced by SIGNING the length (services/r2.js), not by
-// trusting the number a client sends. Sized to the largest LEGITIMATE asset of each kind plus room:
-// an image is downscaled client-side before it is ever offered here (spattoo-core shared/image.js caps
-// at 25MB and re-encodes to WebP), a GLB is the one genuinely heavy artefact, a woff2 is tiny.
+// trusting the number a client sends.
+//
+// The numbers are ENV (config.uploads, defaults 5MB image / 75MB model / 5MB font), not constants: this
+// is a limit we will want to move — tighten it against abuse, or raise it when a customer's phone
+// outgrows it — and neither should cost a deploy. GET /storage/limits below hands the same numbers to
+// the browser, so the client's "that image is too large" and the server's 413 can never disagree.
 const MB = 1024 * 1024;
-const IMAGE_MAX = 25 * MB;
-const MODEL_MAX = 75 * MB;
-const FONT_MAX  = 5 * MB;
+const IMAGE_MAX = config.uploads.maxImageMb * MB;
+const MODEL_MAX = config.uploads.maxModelMb * MB;
+const FONT_MAX  = config.uploads.maxFontMb  * MB;
 
 // Single source of truth: each managed folder → the content-types we'll sign for it AND the byte
 // ceiling. ALLOWED_FOLDERS is derived from this so the folder list, the type policy and the size
@@ -67,6 +70,19 @@ function safeExt(filename, contentType) {
   if (m) return m[1].toLowerCase();
   return EXT_BY_TYPE[contentType] || 'bin';
 }
+
+// What the client is allowed to upload. The browser must refuse an oversized file at the moment it is
+// PICKED — telling her after a long upload that it was never going to be accepted is not a limit, it is
+// an insult — and to do that it needs the number. It reads it from HERE rather than carrying a copy,
+// because a copy is a second number that drifts: raise the env and a hardcoded client goes on accepting
+// what this route then 413s.
+router.get('/storage/limits', requireAuth, (req, res) => {
+  res.json({
+    imageBytes: IMAGE_MAX,
+    modelBytes: MODEL_MAX,
+    fontBytes:  FONT_MAX,
+  });
+});
 
 router.post('/storage/sign-upload', requireAuth, requireCapability('design:create'), async (req, res) => {
   try {
