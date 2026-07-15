@@ -23,7 +23,7 @@ const withThumb = (row) => ({ ...row, thumbnail_key: toPublicUrl(row.thumbnail_k
 // ANALYTIC families (circle, rounded_rect) that keep their own math in surface.js. A family is a curve
 // somebody had to write; its CONFIG is data. So a new PROPORTION is a row, and only a genuinely new
 // curve is a deploy.
-const FAMILIES = ['circle', 'rounded_rect', 'heart', 'butterfly', 'polygon', 'oval'];
+const FAMILIES = ['circle', 'rounded_rect', 'heart', 'butterfly', 'polygon', 'oval', 'number'];
 
 // Keys that existing designs already store. Renaming or deactivating one would silently re-shape every
 // cake that uses it (an unknown key degrades to round in the designer), so they are protected here
@@ -51,6 +51,9 @@ function normalizeConfig(family, input) {
       return { sides: Math.round(num(c.sides, 6, 3, 16)), rotation: num(c.rotation, 0, -180, 180) };
     case 'rounded_rect':
       return c.square ? { square: true } : {};
+    case 'number':
+      // A cake shaped like the typed digits — the digits are the config (a recipe, not an asset).
+      return { digits: (String(c.digits ?? '').replace(/[^0-9]/g, '').slice(0, 4)) || '1' };
     default:
       return {};                                  // circle, oval — sized entirely by the tier
   }
