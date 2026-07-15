@@ -46,6 +46,18 @@ create table if not exists baker_uploads (
   for_customer_id  uuid        references customers (id) on delete cascade,
 
   storage_key      text        not null,
+
+  -- CUTOUT — the background-removed version of storage_key, derived lazily the FIRST time the image is
+  -- used as a DECORATION (promoted, or placed directly as a free-standing decoration) and cached here so
+  -- it is cut at most once, ever. NULL until then.
+  --
+  -- KEPT SEPARATE FROM storage_key, NOT overwriting it, because an upload is DUAL-PURPOSE: the same image
+  -- may be a photo-cake FRAME photo (the original, which must NEVER be cut — nobody wants their daughter
+  -- cut out of her own birthday picture) AND a decoration (the cutout). Destroying the original on cut
+  -- would break the photo path. So storage_key is forever the original as uploaded, cutout_key the derived
+  -- decoration version. (Replaces the old destructive in-place remove-bg. CLAUDE.md: schema is forever.)
+  cutout_key       text,
+
   name             text,
   created_at       timestamptz not null default now(),
 
@@ -102,6 +114,9 @@ create index if not exists baker_upload_shares_grantee_idx
 -- an intermediary (ToS 6.5) and the baker has already accepted responsibility for what they publish
 -- (ToS B5.4-B5.6). A tick clicked on every promotion would be the habituated tick that is worthless as
 -- evidence. We record who did it; we do not ask them to promise anything.
+-- Existing installs: the lazily-derived, cached background-removed version (see cutout_key above).
+alter table baker_uploads add column if not exists cutout_key text;
+
 alter table cake_elements add column if not exists source_upload_id bigint references baker_uploads (id);
 alter table cake_elements add column if not exists promoted_by      uuid;
 alter table cake_elements add column if not exists promoted_at      timestamptz;

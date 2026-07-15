@@ -70,11 +70,50 @@ function shape(u, promotedIds = new Set()) {
     id:        u.id,
     name:      u.name,
     url:       toPublicUrl(u.storage_key),
+    // The background-removed version, used when the image is a DECORATION. NULL until first decoration
+    // use; the original (`url`) is always the uncut upload, for the photo-cake frame path.
+    cutoutUrl: u.cutout_key ? toPublicUrl(u.cutout_key) : null,
     uploadedBy: UPLOADED_BY.NAME_BY_ID[u.uploaded_by_type] ?? String(u.uploaded_by_type),
     forCustomerId: u.for_customer_id,
     promoted:  promotedIds.has(u.id),
     createdAt: u.created_at,
   };
+}
+
+// ── ensureCutout — derive the background-removed version ONCE, cache it, keep the original ────────
+// The single chokepoint for "make this image usable as a decoration". Idempotent: the first decoration
+// use of an image cuts it; every use after reuses cutout_key, so cutOutSubject (a metered/compute cost)
+// runs at most once per upload, ever.
+//
+// NON-DESTRUCTIVE, unlike the old remove-bg it replaces: storage_key (the original as uploaded) is left
+// untouched, because the same upload may still be chosen as a photo-cake FRAME photo, which must NOT be
+// cut. The cutout is a SEPARATE cached object, not an overwrite.
+//
+// `upload` must carry id, storage_key and cutout_key. Returns the cutout key.
+async function ensureCutout(upload) {
+  if (upload.cutout_key) return upload.cutout_key;
+
+  const cut    = await cutOutSubject(await getObjectBuffer(upload.storage_key));
+  const cutKey = `elements/files/2D/${randomUUID()}.png`;
+  await putObject(cutKey, cut, 'image/png');
+
+  // Claim the slot only if still empty — two concurrent first-uses (e.g. the studio opening while a
+  // direct placement fires) would otherwise both write. The loser reconciles: it drops its now-orphan
+  // object and adopts the winner's key, so the row never points at two objects and neither leaks a ref.
+  const { data, error } = await supabase
+    .from('baker_uploads')
+    .update({ cutout_key: cutKey })
+    .eq('id', upload.id)
+    .is('cutout_key', null)
+    .select('cutout_key');
+  if (error) throw new Error(error.message);
+
+  if (data?.length) return cutKey;
+
+  const { data: won } = await supabase
+    .from('baker_uploads').select('cutout_key').eq('id', upload.id).maybeSingle();
+  deleteObject(cutKey).catch(e => console.error('ensureCutout: orphan not swept:', e.message));
+  return won?.cutout_key ?? cutKey;
 }
 
 // Which of these uploads are live in the library. ONE query for the whole page, not one per row.
@@ -147,7 +186,7 @@ router.get('/uploads', requireAuth, requireCapability('element:manage'), async (
 
     const { data, error } = await supabase
       .from('baker_uploads')
-      .select('id, name, storage_key, uploaded_by_type, for_customer_id, created_at')
+      .select('id, name, storage_key, cutout_key, uploaded_by_type, for_customer_id, created_at')
       .eq('baker_id', req.bakerId)            // tenant fence, always
       .is('deleted_at', null)
       .or(`${mine}${aboutMe}${shared}`)
@@ -227,7 +266,7 @@ router.patch('/uploads/:id', requireAuth, requireCapability('element:manage'), a
       .is('deleted_at', null);
     if (req.customerId) q = q.eq('uploaded_by_id', req.customerId);   // customers: their own only
 
-    const { data, error } = await q.select('id, name, storage_key, uploaded_by_type, for_customer_id, created_at');
+    const { data, error } = await q.select('id, name, storage_key, cutout_key, uploaded_by_type, for_customer_id, created_at');
     if (error) return serverError(req, res, error);
     if (!data?.length) return res.status(404).json({ error: 'Not found' });
 
@@ -271,7 +310,7 @@ router.post('/uploads/:id/promote', requireAuth, requireCapability('element:mana
 
     const { data: upload, error: upErr } = await supabase
       .from('baker_uploads')
-      .select('id, name, storage_key, uploaded_by_type, for_customer_id')
+      .select('id, name, storage_key, cutout_key, uploaded_by_type, for_customer_id')
       .eq('id', req.params.id).eq('baker_id', req.bakerId).is('deleted_at', null)
       .maybeSingle();
     if (upErr) return serverError(req, res, upErr);
@@ -328,7 +367,11 @@ router.post('/uploads/:id/promote', requireAuth, requireCapability('element:mana
       userAgent:  req.headers['user-agent'] ?? null,
     });
 
-    const imageUrl = upload.storage_key;
+    // The library copy is a DECORATION — it must carry the cutout, never the uncut original. Derive it
+    // now if this image has not been cut yet (idempotent; the studio will usually have done it already
+    // when it opened). This is also what makes a promote-after-the-fact consistent: there is no separate
+    // path that could leave the element pointing at an uncut image.
+    const imageUrl = await ensureCutout(upload);
     const { data: el, error } = await supabase
       .from('cake_elements')
       .insert({
@@ -385,51 +428,34 @@ router.delete('/uploads/:id/promote', requireAuth, requireCapability('element:ma
   }
 });
 
-// ── POST /api/uploads/:id/remove-bg — cut the background out of an image I already uploaded ──────
-// A TREATMENT OF AN IMAGE, not a step in a wizard. It used to run only on the local file at upload
-// time, inside "Add your own" — so a CUSTOMER, who cannot promote, had no way to cut out a decoration
-// she had already uploaded, and it would sit on the frosting looking like a photo of a butterfly on a
-// desk. It belongs where the images are.
+// ── POST /api/uploads/:id/cutout — ensure the decoration cutout exists ───────────────────────────
+// "Prepare this image to be a decoration." Called when an upload ENTERS a decoration context — the
+// promote studio opening, or a direct decoration placement — so the preview, the zone tiles and the
+// cake all show the subject cut out, not a photo with a white box around it.
 //
-// Runs server-side on the stored object: the bytes never travel back through the browser, and the row
-// is what gets updated, so every design that references the image picks up the cut version.
+// There is NO manual "remove background" button any more. A cutout of a decoration is not an optional
+// treatment the user requests: an uncut decoration is simply broken, and only the decoration path needs
+// it. So it happens implicitly, exactly when it is needed, and NOT on the photo-cake frame path — a
+// birthday photo keeps its background.
 //
-// REPLACES the object rather than keeping both. An uncut original serves nobody once the user has said
-// "cut it", and keeping it doubles the storage for every decoration. The delete is best-effort — losing
-// the row's link to a live object would be the bad failure, so the row is updated FIRST and the old
-// object swept afterwards.
-router.post('/uploads/:id/remove-bg', requireAuth, requireCapability('element:manage'), async (req, res) => {
+// Idempotent and NON-DESTRUCTIVE (ensureCutout): the original upload is never touched, the cut is
+// computed at most once, and this route is safe to call every time the studio opens.
+router.post('/uploads/:id/cutout', requireAuth, requireCapability('element:manage'), async (req, res) => {
   try {
     if (!req.bakerId) return res.status(403).json({ error: 'No baker context' });
 
     let q = supabase
       .from('baker_uploads')
-      .select('id, name, storage_key, uploaded_by_type, uploaded_by_id, for_customer_id, created_at')
+      .select('id, name, storage_key, cutout_key, uploaded_by_type, uploaded_by_id, for_customer_id, created_at')
       .eq('id', req.params.id).eq('baker_id', req.bakerId).is('deleted_at', null);
     if (req.customerId) q = q.eq('uploaded_by_id', req.customerId);   // customers: their own only
     const { data: upload, error: upErr } = await q.maybeSingle();
     if (upErr) return serverError(req, res, upErr);
     if (!upload) return res.status(404).json({ error: 'Not found' });
 
-    const original = upload.storage_key;
-    const cut      = await cutOutSubject(await getObjectBuffer(original));
-    const cutKey   = `elements/files/2D/${randomUUID()}.png`;
-    await putObject(cutKey, cut, 'image/png');
-
-    const { data, error } = await supabase
-      .from('baker_uploads')
-      .update({ storage_key: cutKey })
-      .eq('id', upload.id)
-      .select('id, name, storage_key, uploaded_by_type, for_customer_id, created_at')
-      .single();
-    if (error) return serverError(req, res, error);
-
+    const cutKey   = await ensureCutout(upload);
     const promoted = await promotedAmong([upload.id]);
-    res.json(shape(data, promoted));
-
-    // The old object is now unreferenced. Best-effort — a leaked object is a housekeeping gap, a lost
-    // row would be a broken image.
-    deleteObject(original).catch(e => console.error('remove-bg: old object not swept:', e.message));
+    res.json(shape({ ...upload, cutout_key: cutKey }, promoted));
   } catch (err) {
     serverError(req, res, err);
   }
