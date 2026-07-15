@@ -46,7 +46,12 @@ create table if not exists content_attestations (
   subject_id          uuid         not null,           -- auth_user_id of the human who published/promoted
   baker_id            uuid         not null references bakers (id) on delete cascade,
   target_type         smallint     not null,           -- 1=storefront, 2=decoration (see above)
-  target_id           uuid         not null,           -- storefront => baker id; decoration => baker_uploads.id
+  -- POLYMORPHIC (target_type decides what it points at) across DIFFERENT id types: a storefront's
+  -- target is a baker `uuid`, a decoration's is a `baker_uploads.id` bigint. `text` is the one type
+  -- that holds both — this was `uuid` and a decoration promote (bigint id) threw `invalid input syntax
+  -- for type uuid`. Not a FK (see below), so no join/type coupling is lost, and check:schema (which
+  -- flags text-natural-key FOREIGN keys) is untouched.
+  target_id           text         not null,           -- storefront => baker uuid; decoration => baker_uploads.id
   document_version_id smallint     not null references legal_document_versions (id),
   attested_at         timestamptz  not null default now(),
   ip                  inet,
@@ -56,7 +61,17 @@ create table if not exists content_attestations (
 -- NO unique constraint on (target_type, target_id): each publish is a distinct EVENT and must
 -- append. target_id is deliberately polymorphic (a future public surface — custom domain,
 -- marketplace listing — is a new target_type, not a new column), so it carries no FK; a FK cannot
--- point at two tables. Every target keys on uuid, so the column stays compact and typed.
+-- point at two tables. Its targets span id types (baker uuid, upload bigint), so it is `text`.
+
+-- Existing installs: widen target_id uuid -> text so decoration promotes (bigint id) can be stored.
+-- Guarded so a re-run doesn't rewrite the table once it is already text.
+do $$
+begin
+  if (select data_type from information_schema.columns
+        where table_name = 'content_attestations' and column_name = 'target_id') = 'uuid' then
+    alter table content_attestations alter column target_id type text using target_id::text;
+  end if;
+end $$;
 
 -- Hot access pattern — a notice names a baker: "everything they ever vouched for", newest first.
 create index if not exists content_attestations_baker_idx

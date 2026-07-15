@@ -68,7 +68,10 @@ export async function recordAttestation({
       subject_id: subjectId,
       baker_id: bakerId,
       target_type: targetType,
-      target_id: targetId,
+      // target_id is TEXT and polymorphic: a storefront's target is a baker uuid, a decoration's is a
+      // baker_uploads.id bigint. Stringify so both serialize cleanly (a uuid stringifies to itself; a
+      // number becomes its decimal text) — a raw bigint used to hit the old uuid column and 500 promote.
+      target_id: String(targetId),
       document_version_id: statement.id,
       ip: ip ?? null,
       user_agent: userAgent ?? null,
