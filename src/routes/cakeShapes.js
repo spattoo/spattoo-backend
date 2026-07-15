@@ -7,7 +7,7 @@ import { toPublicUrl } from './elements.js';
 
 const router = Router();
 
-const FIELDS = 'id, key, label, family, config, tiers, thumbnail_key, is_active, sort_order, updated_at';
+const FIELDS = 'id, key, label, design, thumbnail_key, is_active, sort_order, updated_at';
 
 // The designer caps a cake at 4 tiers (useCakeDesign.addTier), so a shape that starts you with more
 // would seed a cake you cannot rebuild. Clamped here rather than trusted from the client.
@@ -56,28 +56,53 @@ function normalizeConfig(family, input) {
   }
 }
 
-// The STACK a shape starts a cake with: [{width, depth, height}, …] in world units. `[]` means "one
-// tier at the designer's default size" — the behaviour of every row that predates this column, so an
-// empty stack is a valid, meaningful answer and not a missing value.
+const num = (v, d, lo, hi) => {
+  const n = v != null && !Number.isNaN(Number(v)) ? Number(v) : d;
+  return Math.max(lo, Math.min(hi, n));
+};
+
+// A shape now stores a self-contained `design` — the SAME shape a cake_templates.design has (see
+// spattoo-core designSnapshot.js), so "New cake → this shape" loads it exactly as a template does, and
+// the two systems unify. Geometry is self-describing PER TIER: each tier names its own `shapeFamily`
+// (an outline generator) + `shapeConfig` (that family's proportions), so a cake can mix shapes per tier
+// and renders identically forever regardless of later catalog edits.
 //
-// A tier here carries no footprint of its own: every tier of a shape IS that shape (a two-tier heart is
-// the heart outline stacked twice). Unknown keys are dropped, the same contract as normalizeConfig, so
-// the stored jsonb stays predictable — and so an optional per-tier `shape` can be added later without a
-// migration having to clean up whatever a client once posted.
-function normalizeTiers(input) {
-  if (!Array.isArray(input)) return [];
-  const num = (v, d, lo, hi) => {
-    const n = v != null && !Number.isNaN(Number(v)) ? Number(v) : d;
-    return Math.max(lo, Math.min(hi, n));
-  };
-  return input.slice(0, MAX_TIERS).map(t => {
+// We validate the geometry-critical fields (family ∈ FAMILIES, its config, tier count ≤ MAX_TIERS,
+// sizes clamped) and PRESERVE everything else on the tier (colour, piping, future wall treatments) by
+// spreading it through — so a new core tier field reaches a starter without a route change. Top-level
+// keys are the known design contract; unknown top-level junk is dropped, keeping the jsonb predictable.
+function normalizeShapeDesign(input) {
+  const d = input && typeof input === 'object' ? input : {};
+  const tiersIn = Array.isArray(d.tiers) ? d.tiers.slice(0, MAX_TIERS) : [];
+  const tiers = tiersIn.map(t => {
     const o = t && typeof t === 'object' ? t : {};
-    return {
-      width:  num(o.width,  2.4,  0.4, 8),
-      depth:  num(o.depth,  2.4,  0.4, 8),
-      height: num(o.height, 1.45, 0.2, 4),
+    const family = FAMILIES.includes(o.shapeFamily) ? o.shapeFamily : 'circle';
+    const tier = {
+      ...o,                                              // preserve colour, piping, gradient/dust/foil, …
+      shape:       o.shape ? String(o.shape) : 'round',
+      shapeFamily: family,
+      shapeConfig: normalizeConfig(family, o.shapeConfig),
+      height:      num(o.height, 1.45, 0.2, 4),
     };
+    // A round tier is sized by RADIUS; every other footprint by width/depth. Ensure the one the family
+    // uses is present and clamped (the studio speaks width/depth for all, so translate for circle).
+    if (family === 'circle') {
+      tier.radius = num(o.radius ?? (o.width != null ? o.width / 2 : undefined), 0.35, 0.2, 4);
+    } else {
+      tier.width = num(o.width, 2.16, 0.4, 8);
+      tier.depth = num(o.depth, 1.56, 0.4, 8);
+    }
+    return tier;
   });
+  return {
+    tiers: tiers.length ? tiers
+      : [{ shape: 'round', shapeFamily: 'circle', shapeConfig: {}, height: 1.45, color: '#f5b8c8', radius: 0.35, topPipings: [], bottomPipings: [] }],
+    texts:    Array.isArray(d.texts)    ? d.texts    : [],
+    ages:     Array.isArray(d.ages)     ? d.ages     : [],
+    stickers: Array.isArray(d.stickers) ? d.stickers : [],
+    writing:  d.writing ?? null,
+    piping:   Array.isArray(d.piping)   ? d.piping   : [],
+  };
 }
 
 // ── Read (any authenticated designer user — the designer needs the catalog to render a tier) ──
@@ -111,16 +136,12 @@ router.get('/admin/cake-shapes', requireAuth, requireCapability('catalog:admin')
   }
 });
 
-// POST /api/admin/cake-shapes — create. Body: { key, label, family, config?, sort_order? }
+// POST /api/admin/cake-shapes — create. Body: { key, label, design, thumbnail_key?, sort_order? }
 router.post('/admin/cake-shapes', requireAuth, requireCapability('catalog:admin'), async (req, res) => {
   try {
     const { key, label, sort_order } = req.body;
     if (!key?.trim() || !label?.trim()) {
       return res.status(400).json({ error: 'key and label are required' });
-    }
-    const family = String(req.body.family ?? '').trim();
-    if (!FAMILIES.includes(family)) {
-      return res.status(400).json({ error: `family must be one of: ${FAMILIES.join(', ')}` });
     }
 
     const { data, error } = await supabase
@@ -128,9 +149,7 @@ router.post('/admin/cake-shapes', requireAuth, requireCapability('catalog:admin'
       .insert({
         key: key.trim(),
         label: label.trim(),
-        family,
-        config: normalizeConfig(family, req.body.config),
-        tiers: normalizeTiers(req.body.tiers),
+        design: normalizeShapeDesign(req.body.design),
         thumbnail_key: req.body.thumbnail_key ? String(req.body.thumbnail_key).trim() : null,
         sort_order: Number.isFinite(sort_order) ? sort_order : 0,
         is_active: true,
@@ -153,13 +172,13 @@ router.patch('/admin/cake-shapes/:id', requireAuth, requireCapability('catalog:a
   try {
     const { data: existing, error: readErr } = await supabase
       .from('cake_shapes')
-      .select('key, family')
+      .select('key')
       .eq('id', req.params.id)
       .single();
     if (readErr) return res.status(404).json({ error: 'shape not found' });
 
     const updates = { updated_at: new Date().toISOString() };
-    const { key, label, family, is_active, sort_order } = req.body;
+    const { key, label, is_active, sort_order } = req.body;
 
     // `round`/`rect` are what existing designs store. Re-keying or retiring one would silently reshape
     // every cake using it, so it is refused outright rather than warned about.
@@ -173,19 +192,9 @@ router.patch('/admin/cake-shapes/:id', requireAuth, requireCapability('catalog:a
 
     if (key != null) updates.key = String(key).trim();
     if (label != null) updates.label = String(label).trim();
-    if (family != null) {
-      const f = String(family).trim();
-      if (!FAMILIES.includes(f)) {
-        return res.status(400).json({ error: `family must be one of: ${FAMILIES.join(', ')}` });
-      }
-      updates.family = f;
-    }
     if (is_active != null) updates.is_active = !!is_active;
     if (sort_order != null && Number.isFinite(sort_order)) updates.sort_order = sort_order;
-    if (req.body.config != null) {
-      updates.config = normalizeConfig(updates.family ?? existing.family, req.body.config);
-    }
-    if (req.body.tiers != null) updates.tiers = normalizeTiers(req.body.tiers);
+    if (req.body.design != null) updates.design = normalizeShapeDesign(req.body.design);
     if (req.body.thumbnail_key != null) updates.thumbnail_key = String(req.body.thumbnail_key).trim() || null;
 
     const { data, error } = await supabase
