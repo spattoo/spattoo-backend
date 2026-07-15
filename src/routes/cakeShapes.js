@@ -52,8 +52,13 @@ function normalizeConfig(family, input) {
     case 'rounded_rect':
       return c.square ? { square: true } : {};
     case 'number':
-      // A cake shaped like the typed digits — the digits are the config (a recipe, not an asset).
-      return { digits: (String(c.digits ?? '').replace(/[^0-9]/g, '').slice(0, 4)) || '1' };
+      // A cake shaped like the typed digits — the digits are the config (a recipe, not an asset). `weight`
+      // thickens the stroke, `cornerR` rounds the corners (both admin-styled on the starter).
+      return {
+        digits: (String(c.digits ?? '').replace(/[^0-9]/g, '').slice(0, 4)) || '1',
+        weight: num(c.weight, 0, 0, 0.06),
+        cornerR: num(c.cornerR, 0, 0, 1),
+      };
     default:
       return {};                                  // circle, oval — sized entirely by the tier
   }
