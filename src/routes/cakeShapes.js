@@ -80,6 +80,11 @@ function normalizeConfig(family, input) {
         digits: (String(c.digits ?? '').replace(/[^0-9]/g, '').slice(0, 4)) || '1',
         weight: num(c.weight, 0, 0, 0.06),
         cornerR: num(c.cornerR, 0, 0, 1),
+        // `pipingScale` sizes the number's piping shells (core: shellRadius = digit half-height × pipingScale).
+        // A number's tier radius is its footprint half-width — huge for a wide number — so without this the
+        // same piping `size` renders giant shells that swamp the thin strokes. 1 = the digit-height reference;
+        // author lower to make the rosettes smaller. Round/rect never use it. Default 1, clamp 0.3–2.
+        pipingScale: num(c.pipingScale, 1, 0.3, 2),
         ...(Object.keys(byCount).length ? { byCount } : {}),
         ...(Object.keys(samples).length ? { samples } : {}),
       };
