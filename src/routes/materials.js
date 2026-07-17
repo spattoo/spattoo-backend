@@ -8,10 +8,20 @@ const router = Router();
 
 const FIELDS = 'id, key, label, config, is_active, sort_order, updated_at';
 
-// Validate + normalize a material `config`. Today it carries the ordered style list the designer reads:
-// config.styles = ['wave','swirl',…] — cake_textures keys, in display order. `smooth` is the implicit
-// always-first default and is dropped if present (never stored). Dupes/blanks are dropped so the stored
-// shape stays predictable. Returns { ok, value } | { ok:false, error }.
+// Allowed decoration-finish (config.surface) keys — map 1:1 to MeshPhysicalMaterial. Unknown keys are
+// dropped so a stray field can't reach the renderer. Kept in sync with DECOR_MATERIALS surface in
+// spattoo-core/src/designer/materials.js.
+const SURFACE_KEYS = new Set([
+  'roughness', 'metalness', 'sheen', 'sheenColor', 'sheenRoughness',
+  'clearcoat', 'clearcoatRoughness', 'envMapIntensity', 'anisotropy', 'anisotropyRotation',
+]);
+const APPLIES_TO = new Set(['body', 'element']);   // where a material may be used
+
+// Validate + normalize a material `config`. It carries: the ordered style list the designer reads
+// (config.styles = cake_textures keys; `smooth` is the implicit always-first default, dropped if present);
+// config.applies_to (['body']|['element']|both — which context the material may be used in); and
+// config.surface (the MeshPhysical decoration finish a GLB decoration wears). Unknown surface keys are
+// dropped and numbers coerced so the stored shape stays predictable. Returns { ok, value } | { ok:false, error }.
 function normalizeConfig(input) {
   const config = input && typeof input === 'object' ? input : {};
   const raw = config.styles;
@@ -26,7 +36,30 @@ function normalizeConfig(input) {
     seen.add(key);
     styles.push(key);
   }
-  return { ok: true, value: { ...config, styles } };
+  const value = { ...config, styles };
+
+  // applies_to: contexts the material may be used in — deduped, gated to the known set.
+  if (config.applies_to != null) {
+    if (!Array.isArray(config.applies_to)) return { ok: false, error: 'config.applies_to must be an array' };
+    const ctx = [...new Set(config.applies_to.map(c => String(c ?? '').trim()))].filter(c => APPLIES_TO.has(c));
+    if (config.applies_to.length && !ctx.length) return { ok: false, error: "config.applies_to must contain 'body' and/or 'element'" };
+    value.applies_to = ctx;
+  }
+
+  // surface: the MeshPhysical decoration finish — drop unknown keys, coerce numbers (sheenColor stays a string).
+  if (config.surface != null) {
+    if (typeof config.surface !== 'object' || Array.isArray(config.surface)) return { ok: false, error: 'config.surface must be an object' };
+    const surface = {};
+    for (const [k, v] of Object.entries(config.surface)) {
+      if (!SURFACE_KEYS.has(k)) continue;
+      if (k === 'sheenColor') { surface[k] = String(v); continue; }
+      const n = Number(v);
+      if (Number.isFinite(n)) surface[k] = n;
+    }
+    value.surface = surface;
+  }
+
+  return { ok: true, value };
 }
 
 // ── Read (any authenticated designer user — overlays these onto the in-code seed) ──
