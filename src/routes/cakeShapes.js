@@ -51,22 +51,39 @@ function normalizeConfig(family, input) {
       return { sides: Math.round(num(c.sides, 6, 3, 16)), rotation: num(c.rotation, 0, -180, 180) };
     case 'rounded_rect':
       return c.square ? { square: true } : {};
-    case 'number':
+    case 'number': {
       // A cake shaped like the typed digits — the digits are the config (a recipe, not an asset). `weight`
-      // thickens the stroke, `cornerR` rounds the corners (both admin-styled on the starter).
+      // thickens the stroke, `cornerR` rounds the corners (both admin-styled on the starter, count-independent).
       //
-      // A number is ONE size for every digit count: `height` (how tall the digit stands — its real size) and
-      // `thickness` (slab depth), authored in the Cake Shape Studio. Every number comes out this tall and a
-      // longer one just grows wider (matches real number-tin cakes + keeps the absolute piping proportional).
-      // `digits` doubles as the preview/default number. (Superseded a per-digit-count `byCount`/`samples`
-      // model — which shrank multi-digit numbers; the whitelist below simply drops those retired keys.)
+      // A number is sized PER DIGIT COUNT (1–4): each count carries its own { height (how tall the digit
+      // stands — its real size), thickness (slab depth) }, authored in the Cake Shape Studio. `samples` is a
+      // studio-only preview aid (a number to draw while tuning each count). Both MUST be preserved here — the
+      // whitelist rebuilds shapeConfig, so anything not named is dropped, and core (numberSizeForCount) reads
+      // byCount to size the cake. Keep only the four valid counts; core falls back to its own defaults for any
+      // count left unauthored.
+      const bcIn = c.byCount && typeof c.byCount === 'object' ? c.byCount : {};
+      const byCount = {};
+      for (const k of [1, 2, 3, 4]) {
+        const e = bcIn[k];
+        if (e && typeof e === 'object') {
+          byCount[k] = { height: num(e.height, 2, 0.5, 4), thickness: num(e.thickness, 0.7, 0.2, 2) };
+        }
+      }
+      const smIn = c.samples && typeof c.samples === 'object' ? c.samples : {};
+      const samples = {};
+      for (const k of [1, 2, 3, 4]) {
+        if (smIn[k] == null) continue;
+        const s = String(smIn[k]).replace(/[^0-9]/g, '').slice(0, k);   // a k-digit count previews a ≤k-digit number
+        if (s) samples[k] = s;
+      }
       return {
         digits: (String(c.digits ?? '').replace(/[^0-9]/g, '').slice(0, 4)) || '1',
         weight: num(c.weight, 0, 0, 0.06),
         cornerR: num(c.cornerR, 0, 0, 1),
-        height: num(c.height, 2.2, 0.5, 4),
-        thickness: num(c.thickness, 0.7, 0.2, 2),
+        ...(Object.keys(byCount).length ? { byCount } : {}),
+        ...(Object.keys(samples).length ? { samples } : {}),
       };
+    }
     default:
       return {};                                  // circle, oval — sized entirely by the tier
   }
