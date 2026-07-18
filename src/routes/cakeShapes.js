@@ -23,7 +23,7 @@ const withThumb = (row) => ({ ...row, thumbnail_key: toPublicUrl(row.thumbnail_k
 // ANALYTIC families (circle, rounded_rect) that keep their own math in surface.js. A family is a curve
 // somebody had to write; its CONFIG is data. So a new PROPORTION is a row, and only a genuinely new
 // curve is a deploy.
-const FAMILIES = ['circle', 'rounded_rect', 'heart', 'butterfly', 'polygon', 'oval', 'number'];
+const FAMILIES = ['circle', 'rounded_rect', 'heart', 'butterfly', 'polygon', 'oval', 'number', 'letter'];
 
 // Keys that existing designs already store. Renaming or deactivating one would silently re-shape every
 // cake that uses it (an unknown key degrades to round in the designer), so they are protected here
@@ -38,6 +38,41 @@ function normalizeConfig(family, input) {
     const n = v != null && !Number.isNaN(Number(v)) ? Number(v) : d;
     return Math.max(lo, Math.min(hi, n));
   };
+  // A GLYPH family (number/letter) — a cake shaped like the typed characters. Both families share this
+  // exact shape; only the charset, count set and text field differ, so they normalise through ONE helper
+  // (a second copy would drift). `textKey` is the config field ('digits'/'letters'), `keep` strips the
+  // charset, `counts` the valid per-count keys, `fallback` the empty-string floor. Sized PER COUNT: each
+  // count carries { height (how tall the glyph stands — its real size), thickness (slab depth) }, authored
+  // in the Cake Shape Studio; `samples` is a studio-only preview aid. Both MUST be preserved — the
+  // whitelist rebuilds shapeConfig, so anything not named is dropped, and core (glyphSizeForCount) reads
+  // byCount to size the cake. Keep only the valid counts; core falls back to its own defaults otherwise.
+  const normalizeGlyph = ({ textKey, keep, counts, upper, fallback }) => {
+    const clean = (v, k) => { let s = String(v ?? '').replace(keep, ''); if (upper) s = s.toUpperCase(); return s.slice(0, k); };
+    const max = counts[counts.length - 1];
+    const bcIn = c.byCount && typeof c.byCount === 'object' ? c.byCount : {};
+    const byCount = {};
+    for (const k of counts) {
+      const e = bcIn[k];
+      // `pipingScale` (PER COUNT) sizes the glyph's piping shells (core: shellRadius = glyph half-height ×
+      // pipingScale) — a wide multi-glyph string wants smaller rosettes than a lone glyph. Lives inside
+      // byCount[k] beside height/thickness (the model the number side moved to). Default 1, clamp 0.3–2.
+      if (e && typeof e === 'object') byCount[k] = { height: num(e.height, 2, 0.5, 4), thickness: num(e.thickness, 0.7, 0.2, 2), pipingScale: num(e.pipingScale, 1, 0.3, 2) };
+    }
+    const smIn = c.samples && typeof c.samples === 'object' ? c.samples : {};
+    const samples = {};
+    for (const k of counts) {
+      if (smIn[k] == null) continue;
+      const s = clean(smIn[k], k);   // a k-count previews a ≤k-character string
+      if (s) samples[k] = s;
+    }
+    return {
+      [textKey]: clean(c[textKey], max) || fallback,
+      weight: num(c.weight, 0, 0, 0.06),
+      cornerR: num(c.cornerR, 0, 0, 1),
+      ...(Object.keys(byCount).length ? { byCount } : {}),
+      ...(Object.keys(samples).length ? { samples } : {}),
+    };
+  };
   switch (family) {
     case 'heart':
       return {
@@ -51,41 +86,10 @@ function normalizeConfig(family, input) {
       return { sides: Math.round(num(c.sides, 6, 3, 16)), rotation: num(c.rotation, 0, -180, 180) };
     case 'rounded_rect':
       return c.square ? { square: true } : {};
-    case 'number': {
-      // A cake shaped like the typed digits — the digits are the config (a recipe, not an asset). `weight`
-      // thickens the stroke, `cornerR` rounds the corners (both admin-styled on the starter, count-independent).
-      //
-      // A number is sized PER DIGIT COUNT (1–4): each count carries its own { height (how tall the digit
-      // stands — its real size), thickness (slab depth) }, authored in the Cake Shape Studio. `samples` is a
-      // studio-only preview aid (a number to draw while tuning each count). Both MUST be preserved here — the
-      // whitelist rebuilds shapeConfig, so anything not named is dropped, and core (numberSizeForCount) reads
-      // byCount to size the cake. Keep only the four valid counts; core falls back to its own defaults for any
-      // count left unauthored.
-      const bcIn = c.byCount && typeof c.byCount === 'object' ? c.byCount : {};
-      const byCount = {};
-      for (const k of [1, 2, 3, 4]) {
-        const e = bcIn[k];
-        if (e && typeof e === 'object') {
-          // `pipingScale` (PER COUNT) sizes the number's piping shells (core: shellRadius = digit half-height
-          // × pipingScale) — a wide 4-digit number wants smaller rosettes than a "1". Default 1, clamp 0.3–2.
-          byCount[k] = { height: num(e.height, 2, 0.5, 4), thickness: num(e.thickness, 0.7, 0.2, 2), pipingScale: num(e.pipingScale, 1, 0.3, 2) };
-        }
-      }
-      const smIn = c.samples && typeof c.samples === 'object' ? c.samples : {};
-      const samples = {};
-      for (const k of [1, 2, 3, 4]) {
-        if (smIn[k] == null) continue;
-        const s = String(smIn[k]).replace(/[^0-9]/g, '').slice(0, k);   // a k-digit count previews a ≤k-digit number
-        if (s) samples[k] = s;
-      }
-      return {
-        digits: (String(c.digits ?? '').replace(/[^0-9]/g, '').slice(0, 4)) || '1',
-        weight: num(c.weight, 0, 0, 0.06),
-        cornerR: num(c.cornerR, 0, 0, 1),
-        ...(Object.keys(byCount).length ? { byCount } : {}),
-        ...(Object.keys(samples).length ? { samples } : {}),
-      };
-    }
+    case 'number':   // digits (0-9), up to 4 — a cake shaped like the typed number
+      return normalizeGlyph({ textKey: 'digits',  keep: /[^0-9]/g,    counts: [1, 2, 3, 4], upper: false, fallback: '1' });
+    case 'letter':   // A–Z (uppercased), up to 3 — a cake shaped like the typed letters
+      return normalizeGlyph({ textKey: 'letters', keep: /[^A-Za-z]/g, counts: [1, 2, 3],    upper: true,  fallback: 'A' });
     default:
       return {};                                  // circle, oval — sized entirely by the tier
   }
