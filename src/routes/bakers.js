@@ -876,6 +876,82 @@ router.put('/baker/flavours/exclusions', requireAuth, requireCapability('store:m
   }
 });
 
+// ── GET /api/baker/templates ──────────────────────────────────────────────────
+// Auth. The GLOBAL (Spattoo-authored) template master list, flagged with this baker's on/off state:
+//   [{ id, name, thumbnail_url, tier_count, offering, excluded }]
+// `excluded: true` means the baker has switched it off → it's hidden from their whole tenant (see the
+// filter in GET /api/templates). Only globals are listed — a baker's OWN templates aren't managed
+// here (they delete those). Direct sibling of GET /api/baker/flavours.
+router.get('/baker/templates', requireAuth, async (req, res) => {
+  try {
+    const { data: contact } = await supabase
+      .from('baker_appusers')
+      .select('baker_id')
+      .eq('auth_user_id', req.user.id)
+      .maybeSingle();
+    if (!contact) return res.status(404).json({ error: 'No baker account found' });
+
+    const [{ data: globals }, { data: exclusions }] = await Promise.all([
+      supabase.from('cake_templates')
+        .select('id, name, thumbnail_url, tier_count, offering, sort_order')
+        .is('baker_id', null)
+        .eq('is_active', true)
+        .order('sort_order').order('name'),
+      supabase.from('baker_template_exclusions')
+        .select('template_id')
+        .eq('baker_id', contact.baker_id),
+    ]);
+
+    const excluded = new Set((exclusions ?? []).map(e => e.template_id));
+    res.json((globals ?? []).map(t => ({
+      id: t.id, name: t.name, thumbnail_url: toPublicUrl(t.thumbnail_url),
+      tier_count: t.tier_count, offering: t.offering, excluded: excluded.has(t.id),
+    })));
+  } catch (err) {
+    serverError(req, res, err);
+  }
+});
+
+// ── PUT /api/baker/templates/exclusions ───────────────────────────────────────
+// Auth + store:manage. Body: { excluded_template_ids: [uuid, ...] }
+// Replaces this baker's exclusion set (clear, then insert the new set). Only ids that are real active
+// GLOBAL templates are written, so a baker can never hide another tenant's private template and the
+// table can't accumulate junk. Mirrors PUT /api/baker/flavours/exclusions.
+router.put('/baker/templates/exclusions', requireAuth, requireCapability('store:manage'), async (req, res) => {
+  try {
+    const { data: contact } = await supabase
+      .from('baker_appusers')
+      .select('baker_id')
+      .eq('auth_user_id', req.user.id)
+      .maybeSingle();
+    if (!contact) return res.status(404).json({ error: 'No baker account found' });
+
+    const requested = Array.isArray(req.body?.excluded_template_ids) ? req.body.excluded_template_ids : null;
+    if (!requested) return res.status(400).json({ error: 'excluded_template_ids must be an array' });
+
+    // Keep only ids that are real active GLOBAL templates (baker_id IS NULL).
+    const { data: globals } = await supabase
+      .from('cake_templates').select('id').is('baker_id', null).eq('is_active', true);
+    const valid = new Set((globals ?? []).map(t => t.id));
+    const ids = [...new Set(requested)].filter(id => valid.has(id));
+
+    // Replace the set: clear this baker's exclusions, then insert the new ones.
+    const { error: delErr } = await supabase
+      .from('baker_template_exclusions').delete().eq('baker_id', contact.baker_id);
+    if (delErr) return serverError(req, res, delErr);
+
+    if (ids.length) {
+      const rows = ids.map(template_id => ({ baker_id: contact.baker_id, template_id }));
+      const { error: insErr } = await supabase.from('baker_template_exclusions').insert(rows);
+      if (insErr) return serverError(req, res, insErr);
+    }
+
+    res.json({ ok: true, excluded_count: ids.length });
+  } catch (err) {
+    serverError(req, res, err);
+  }
+});
+
 router.get('/admin/bakers', requireAuth, requireCapability('baker:onboard'), async (req, res) => {
   try {
     const { data, error } = await supabase

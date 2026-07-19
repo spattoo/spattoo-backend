@@ -42,6 +42,17 @@ router.get('/templates', requireAuth, requireCapability('design:create'), attach
     if (req.bakerId) {
       // Baker: global templates + their own
       query = query.or(`baker_id.is.null,baker_id.eq.${req.bakerId}`);
+
+      // …minus any GLOBAL templates this baker has switched off (baker_template_exclusions).
+      // Only globals are ever stored there, so filtering by id can never drop the baker's own
+      // templates. Managed via GET/PUT /api/baker/templates(/exclusions). Hidden tenant-wide:
+      // the baker's own browse AND their customers read through this one route.
+      const { data: exclusions } = await supabase
+        .from('baker_template_exclusions')
+        .select('template_id')
+        .eq('baker_id', req.bakerId);
+      const excludedIds = (exclusions ?? []).map(e => e.template_id);
+      if (excludedIds.length) query = query.not('id', 'in', `(${excludedIds.join(',')})`);
     } else {
       // Admin: optionally scope to a baker's view via ?baker_id=X.
       // SEC-10: coerce to an integer before interpolating into the filter — a raw string param
