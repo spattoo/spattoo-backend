@@ -13,8 +13,8 @@ import { logError } from '../lib/telemetry.js';
 import { recordConsent } from '../services/legalConsent.js';
 import { CONSENT_SUBJECT_TYPE, CONSENT_SOURCE, CONSENT_REQUIRED_DOC_KEYS } from '../constants/legalDocuments.js';
 
-// Baker may attach at most this many finished-cake photos to an order.
-const MAX_FINISHED_PHOTOS = 3;
+// Baker may attach at most this many photos to an order — per set (finished or reference).
+const MAX_ORDER_PHOTOS = 3;
 
 // Trial/plan gate at the storefront's order INTAKE — shares getOrderAcceptance with
 // the storefront banner so the two can't drift. A baker stops taking NEW orders once
@@ -103,21 +103,56 @@ function validateOrderBody(body) {
 // Callers resolve the baker and the customer FIRST (that's where the trust
 // boundary lives) and hand a resolved customerId + contact here. Throws on insert
 // error so the caller's try/catch maps it to a 500.
-async function insertOrderAndNotify({ baker, customerId, customerContact, body, authoredBy = 'customer' }) {
+// Find-or-create a customer within a baker by email (preferred) or phone. Returns
+// { customerId, emailNorm, phoneNorm }. Shared by the public order route and the
+// baker's manual-order route (same upsert, different `source` label). Throws on insert
+// error so the caller's try/catch maps it to a 500.
+async function upsertCustomer(bakerId, customer, { source = 'online_order' } = {}) {
+  const emailNorm = customer.email?.toLowerCase().trim() || null;
+  const phoneNorm = customer.phone?.trim() || null;
+
+  let lookup = supabase.from('customers').select('id').eq('baker_id', bakerId);
+  lookup = emailNorm ? lookup.eq('email', emailNorm) : lookup.eq('phone', phoneNorm);
+  let { data: existing } = await lookup.maybeSingle();
+
+  if (!existing) {
+    const { data: created, error } = await supabase
+      .from('customers')
+      .insert({
+        baker_id:   bakerId,
+        email:      emailNorm,
+        first_name: customer.firstName,
+        last_name:  customer.lastName ?? null,
+        phone:      phoneNorm,
+        source,
+      })
+      .select('id')
+      .single();
+    if (error) throw new Error(error.message);
+    existing = created;
+  }
+  return { customerId: existing.id, emailNorm, phoneNorm };
+}
+
+async function insertOrderAndNotify({ baker, customerId, customerContact, body, authoredBy = 'customer', uploadedBy = null }) {
   const {
-    designSnapshot, designThumbnailKey, weightKg, flavours,
+    designSnapshot = null, designThumbnailKey, referenceKeys, weightKg, flavours,
     specialInstructions, deliveryDate, deliveryTime,
     deliveryMode = 'pickup', deliveryAddress,
   } = body;
 
-  const thumbnailUrl = designThumbnailKey ?? null;
+  // A manual order has no design — its picture is the primary reference photo. The
+  // thumbnail mirror (design_thumbnail_url) holds whichever picture exists, so list/
+  // detail/email render unchanged.
+  const refKeys = Array.isArray(referenceKeys) ? referenceKeys : [];
+  const thumbnailUrl = designThumbnailKey ?? refKeys[0] ?? null;
 
   const { data: order, error: orderError } = await supabase
     .from('orders')
     .insert({
       baker_id:             baker.id,
       customer_id:          customerId,
-      design_snapshot:      designSnapshot,
+      design_snapshot:      designSnapshot,          // null for a manual (no-designer) order
       design_thumbnail_url: thumbnailUrl,
       weight_kg:            weightKg ?? null,
       flavours:             flavours ?? null,
@@ -136,8 +171,20 @@ async function insertOrderAndNotify({ baker, customerId, customerContact, body, 
 
   if (orderError) throw new Error(orderError.message);
 
-  // Seed version 1 of the design (append-only history starts here).
-  await appendDesignVersion({ orderId: order.id, designSnapshot, thumbnailKey: thumbnailUrl, authoredBy });
+  // Seed version 1 of the design (append-only history starts here) — ONLY when there
+  // is a design. A manual order has none, so the version table (design_snapshot NOT
+  // NULL) is correctly left empty and X-Ray/Edit-in-3D stay off (they gate on the
+  // snapshot).
+  if (designSnapshot) {
+    await appendDesignVersion({ orderId: order.id, designSnapshot, thumbnailKey: thumbnailUrl, authoredBy });
+  }
+
+  // Reference-photo gallery (manual orders only; ≤3, validated by the caller).
+  if (refKeys.length) {
+    const rows = refKeys.map((key, i) => ({ order_id: order.id, key, sort_order: i, uploaded_by: uploadedBy }));
+    const { error: refErr } = await supabase.from('order_reference_photos').insert(rows);
+    if (refErr) throw new Error(refErr.message);
+  }
 
   // Insert notifications and enqueue — fire and forget, non-blocking
   notifyOrderPlaced({
@@ -278,43 +325,76 @@ router.post('/orders', async (req, res) => {
     const intakeBlock = await orderIntakeBlock(bakerId);
     if (intakeBlock) return res.status(403).json(intakeBlock);
 
-    // ── Upsert customer ─────────────────────────────────────────────────────
-    // Look up by email if provided, otherwise by phone.
-    const emailNorm = customer.email?.toLowerCase().trim() || null;
-    const phoneNorm = customer.phone?.trim() || null;
-
-    let lookupQuery = supabase.from('customers').select('id').eq('baker_id', bakerId);
-    if (emailNorm) {
-      lookupQuery = lookupQuery.eq('email', emailNorm);
-    } else {
-      lookupQuery = lookupQuery.eq('phone', phoneNorm);
-    }
-
-    let { data: existingCustomer } = await lookupQuery.maybeSingle();
-
-    if (!existingCustomer) {
-      const { data: newCustomer, error: customerError } = await supabase
-        .from('customers')
-        .insert({
-          baker_id:   bakerId,
-          email:      emailNorm,
-          first_name: customer.firstName,
-          last_name:  customer.lastName ?? null,
-          phone:      phoneNorm,
-          source:     'online_order',
-        })
-        .select('id')
-        .single();
-
-      if (customerError) return serverError(req, res, customerError);
-      existingCustomer = newCustomer;
-    }
+    // ── Upsert customer (find-or-create by email/phone) ─────────────────────
+    const { customerId, emailNorm, phoneNorm } = await upsertCustomer(bakerId, customer);
 
     const order = await insertOrderAndNotify({
       baker,
-      customerId:      existingCustomer.id,
+      customerId,
       customerContact: { first_name: customer.firstName, last_name: customer.lastName, email: emailNorm, phone: phoneNorm },
       body:            req.body,
+    });
+
+    res.status(201).json({ orderId: order.id, createdAt: order.created_at });
+  } catch (err) {
+    serverError(req, res, err);
+  }
+});
+
+// ── POST /api/orders/manual ───────────────────────────────────────────────────
+// A baker creates an order WITHOUT the 3D designer — the existing-workflow path: take
+// a reference photo from the customer (or nothing) and bake it. Authenticated
+// (order:manage), baker resolved FROM THE TOKEN (not a slug), so it can't be spoofed
+// like the public POST /orders.
+//
+// No designSnapshot: the order has design_snapshot = null → no design version is
+// seeded, and X-Ray / Edit-in-3D stay off (they gate on the snapshot). Up to 3
+// reference photos (pre-uploaded to orders/reference/) form the gallery; the primary
+// is mirrored into design_thumbnail_url so the order shows its picture everywhere.
+//
+// Body: { customer:{firstName,lastName?,phone?,email?} (required),
+//         referenceKeys?:[uuid…] (≤3, under orders/reference/),
+//         weightKg?, flavours?, specialInstructions?,
+//         deliveryDate?, deliveryTime?, deliveryMode?, deliveryAddress? }
+router.post('/orders/manual', requireAuth, requireCapability('order:manage'), async (req, res) => {
+  try {
+    const { data: appUser } = await supabase
+      .from('baker_appusers').select('baker_id, id')
+      .eq('auth_user_id', req.user.id).maybeSingle();
+    if (!appUser) return res.status(403).json({ error: 'Not a baker account' });
+
+    const { customer, referenceKeys, deliveryMode = 'pickup', deliveryAddress } = req.body ?? {};
+
+    // Customer is required — the quote, delivery and notifications all address someone.
+    if (!customer?.firstName)                 return res.status(400).json({ error: 'customer.firstName is required' });
+    if (!customer?.phone && !customer?.email) return res.status(400).json({ error: 'customer.phone or customer.email is required' });
+    if (!['pickup', 'home_delivery'].includes(deliveryMode)) return res.status(400).json({ error: 'deliveryMode must be pickup or home_delivery' });
+    if (deliveryMode === 'home_delivery' && !deliveryAddress) return res.status(400).json({ error: 'deliveryAddress is required for home_delivery' });
+
+    // Reference photos: optional, ≤3, must be under the reference folder (they were
+    // signed-uploaded there). An order with zero reference photos is allowed.
+    const keys = Array.isArray(referenceKeys) ? referenceKeys.map(k => String(k).replace(/^\/+/, '')) : [];
+    if (keys.length > MAX_ORDER_PHOTOS) return res.status(400).json({ error: `At most ${MAX_ORDER_PHOTOS} reference photos` });
+    if (keys.some(k => !k.startsWith('orders/reference/'))) {
+      return res.status(400).json({ error: 'reference keys must be under orders/reference/' });
+    }
+
+    const { data: baker } = await supabase
+      .from('bakers').select('id, name, email').eq('id', appUser.baker_id).maybeSingle();
+    if (!baker) return res.status(404).json({ error: 'Baker not found' });
+
+    const intakeBlock = await orderIntakeBlock(baker.id);
+    if (intakeBlock) return res.status(403).json(intakeBlock);
+
+    const { customerId, emailNorm, phoneNorm } = await upsertCustomer(baker.id, customer, { source: 'manual' });
+
+    const order = await insertOrderAndNotify({
+      baker,
+      customerId,
+      customerContact: { first_name: customer.firstName, last_name: customer.lastName, email: emailNorm, phone: phoneNorm },
+      body:            { ...req.body, designSnapshot: null, referenceKeys: keys },
+      authoredBy:      'baker',
+      uploadedBy:      appUser.id,
     });
 
     res.status(201).json({ orderId: order.id, createdAt: order.created_at });
@@ -730,75 +810,104 @@ async function loadBakerOrder(req, orderId) {
   return { appUser };
 }
 
-// GET — list this order's finished photos (ordered), as public URLs for display.
-router.get('/orders/:id/photos', requireAuth, requireCapability('order:manage'), async (req, res) => {
-  try {
-    const ctx = await loadBakerOrder(req, req.params.id);
-    if (ctx.error) return res.status(ctx.status).json({ error: ctx.error });
-    const { data: rows, error } = await supabase
-      .from('order_finished_photos').select('id, key, sort_order')
-      .eq('order_id', req.params.id).order('sort_order', { ascending: true });
-    if (error) return serverError(req, res, error);
-    res.json((rows ?? []).map(r => ({ id: r.id, sort_order: r.sort_order, url: toPublicUrl(r.key) })));
-  } catch (err) {
-    serverError(req, res, err);
-  }
-});
-
-// POST — replace this order's finished-photo set with `keys` (≤3, ordered by
-// position). Replace (not append) so re-confirming the mark-ready sheet is
-// idempotent; the prior set's R2 objects are pruned so they don't leak. Keys must
-// live under orders/photos/ (the upload allow-list folder).
-router.post('/orders/:id/photos', requireAuth, requireCapability('order:manage'), async (req, res) => {
-  try {
-    const ctx = await loadBakerOrder(req, req.params.id);
-    if (ctx.error) return res.status(ctx.status).json({ error: ctx.error });
-
-    const keys = Array.isArray(req.body?.keys) ? req.body.keys.map(k => String(k).replace(/^\/+/, '')) : null;
-    if (!keys) return res.status(400).json({ error: 'keys must be an array' });
-    if (keys.length > MAX_FINISHED_PHOTOS) return res.status(400).json({ error: `At most ${MAX_FINISHED_PHOTOS} photos` });
-    if (keys.some(k => !k.startsWith('orders/photos/'))) {
-      return res.status(400).json({ error: 'keys must be under orders/photos/' });
-    }
-
-    // Prune the previous set's R2 objects (fresh uuid filenames ⇒ no overlap with `keys`).
-    const { data: prior } = await supabase
-      .from('order_finished_photos').select('key').eq('order_id', req.params.id);
-    await supabase.from('order_finished_photos').delete().eq('order_id', req.params.id);
-    await Promise.allSettled((prior ?? []).map(p => deleteObject(p.key)));
-
-    let inserted = [];
-    if (keys.length) {
-      const rows = keys.map((key, i) => ({
-        order_id: req.params.id, key, sort_order: i, uploaded_by: ctx.appUser.id,
-      }));
-      const { data, error } = await supabase
-        .from('order_finished_photos').insert(rows).select('id, key, sort_order');
+// One factory registers the GET/POST(replace)/DELETE trio for an order photo SET, so
+// the finished-cake photos and the manual-order reference photos share identical
+// handlers (they differ only by table + R2 folder). `mirrorThumbnail` maintains
+// orders.design_thumbnail_url from the PRIMARY photo — used by the reference set so a
+// manual order's picture stays in sync on edit (guarded to design-less orders so it
+// can never clobber a real design thumbnail).
+function registerOrderPhotoRoutes({ path, table, folder, mirrorThumbnail = false }) {
+  // GET — list the set (ordered), as public URLs for display.
+  router.get(`/orders/:id/${path}`, requireAuth, requireCapability('order:manage'), async (req, res) => {
+    try {
+      const ctx = await loadBakerOrder(req, req.params.id);
+      if (ctx.error) return res.status(ctx.status).json({ error: ctx.error });
+      const { data: rows, error } = await supabase
+        .from(table).select('id, key, sort_order')
+        .eq('order_id', req.params.id).order('sort_order', { ascending: true });
       if (error) return serverError(req, res, error);
-      inserted = data ?? [];
+      res.json((rows ?? []).map(r => ({ id: r.id, sort_order: r.sort_order, url: toPublicUrl(r.key) })));
+    } catch (err) {
+      serverError(req, res, err);
     }
-    res.json(inserted.map(r => ({ id: r.id, sort_order: r.sort_order, url: toPublicUrl(r.key) })));
-  } catch (err) {
-    serverError(req, res, err);
-  }
-});
+  });
 
-// DELETE — remove one finished photo (row + its R2 object).
-router.delete('/orders/:id/photos/:photoId', requireAuth, requireCapability('order:manage'), async (req, res) => {
-  try {
-    const ctx = await loadBakerOrder(req, req.params.id);
-    if (ctx.error) return res.status(ctx.status).json({ error: ctx.error });
-    const { data: row } = await supabase
-      .from('order_finished_photos').select('id, key')
-      .eq('id', req.params.photoId).eq('order_id', req.params.id).maybeSingle();
-    if (!row) return res.status(404).json({ error: 'Photo not found' });
-    await supabase.from('order_finished_photos').delete().eq('id', row.id);
-    await deleteObject(row.key).catch(err => console.error('[orders] photo object delete failed:', err.message));
-    res.json({ ok: true });
-  } catch (err) {
-    serverError(req, res, err);
-  }
-});
+  // POST — replace the set with `keys` (≤3, ordered by position). Replace (not append)
+  // is idempotent; the prior set's R2 objects are pruned so they don't leak. Keys must
+  // live under this set's folder (the upload allow-list folder).
+  router.post(`/orders/:id/${path}`, requireAuth, requireCapability('order:manage'), async (req, res) => {
+    try {
+      const ctx = await loadBakerOrder(req, req.params.id);
+      if (ctx.error) return res.status(ctx.status).json({ error: ctx.error });
+
+      const keys = Array.isArray(req.body?.keys) ? req.body.keys.map(k => String(k).replace(/^\/+/, '')) : null;
+      if (!keys) return res.status(400).json({ error: 'keys must be an array' });
+      if (keys.length > MAX_ORDER_PHOTOS) return res.status(400).json({ error: `At most ${MAX_ORDER_PHOTOS} photos` });
+      if (keys.some(k => !k.startsWith(`${folder}/`))) {
+        return res.status(400).json({ error: `keys must be under ${folder}/` });
+      }
+
+      // Prune the previous set's R2 objects (fresh uuid filenames ⇒ no overlap with `keys`).
+      const { data: prior } = await supabase.from(table).select('key').eq('order_id', req.params.id);
+      await supabase.from(table).delete().eq('order_id', req.params.id);
+      await Promise.allSettled((prior ?? []).map(p => deleteObject(p.key)));
+
+      let inserted = [];
+      if (keys.length) {
+        const rows = keys.map((key, i) => ({
+          order_id: req.params.id, key, sort_order: i, uploaded_by: ctx.appUser.id,
+        }));
+        const { data, error } = await supabase.from(table).insert(rows).select('id, key, sort_order');
+        if (error) return serverError(req, res, error);
+        inserted = data ?? [];
+      }
+
+      // Keep the denormalised picture mirror in step with the primary reference photo,
+      // but only for a design-less order (never overwrite a rendered design thumbnail).
+      if (mirrorThumbnail) {
+        await supabase.from('orders')
+          .update({ design_thumbnail_url: keys[0] ?? null })
+          .eq('id', req.params.id).is('design_snapshot', null);
+      }
+
+      res.json(inserted.map(r => ({ id: r.id, sort_order: r.sort_order, url: toPublicUrl(r.key) })));
+    } catch (err) {
+      serverError(req, res, err);
+    }
+  });
+
+  // DELETE — remove one photo (row + its R2 object).
+  router.delete(`/orders/:id/${path}/:photoId`, requireAuth, requireCapability('order:manage'), async (req, res) => {
+    try {
+      const ctx = await loadBakerOrder(req, req.params.id);
+      if (ctx.error) return res.status(ctx.status).json({ error: ctx.error });
+      const { data: row } = await supabase
+        .from(table).select('id, key')
+        .eq('id', req.params.photoId).eq('order_id', req.params.id).maybeSingle();
+      if (!row) return res.status(404).json({ error: 'Photo not found' });
+      await supabase.from(table).delete().eq('id', row.id);
+      await deleteObject(row.key).catch(err => console.error('[orders] photo object delete failed:', err.message));
+
+      if (mirrorThumbnail) {
+        // Re-point the mirror at the new primary (lowest sort_order), or clear it.
+        const { data: rest } = await supabase.from(table)
+          .select('key').eq('order_id', req.params.id).order('sort_order', { ascending: true }).limit(1);
+        await supabase.from('orders')
+          .update({ design_thumbnail_url: rest?.[0]?.key ?? null })
+          .eq('id', req.params.id).is('design_snapshot', null);
+      }
+
+      res.json({ ok: true });
+    } catch (err) {
+      serverError(req, res, err);
+    }
+  });
+}
+
+// Finished-cake photos (delivery) and manual-order reference photos (intake) — same
+// trio of routes, different set. Paths/clients unchanged for the finished set.
+registerOrderPhotoRoutes({ path: 'photos',           table: 'order_finished_photos',  folder: 'orders/photos' });
+registerOrderPhotoRoutes({ path: 'reference-photos', table: 'order_reference_photos', folder: 'orders/reference', mirrorThumbnail: true });
 
 // ── POST /api/orders/:id/quote ────────────────────────────────────────────────
 // Baker issues (or re-issues) the quote: captures the price + optional line items,

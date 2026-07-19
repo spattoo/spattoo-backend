@@ -48,6 +48,7 @@ const FOLDER_POLICY = {
   'storefront/gallery':   { types: IMAGE_TYPES, maxBytes: IMAGE_MAX },   // baker cake photos for the storefront slideshow
   'orders/thumbnails':    { types: IMAGE_TYPES, maxBytes: IMAGE_MAX },
   'orders/photos':        { types: IMAGE_TYPES, maxBytes: IMAGE_MAX },   // baker-uploaded finished-cake photos (public → inline in order-ready email)
+  'orders/reference':     { types: IMAGE_TYPES, maxBytes: IMAGE_MAX },   // customer reference photos for a manual (no-designer) order — the order's picture
   'customer/photos':      { types: IMAGE_TYPES, maxBytes: IMAGE_MAX },   // customer-uploaded photo for a photo-cake frame (public → designer textures it)
   'meshy/source':         { types: IMAGE_TYPES, maxBytes: IMAGE_MAX },   // uploaded 2D image for the image→3D wizard (public so Meshy can fetch it)
   'meshy/outputs':        { types: MODEL_TYPES, maxBytes: MODEL_MAX },   // our copy of the Meshy-generated GLB (written server-side via putObject)
