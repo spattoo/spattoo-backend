@@ -228,9 +228,12 @@ router.post('/invite/:id/send-otp', sendOtpPerInvite, sendOtpPerIp, async (req, 
     const to = contactFor(channel, invite.customers);
     if (!to) return res.status(400).json({ error: `No ${channel} contact on file for this invite` });
 
-    const { error } = channel === 'email'
-      ? await supabaseAuth.auth.signInWithOtp({ email: to })
-      : await supabaseAuth.auth.signInWithOtp({ phone: to });
+    // signInWithOtp uses the ANON key, so Supabase captcha (when enabled) gates it — service-role
+    // would bypass but we intentionally keep the anon flow. The customer's browser solves Turnstile
+    // and forwards the token here; we pass it through. undefined when captcha is off → ignored.
+    const captchaToken = req.body?.captchaToken || undefined;
+    const otp = channel === 'email' ? { email: to } : { phone: to };
+    const { error } = await supabaseAuth.auth.signInWithOtp({ ...otp, options: { captchaToken } });
     if (error) return res.status(502).json({ error: error.message });
 
     if (['pending', 'opened'].includes(invite.status)) {
