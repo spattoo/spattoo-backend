@@ -44,24 +44,34 @@ function withStatusKey(row) {
 }
 
 // Dietary requirements live in a child table, so reads embed them and this flattens
-// the embed to a plain array of keys ( ['eggless'] ) for the HTTP response.
+// the embed to `[{ key, label, kind }]` for the HTTP response, in the lookup's own
+// display order.
 //
 // Only rewrites the row when the embed was actually SELECTED. That matters: an absent
 // key means "not fetched", while `dietary_requirements: []` means "this order states
 // none" — and quietly turning the first into the second would let a caller that forgot
 // the embed conclude a cake has no requirements. Same reason withStatusKey tolerates
 // an already-flattened row instead of guessing.
-const DIETARY_EMBED = 'order_dietary_requirements ( dietary_requirements ( key ) )';
+const DIETARY_EMBED = 'order_dietary_requirements ( dietary_requirements ( key, label, kind, sort_order ) )';
 
 function withDietaryKeys(row) {
   if (!row || !('order_dietary_requirements' in row)) return row;
   const { order_dietary_requirements, ...rest } = row;
   return {
     ...rest,
+    // label and kind travel WITH the order, rather than the order carrying bare keys
+    // that every surface then joins against a separately-fetched vocabulary. Four
+    // surfaces render this — order list, order detail, the X-Ray screen and the
+    // printed sheet — and a join each is four chances to show a raw key because the
+    // vocabulary hadn't loaded, or to disagree about a label. The rows are tiny and
+    // bounded per order; the denormalisation costs nothing and removes that class of
+    // bug entirely. `kind` in particular must never be lost: it is what stops a nut
+    // allergy being rendered like a flavour preference.
     dietary_requirements: (order_dietary_requirements ?? [])
-      .map(r => r.dietary_requirements?.key)
+      .map(r => r.dietary_requirements)
       .filter(Boolean)
-      .sort(),
+      .sort((a, b) => (a.sort_order ?? 0) - (b.sort_order ?? 0))
+      .map(({ key, label, kind }) => ({ key, label, kind })),
   };
 }
 
@@ -77,7 +87,7 @@ const CUSTOMER_ORDER_FIELDS = `
   id, status_id, order_statuses ( key ), quoted_price, quote_line_items, quote_valid_until, final_price,
   advance_amount, quote_note, advance_paid_at,
   weight_kg, flavours, special_instructions,
-  order_dietary_requirements ( dietary_requirements ( key ) ),
+  order_dietary_requirements ( dietary_requirements ( key, label, kind, sort_order ) ),
   delivery_date, delivery_time, delivery_mode, delivery_address,
   design_thumbnail_url, design_snapshot, current_version_id, quoted_version_id,
   created_at, updated_at, baker_id, customer_id,
