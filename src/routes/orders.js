@@ -7,6 +7,7 @@ import { assertBakerOwns } from '../lib/tenantScope.js';
 import { config } from '../config.js';
 import { notifyOrderPlaced, notifyDesignUpdated, notifyQuoteIssued, notifyQuoteAccepted, notifyQuoteQuestion, notifyOrderConfirmed, notifyOrderReady, notifyOrderCompleted } from '../services/notifications.js';
 import { getOrderStatuses, getValidStatusKeys, isQuotePhase, idForKey } from '../lib/orderStatuses.js';
+import { getDietaryRequirements, validateDietaryKeys, setOrderDietaryRequirements } from '../lib/dietaryRequirements.js';
 import { getOrderAcceptance } from '../services/entitlements.js';
 import { deleteObject } from '../services/r2.js';
 import { logError } from '../lib/telemetry.js';
@@ -42,6 +43,28 @@ function withStatusKey(row) {
   return { ...rest, status: order_statuses?.key ?? rest.status ?? null };
 }
 
+// Dietary requirements live in a child table, so reads embed them and this flattens
+// the embed to a plain array of keys ( ['eggless'] ) for the HTTP response.
+//
+// Only rewrites the row when the embed was actually SELECTED. That matters: an absent
+// key means "not fetched", while `dietary_requirements: []` means "this order states
+// none" — and quietly turning the first into the second would let a caller that forgot
+// the embed conclude a cake has no requirements. Same reason withStatusKey tolerates
+// an already-flattened row instead of guessing.
+const DIETARY_EMBED = 'order_dietary_requirements ( dietary_requirements ( key ) )';
+
+function withDietaryKeys(row) {
+  if (!row || !('order_dietary_requirements' in row)) return row;
+  const { order_dietary_requirements, ...rest } = row;
+  return {
+    ...rest,
+    dietary_requirements: (order_dietary_requirements ?? [])
+      .map(r => r.dietary_requirements?.key)
+      .filter(Boolean)
+      .sort(),
+  };
+}
+
 // A quote is "stale" when a design version exists past the one it priced — i.e. the
 // design changed after the quote was issued. Derived, never stored.
 function quoteStale(order) {
@@ -54,6 +77,7 @@ const CUSTOMER_ORDER_FIELDS = `
   id, status_id, order_statuses ( key ), quoted_price, quote_line_items, quote_valid_until, final_price,
   advance_amount, quote_note, advance_paid_at,
   weight_kg, flavours, special_instructions,
+  order_dietary_requirements ( dietary_requirements ( key ) ),
   delivery_date, delivery_time, delivery_mode, delivery_address,
   design_thumbnail_url, design_snapshot, current_version_id, quoted_version_id,
   created_at, updated_at, baker_id, customer_id,
@@ -61,7 +85,7 @@ const CUSTOMER_ORDER_FIELDS = `
 `;
 
 function toCustomerOrder(o) {
-  const { baker_id, customer_id, bakers, order_statuses, status_id, ...rest } = o;
+  const { baker_id, customer_id, bakers, order_statuses, status_id, ...rest } = withDietaryKeys(o);
   return {
     ...rest,
     status:               order_statuses?.key ?? rest.status ?? null,
@@ -138,7 +162,7 @@ async function insertOrderAndNotify({ baker, customerId, customerContact, body, 
   const {
     designSnapshot = null, designThumbnailKey, referenceKeys, weightKg, flavours,
     specialInstructions, deliveryDate, deliveryTime,
-    deliveryMode = 'pickup', deliveryAddress,
+    deliveryMode = 'pickup', deliveryAddress, dietaryRequirementKeys,
   } = body;
 
   // A manual order has no design — its picture is the primary reference photo. The
@@ -177,6 +201,20 @@ async function insertOrderAndNotify({ baker, customerId, customerContact, body, 
   // snapshot).
   if (designSnapshot) {
     await appendDesignVersion({ orderId: order.id, designSnapshot, thumbnailKey: thumbnailUrl, authoredBy });
+  }
+
+  // Dietary requirements (eggless / allergen). Written HERE rather than in each route
+  // because all three intake paths — the public designer, the storefront customer, and
+  // the baker's manual order — funnel through this function, so one write covers every
+  // way an order can be created and none can silently skip it.
+  //
+  // `authoredBy` already distinguishes those paths ('customer' by default, 'baker' for
+  // a manual order), and that is exactly the assertion source the column records: the
+  // customer stating their own requirement, or the baker writing down what a customer
+  // told them on the phone. Keys were validated by the caller (validateDietaryKeys)
+  // before we got here, so an unknown key is already a 400 rather than a silent drop.
+  if (Array.isArray(dietaryRequirementKeys) && dietaryRequirementKeys.length) {
+    await setOrderDietaryRequirements(order.id, dietaryRequirementKeys, authoredBy);
   }
 
   // Reference-photo gallery (manual orders only; ≤3, validated by the caller).
@@ -307,6 +345,8 @@ router.post('/orders', async (req, res) => {
     if (!customer?.phone && !customer?.email) return res.status(400).json({ error: 'customer.phone or customer.email is required' });
     const bodyErr = validateOrderBody(req.body);
     if (bodyErr) return res.status(400).json({ error: bodyErr });
+    const dietErr = await validateDietaryKeys(req.body.dietaryRequirementKeys);
+    if (dietErr) return res.status(400).json({ error: dietErr });
 
     // ── Resolve baker ───────────────────────────────────────────────────────
     const { data: baker, error: bakerError } = await supabase
@@ -370,6 +410,8 @@ router.post('/orders/manual', requireAuth, requireCapability('order:manage'), as
     if (!customer?.phone && !customer?.email) return res.status(400).json({ error: 'customer.phone or customer.email is required' });
     if (!['pickup', 'home_delivery'].includes(deliveryMode)) return res.status(400).json({ error: 'deliveryMode must be pickup or home_delivery' });
     if (deliveryMode === 'home_delivery' && !deliveryAddress) return res.status(400).json({ error: 'deliveryAddress is required for home_delivery' });
+    const dietErr = await validateDietaryKeys(req.body?.dietaryRequirementKeys);
+    if (dietErr) return res.status(400).json({ error: dietErr });
 
     // Reference photos: optional, ≤3, must be under the reference folder (they were
     // signed-uploaded there). An order with zero reference photos is allowed.
@@ -419,6 +461,8 @@ router.post('/customer/orders', requireAuth, async (req, res) => {
 
     const bodyErr = validateOrderBody(req.body);
     if (bodyErr) return res.status(400).json({ error: bodyErr });
+    const dietErr = await validateDietaryKeys(req.body.dietaryRequirementKeys);
+    if (dietErr) return res.status(400).json({ error: dietErr });
 
     // ── Resolve baker ───────────────────────────────────────────────────────
     const { data: baker, error: bakerError } = await supabase
@@ -645,6 +689,7 @@ router.get('/orders', requireAuth, requireCapability('order:view'), async (req, 
         special_instructions, design_thumbnail_url, design_snapshot,
         approved_at, created_at, updated_at,
         quoted_price, quote_valid_until, current_version_id, quoted_version_id,
+        ${DIETARY_EMBED},
         customers ( id, email, first_name, last_name, phone )
       `)
       .eq('baker_id', req.bakerId)
@@ -659,7 +704,7 @@ router.get('/orders', requireAuth, requireCapability('order:view'), async (req, 
     const { data, error } = await query;
     if (error) return serverError(req, res, error);
 
-    res.json(data.map(o => ({ ...withStatusKey(o), design_thumbnail_url: toPublicUrl(o.design_thumbnail_url), quote_stale: quoteStale(o) })));
+    res.json(data.map(o => ({ ...withDietaryKeys(withStatusKey(o)), design_thumbnail_url: toPublicUrl(o.design_thumbnail_url), quote_stale: quoteStale(o) })));
   } catch (err) {
     serverError(req, res, err);
   }
@@ -675,11 +720,12 @@ router.get('/orders/:id', requireAuth, requireCapability('order:view'), async (r
     const order = await assertBakerOwns(req, 'orders', req.params.id, { select: `
         *,
         order_statuses ( key ),
+        ${DIETARY_EMBED},
         customers ( id, email, first_name, last_name, phone )
       ` });
     if (!order) return res.status(404).json({ error: 'Order not found' });
 
-    res.json({ ...withStatusKey(order), quote_stale: quoteStale(order) });
+    res.json({ ...withDietaryKeys(withStatusKey(order)), quote_stale: quoteStale(order) });
   } catch (err) {
     serverError(req, res, err);
   }
@@ -692,6 +738,20 @@ router.get('/orders/:id', requireAuth, requireCapability('order:view'), async (r
 router.get('/order-statuses', async (req, res) => {
   try {
     res.json(await getOrderStatuses());
+  } catch (err) {
+    serverError(req, res, err);
+  }
+});
+
+// ── GET /api/dietary-requirements ─────────────────────────────────────────────
+// The pickable requirement vocabulary (key/label/kind/order), served from the DB so
+// the order form, the baker UI and the print sheet render the same set we store —
+// instead of each repo hardcoding its own copy. Public: the customer-facing order
+// form needs it before anyone is authenticated, and it is reference data, not a
+// tenant's data. Same reasoning (and shape) as GET /api/order-statuses above.
+router.get('/dietary-requirements', async (req, res) => {
+  try {
+    res.json(await getDietaryRequirements());
   } catch (err) {
     serverError(req, res, err);
   }
@@ -1041,13 +1101,57 @@ router.patch('/orders/:id', requireAuth, requireCapability('order:manage'), asyn
       }
     }
 
-    if (Object.keys(updates).length === 0) return res.status(400).json({ error: 'No changes detected' });
+    // Dietary requirements are a child-table SET, not a column, so they sit outside the
+    // field loop above — but they are edited from the same form and must land in the
+    // same audit entry, because "who changed the eggless flag, when, and why" is
+    // exactly the question anyone will ask afterwards.
+    //
+    // Locked with the cake, not with logistics: the requirement determines what gets
+    // baked, so it belongs with weight_kg/flavours in the quote phase. Once the order
+    // is confirmed the honest answer is a conversation (and a cancel + recreate), not a
+    // silent update to a cake that may already be in the oven. Change-Freeze — knowing
+    // per-attribute what is still physically changeable — is the feature that would
+    // relax this properly; until it exists, refusing is the safe default.
+    let dietaryChange = null;
+    if ('dietary_requirements' in fields) {
+      if (!allowedFields.includes('flavours')) {
+        return res.status(409).json({ error: 'Once the order is confirmed, dietary requirements cannot be changed here — cancel and recreate the order.' });
+      }
+      const requested = Array.isArray(fields.dietary_requirements) ? fields.dietary_requirements : [];
+      const dietErr = await validateDietaryKeys(requested);
+      if (dietErr) return res.status(400).json({ error: dietErr });
 
-    const { data: order, error } = await supabase
-      .from('orders').update(updates).eq('id', req.params.id).eq('baker_id', appUser.baker_id)
-      .select('id, ' + EDITABLE_FIELDS.join(', ')).maybeSingle();
+      const { data: currentRows } = await supabase
+        .from('order_dietary_requirements')
+        .select('dietary_requirements ( key )')
+        .eq('order_id', req.params.id);
+      const current = (currentRows ?? []).map(r => r.dietary_requirements?.key).filter(Boolean).sort();
+      const next = [...new Set(requested)].sort();
+
+      if (JSON.stringify(current) !== JSON.stringify(next)) {
+        dietaryChange = { from: current, to: next };
+        changes.dietary_requirements = dietaryChange;
+      }
+    }
+
+    if (Object.keys(updates).length === 0 && !dietaryChange) return res.status(400).json({ error: 'No changes detected' });
+
+    // `updates` can legitimately be empty when the ONLY change is the requirement set
+    // (a child table), so read the row back rather than issuing an empty UPDATE.
+    const selection = 'id, ' + EDITABLE_FIELDS.join(', ');
+    const scoped = Object.keys(updates).length
+      ? supabase.from('orders').update(updates).eq('id', req.params.id).eq('baker_id', appUser.baker_id).select(selection)
+      : supabase.from('orders').select(selection).eq('id', req.params.id).eq('baker_id', appUser.baker_id);
+    const { data: order, error } = await scoped.maybeSingle();
     if (error) return serverError(req, res, error);
     if (!order) return res.status(404).json({ error: 'Order not found after update' });
+
+    // After the row write, so a failed column update never leaves the set half-applied.
+    // 'baker' as the source: this endpoint is baker-authenticated, so whoever is typing
+    // is recording what the customer told them — Spattoo still asserts nothing.
+    if (dietaryChange) {
+      await setOrderDietaryRequirements(req.params.id, dietaryChange.to, 'baker');
+    }
 
     const { error: auditError } = await supabase.from('order_audit_log').insert({
       order_id: req.params.id, baker_id: appUser.baker_id,
@@ -1056,7 +1160,7 @@ router.patch('/orders/:id', requireAuth, requireCapability('order:manage'), asyn
     });
     if (auditError) console.error('Audit log insert failed:', auditError.message);
 
-    res.json(order);
+    res.json(dietaryChange ? { ...order, dietary_requirements: dietaryChange.to } : order);
   } catch (err) {
     serverError(req, res, err);
   }
