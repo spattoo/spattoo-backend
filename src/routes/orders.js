@@ -34,6 +34,50 @@ function toPublicUrl(key) {
   return `${config.r2.publicUrl}/${key}`;
 }
 
+// ── Calendar month view: per-day counts ───────────────────────────────────────
+// The widest window GET /orders/calendar will serve. The UI draws one month at a
+// time; 62 days covers a month plus the leading/trailing days of a 6-row grid.
+const CALENDAR_MAX_SPAN_DAYS = 62;
+const ISO_DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
+// PostgREST caps a response page; page explicitly so a busy month can't be silently
+// truncated into wrong counts. The ceiling is a runaway guard, not an expected limit.
+const CALENDAR_PAGE = 1000;
+const CALENDAR_MAX_PAGES = 50;
+
+// [{ delivery_date, status_id, order_count }] for one baker over a date window.
+// Prefers the DB group-by (migration 021); falls back to counting the two columns we
+// need in Node so the endpoint works before that function has been applied by hand.
+async function calendarCounts(bakerId, from, to) {
+  const rpc = await supabase.rpc('orders_calendar_counts', {
+    p_baker_id: bakerId, p_from: from, p_to: to,
+  });
+  if (!rpc.error) return rpc.data ?? [];
+
+  const tally = new Map();
+  for (let page = 0; page < CALENDAR_MAX_PAGES; page++) {
+    const { data, error } = await supabase
+      .from('orders')
+      .select('delivery_date, status_id')
+      .eq('baker_id', bakerId)
+      .gte('delivery_date', from)
+      .lte('delivery_date', to)
+      .range(page * CALENDAR_PAGE, (page + 1) * CALENDAR_PAGE - 1);
+    if (error) throw error;
+    for (const o of data ?? []) {
+      const k = `${o.delivery_date}|${o.status_id}`;
+      tally.set(k, (tally.get(k) ?? 0) + 1);
+    }
+    if ((data?.length ?? 0) < CALENDAR_PAGE) break;
+    if (page === CALENDAR_MAX_PAGES - 1) {
+      logError(new Error('orders calendar fallback hit the page ceiling — counts may be short'), null, { bakerId, from, to });
+    }
+  }
+  return [...tally].map(([k, order_count]) => {
+    const [delivery_date, statusId] = k.split('|');
+    return { delivery_date, status_id: Number(statusId), order_count };
+  });
+}
+
 // orders stores the compact `status_id`; reads embed `order_statuses ( key )`. This
 // flattens a read row back to a readable `status` key for the HTTP response + route
 // code, dropping the surrogate so callers never see ids. (Writes go the other way via
@@ -775,6 +819,58 @@ router.get('/orders', requireAuth, requireCapability('order:view'), async (req, 
     if (error) return serverError(req, res, error);
 
     res.json(data.map(o => ({ ...withDietaryKeys(withStatusKey(o)), design_thumbnail_url: toPublicUrl(o.design_thumbnail_url), quote_stale: quoteStale(o) })));
+  } catch (err) {
+    serverError(req, res, err);
+  }
+});
+
+// ── GET /api/orders/calendar ──────────────────────────────────────────────────
+// Per-day order counts for the baker's Orders → Calendar month view:
+//   [{ date: '2026-07-04', count: 2, by_status: { pending: 1, confirmed: 1 } }, …]
+//
+// Deliberately does NOT return the orders themselves. The grid only needs a number per
+// day, and fetching a month of order rows to count them in the browser is O(orders) and
+// grows without bound; this response is O(days) — at most ~31 entries — however big the
+// bakery gets. Counting happens in the DB via orders_calendar_counts (migration 021),
+// with an in-Node fallback so the endpoint works before that function is applied.
+//
+// MUST stay registered ahead of GET /orders/:id — otherwise 'calendar' is captured as an
+// order id by the :id route below.
+router.get('/orders/calendar', requireAuth, requireCapability('order:view'), async (req, res) => {
+  try {
+    if (!req.bakerId) return res.status(403).json({ error: 'Not a baker account' });
+
+    const { from, to } = req.query;
+    if (!ISO_DATE_RE.test(from ?? '') || !ISO_DATE_RE.test(to ?? '')) {
+      return res.status(400).json({ error: 'from and to are required, as YYYY-MM-DD' });
+    }
+    const spanDays = (Date.parse(`${to}T00:00:00Z`) - Date.parse(`${from}T00:00:00Z`)) / 86400000;
+    if (Number.isNaN(spanDays)) return res.status(400).json({ error: 'from and to must be real dates' });
+    if (spanDays < 0)           return res.status(400).json({ error: 'to must not be before from' });
+    // Bounds the work a single request can ask for: the UI only ever draws one month.
+    if (spanDays > CALENDAR_MAX_SPAN_DAYS) {
+      return res.status(400).json({ error: `Range too large (max ${CALENDAR_MAX_SPAN_DAYS} days)` });
+    }
+
+    const rows = await calendarCounts(req.bakerId, from, to);
+
+    // Fold to one entry per day, translating the compact status_id back to a readable
+    // key at the HTTP boundary — the surrogate never leaves the server.
+    const byId = new Map((await getOrderStatuses()).map(s => [s.id, s]));
+    const byDate = new Map();
+    for (const r of rows) {
+      if (!r.delivery_date) continue;
+      const key = byId.get(r.status_id)?.key ?? 'unknown';
+      const n   = Number(r.order_count) || 0;
+      let day = byDate.get(r.delivery_date);
+      if (!day) { day = { date: r.delivery_date, count: 0, by_status: {} }; byDate.set(r.delivery_date, day); }
+      day.by_status[key] = (day.by_status[key] ?? 0) + n;
+      // `count` is the headline "cakes to bake that day" number, so a cancelled order
+      // doesn't inflate it — it stays visible in by_status for anyone who wants it.
+      if (key !== 'cancelled') day.count += n;
+    }
+
+    res.json([...byDate.values()].sort((a, b) => (a.date < b.date ? -1 : 1)));
   } catch (err) {
     serverError(req, res, err);
   }
