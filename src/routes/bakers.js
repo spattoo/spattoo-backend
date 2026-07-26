@@ -13,6 +13,8 @@ import { requireCapability, resolveCustomer } from '../middleware/rbac.js';
 import { rateLimit } from '../middleware/rateLimit.js';
 import { config } from '../config.js';
 import { logSubscriptionEvent, deriveSubscription } from './subscriptions.js';
+import { validateDietaryKeys, requirementsForBaker, setBakerDietaryExclusions } from '../lib/dietaryRequirements.js';
+import { baselineConflictKeys, conflictsForBaker, setBakerFlavourConflicts } from '../lib/flavourDietary.js';
 import { PLAN }                from '../constants/subscriptionPlans.js';
 import { PERIOD }              from '../constants/billingPeriods.js';
 import { SUBSCRIPTION_STATUS } from '../constants/subscriptionStatuses.js';
@@ -829,9 +831,21 @@ router.get('/baker/flavours', requireAuth, async (req, res) => {
         .eq('baker_id', contact.baker_id),
     ]);
 
+    // Dietary conflicts, both layers. The panel needs BOTH: `conflicts` is what is in
+    // force for this baker, `baseline_conflicts` is what Spattoo declared globally. A
+    // toggle whose default the baker cannot see is a toggle they cannot reason about —
+    // and since clearing one of our rows is their right of reply ("our hazelnut sponge
+    // IS nut-free"), they have to be able to tell which rows are ours.
+    const [baseline, effective] = await Promise.all([
+      baselineConflictKeys(),
+      conflictsForBaker(contact.baker_id),
+    ]);
+
     const excluded = new Set((exclusions ?? []).map(e => e.flavour_id));
     res.json((globals ?? []).map(f => ({
       id: f.id, name: f.name, description: f.description, excluded: excluded.has(f.id),
+      conflicts_with:     effective[f.id] ?? [],
+      baseline_conflicts: baseline[f.id]  ?? [],
     })));
   } catch (err) {
     serverError(req, res, err);
@@ -871,6 +885,86 @@ router.put('/baker/flavours/exclusions', requireAuth, requireCapability('store:m
     }
 
     res.json({ ok: true, excluded_count: ids.length });
+  } catch (err) {
+    serverError(req, res, err);
+  }
+});
+
+// ── GET /api/baker/dietary-requirements ───────────────────────────────────────
+// Auth. The full vocabulary flagged with this baker's on/off state — the settings-screen
+// twin of the public GET /api/dietary-requirements?bakerSlug=.
+router.get('/baker/dietary-requirements', requireAuth, async (req, res) => {
+  try {
+    const { data: contact } = await supabase
+      .from('baker_appusers').select('baker_id').eq('auth_user_id', req.user.id).maybeSingle();
+    if (!contact) return res.status(404).json({ error: 'No baker account found' });
+
+    res.json(await requirementsForBaker(contact.baker_id));
+  } catch (err) {
+    serverError(req, res, err);
+  }
+});
+
+// ── PUT /api/baker/dietary-requirements/exclusions ────────────────────────────
+// Auth + store:manage. Body: { excluded_keys: ['vegan', ...] }
+// Replace-set, mirroring PUT /api/baker/flavours/exclusions.
+//
+// Switching one OFF never removes a customer's ability to be recorded as needing it when
+// it is an ALLERGEN — that is enforced on the surfaces, not here, because the row means
+// the same thing either way ("we don't deal in this") and it is the RENDERING that
+// differs by kind. See supabase/baker_dietary_options.sql.
+router.put('/baker/dietary-requirements/exclusions', requireAuth, requireCapability('store:manage'), async (req, res) => {
+  try {
+    const { data: contact } = await supabase
+      .from('baker_appusers').select('baker_id').eq('auth_user_id', req.user.id).maybeSingle();
+    if (!contact) return res.status(404).json({ error: 'No baker account found' });
+
+    const keys = req.body?.excluded_keys;
+    if (!Array.isArray(keys)) return res.status(400).json({ error: 'excluded_keys must be an array' });
+
+    const keyErr = await validateDietaryKeys(keys);
+    if (keyErr) return res.status(400).json({ error: keyErr });
+
+    const ids = await setBakerDietaryExclusions(contact.baker_id, keys);
+    res.json({ ok: true, excluded_count: ids.length });
+  } catch (err) {
+    serverError(req, res, err);
+  }
+});
+
+// ── PUT /api/baker/flavours/dietary-conflicts ─────────────────────────────────
+// Auth + store:manage. Body: { conflicts: [{ flavourId, source?, requirementKeys: [] }] }
+//
+// The baker sends the EFFECTIVE truth per flavour — "this flavour cannot be made
+// eggless" — and the server stores only where that differs from the global baseline
+// (setBakerFlavourConflicts does the diff). The UI therefore never has to know what a
+// baseline is, and the override table stays sparse: a row exists only where a baker
+// disagrees with us.
+//
+// Replace-set, exactly like the exclusions route above: what is sent becomes the whole
+// truth for this baker. A set has no natural partial update.
+//
+// This authors a WARNING, never a block. Nothing downstream may disable a flavour or
+// reject an order on these rows — see lib/flavourDietary.js and ToS §3.4 / B5.9 / C2.3.
+router.put('/baker/flavours/dietary-conflicts', requireAuth, requireCapability('store:manage'), async (req, res) => {
+  try {
+    const { data: contact } = await supabase
+      .from('baker_appusers')
+      .select('baker_id')
+      .eq('auth_user_id', req.user.id)
+      .maybeSingle();
+    if (!contact) return res.status(404).json({ error: 'No baker account found' });
+
+    const entries = Array.isArray(req.body?.conflicts) ? req.body.conflicts : null;
+    if (!entries) return res.status(400).json({ error: 'conflicts must be an array' });
+
+    // Validate every key BEFORE writing anything, so a typo cannot land a half-applied
+    // set. Reuses the dietary vocabulary validator — there is no second list of keys.
+    const keyErr = await validateDietaryKeys(entries.flatMap(e => e?.requirementKeys ?? []));
+    if (keyErr) return res.status(400).json({ error: keyErr });
+
+    const rows = await setBakerFlavourConflicts(contact.baker_id, entries);
+    res.json({ ok: true, override_count: rows.length });
   } catch (err) {
     serverError(req, res, err);
   }

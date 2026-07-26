@@ -7,7 +7,8 @@ import { assertBakerOwns } from '../lib/tenantScope.js';
 import { config } from '../config.js';
 import { notifyOrderPlaced, notifyDesignUpdated, notifyQuoteIssued, notifyQuoteAccepted, notifyQuoteQuestion, notifyOrderConfirmed, notifyOrderReady, notifyOrderCompleted } from '../services/notifications.js';
 import { getOrderStatuses, getValidStatusKeys, isQuotePhase, idForKey } from '../lib/orderStatuses.js';
-import { getDietaryRequirements, validateDietaryKeys, setOrderDietaryRequirements } from '../lib/dietaryRequirements.js';
+import { getDietaryRequirements, validateDietaryKeys, setOrderDietaryRequirements, requirementsForBaker } from '../lib/dietaryRequirements.js';
+import { conflictsForBaker, baselineConflictKeys, setBaselineConflicts } from '../lib/flavourDietary.js';
 import { getOrderAcceptance } from '../services/entitlements.js';
 import { deleteObject } from '../services/r2.js';
 import { logError } from '../lib/telemetry.js';
@@ -301,6 +302,16 @@ const router = Router();
 // ── GET /api/flavours?bakerSlug=xxx ──────────────────────────────────────────
 // Public. Returns effective flavour list for a baker:
 //   active global flavours (minus exclusions) + baker's custom flavours
+//
+// Each flavour also carries `conflicts_with: ['nut_free', ...]` — the requirements this
+// baker's version of that flavour is declared NOT to satisfy (global baseline, overridden
+// per baker). It rides along on a list the order form already fetches rather than being a
+// second endpoint the client joins against, for the same reason the order's dietary embed
+// carries label+kind: a join per surface is a chance per surface to get it wrong.
+//
+// `conflicts_with: []` means NOTHING WAS DECLARED — it does NOT mean "verified suitable".
+// Consumers may warn and point the customer at the baker; they must not disable a flavour
+// or reject an order on it (ToS §3.4 / B5.9 / C2.3). See lib/flavourDietary.js.
 
 router.get('/flavours', async (req, res) => {
   try {
@@ -334,12 +345,61 @@ router.get('/flavours', async (req, res) => {
       .eq('baker_id', baker.id).eq('is_active', true)
       .order('sort_order').order('name');
 
+    // Resolved once for the whole list — the map covers global and custom flavours alike,
+    // so neither branch below needs to know which kind it is holding.
+    const conflicts = await conflictsForBaker(baker.id);
+    const withConflicts = f => ({ ...f, conflicts_with: conflicts[f.id] ?? [] });
+
     const result = [
-      ...(globals ?? []).map(f => ({ ...f, source: 'global' })),
-      ...(custom  ?? []).map(f => ({ ...f, source: 'baker'  })),
+      ...(globals ?? []).map(f => withConflicts({ ...f, source: 'global' })),
+      ...(custom  ?? []).map(f => withConflicts({ ...f, source: 'baker'  })),
     ];
 
     res.json(result);
+  } catch (err) {
+    serverError(req, res, err);
+  }
+});
+
+// ── admin: the GLOBAL dietary baseline for flavours ───────────────────────────
+// Kept beside GET /flavours rather than in a new routes file, so every flavour endpoint
+// stays in one place a reader can find. (That this is `orders.js` at all is pre-existing
+// — the flavour list has always lived here.)
+//
+// The baseline is what is true of a flavour for EVERY baker ("hazelnut praline contains
+// nuts"). It is a DEFAULT, not a verified ingredient claim: any baker can overturn any
+// row via PUT /api/baker/flavours/dietary-conflicts, which is what keeps it compatible
+// with ToS §3.4. Per-kitchen facts ("we don't do eggless tiramisu") do NOT belong here.
+
+// GET /api/admin/flavours/dietary-conflicts → { [flavourId]: ['nut_free', ...] }
+// Whole baseline in one response: it is bounded (flavours × requirements) and the admin
+// screen lists every flavour anyway, so paging it would cost a round trip per row.
+router.get('/admin/flavours/dietary-conflicts', requireAuth, requireCapability('catalog:admin'), async (req, res) => {
+  try {
+    res.json(await baselineConflictKeys());
+  } catch (err) {
+    serverError(req, res, err);
+  }
+});
+
+// PUT /api/admin/flavours/:flavourId/dietary-conflicts  Body: { requirementKeys: [...] }
+// Replace-set for ONE flavour, so editing chocolate cannot blank vanilla.
+router.put('/admin/flavours/:flavourId/dietary-conflicts', requireAuth, requireCapability('catalog:admin'), async (req, res) => {
+  try {
+    const { flavourId } = req.params;
+    const keys = req.body?.requirementKeys;
+    if (!Array.isArray(keys)) return res.status(400).json({ error: 'requirementKeys must be an array' });
+
+    const keyErr = await validateDietaryKeys(keys);
+    if (keyErr) return res.status(400).json({ error: keyErr });
+
+    // The flavour must exist, or a typo'd id would write rows nothing can ever read.
+    const { data: flavour } = await supabase
+      .from('flavours').select('id').eq('id', flavourId).maybeSingle();
+    if (!flavour) return res.status(404).json({ error: 'Flavour not found' });
+
+    const ids = await setBaselineConflicts(flavourId, keys);
+    res.json({ ok: true, conflict_count: ids.length });
   } catch (err) {
     serverError(req, res, err);
   }
@@ -759,9 +819,23 @@ router.get('/order-statuses', async (req, res) => {
 // instead of each repo hardcoding its own copy. Public: the customer-facing order
 // form needs it before anyone is authenticated, and it is reference data, not a
 // tenant's data. Same reasoning (and shape) as GET /api/order-statuses above.
+//
+// With ?bakerSlug= each row also carries `offered` — whether that bakery deals in it at
+// all. The full vocabulary comes back either way, annotated rather than filtered: the
+// two kinds must act differently (a diet option is hidden, an allergen never is — see
+// supabase/baker_dietary_options.sql), and that is a rendering rule. Filtering here
+// would make an un-offered allergen indistinguishable from one that doesn't exist,
+// which is the single confusion capable of losing an allergy.
 router.get('/dietary-requirements', async (req, res) => {
   try {
-    res.json(await getDietaryRequirements());
+    const { bakerSlug } = req.query;
+    if (!bakerSlug) return res.json(await getDietaryRequirements());
+
+    const { data: baker } = await supabase
+      .from('bakers').select('id').eq('slug', bakerSlug).eq('is_active', true).maybeSingle();
+    if (!baker) return res.status(404).json({ error: 'Baker not found' });
+
+    res.json(await requirementsForBaker(baker.id));
   } catch (err) {
     serverError(req, res, err);
   }

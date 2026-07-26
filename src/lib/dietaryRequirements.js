@@ -95,3 +95,49 @@ export async function setOrderDietaryRequirements(orderId, keys, source) {
 export function invalidateDietaryRequirementCache() {
   cache = null;
 }
+
+// ── per-baker availability ────────────────────────────────────────────────────
+// Not every bakery does vegan. This flags each requirement with whether THIS baker
+// deals in it, so the order form can act on it — see supabase/baker_dietary_options.sql
+// for why the two kinds must act differently and why an allergen is never hidden.
+//
+// Returns the full vocabulary annotated with `offered`, NOT a filtered list. The
+// filtering rule differs by kind and belongs on the surface that renders, not here — and
+// a route that silently dropped rows would make an un-offered allergen indistinguishable
+// from one that doesn't exist, which is the one confusion that could lose an allergy.
+export async function requirementsForBaker(bakerId) {
+  const all = await getDietaryRequirements();
+  if (!bakerId) return all.map(r => ({ ...r, offered: true }));
+
+  const { data, error } = await supabase
+    .from('baker_dietary_exclusions')
+    .select('requirement_id')
+    .eq('baker_id', bakerId);
+
+  // Fail soft, like the flavour conflicts: an unreadable exclusion list must not take
+  // out the dietary picker. Defaulting to "offered" shows a customer MORE options than
+  // the baker wanted — annoying, and recoverable in the conversation that follows.
+  // Defaulting the other way would hide a requirement the bakery actually caters to.
+  if (error) return all.map(r => ({ ...r, offered: true }));
+
+  const off = new Set((data ?? []).map(r => r.requirement_id));
+  return all.map(r => ({ ...r, offered: !off.has(r.id) }));
+}
+
+// Replace-set of the requirements a baker does NOT offer. Mirrors
+// PUT /api/baker/flavours/exclusions exactly.
+export async function setBakerDietaryExclusions(bakerId, keys) {
+  const ids = await idsForKeys(keys);
+
+  const { error: delErr } = await supabase
+    .from('baker_dietary_exclusions')
+    .delete()
+    .eq('baker_id', bakerId);
+  if (delErr) throw new Error(delErr.message);
+
+  if (!ids.length) return [];
+  const rows = ids.map(requirement_id => ({ baker_id: bakerId, requirement_id }));
+  const { error: insErr } = await supabase.from('baker_dietary_exclusions').insert(rows);
+  if (insErr) throw new Error(insErr.message);
+  return ids;
+}
