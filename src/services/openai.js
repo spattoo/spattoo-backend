@@ -234,10 +234,21 @@ Keep "reason" friendly and specific (e.g. "This photo has a person in it — upl
   return JSON.parse(json);
 }
 
-// Read a cake photo and produce a TIER-WISE reconstruction spec for the "Build from Inspiration"
-// flow — everything needed to rebuild the cake from library elements. Controlled vocabularies on
-// type/placement/frosting keep it machine-mappable for later (matching/composition); colours are
-// always hex + a human name. Phase 1 just displays this; nothing is matched yet.
+// Read a cake photo and produce a TIER-WISE reconstruction spec — everything needed to rebuild the
+// cake from library elements. Controlled vocabularies on type/placement/frosting keep it
+// machine-mappable (services/inspirationMatch.js scores each decoration against the element index);
+// colours are always hex + a human name.
+//
+// TWO consumers now, and the second one is why the ratios are not optional:
+//   1. "Build from Inspiration" — displays the spec / matches it to library elements.
+//   2. X-Ray for photo-only orders — services/designEstimate.js maps this onto a design_snapshot
+//      so the existing X-Ray pipeline runs over an order that never touched the 3D designer.
+//
+// For (2) the tin plan is the highest-value output, and computeTinPlan() splits the order's weight
+// across tiers by their RELATIVE volumes (r²·h, or w·d·h). It needs nothing absolute — which is
+// fortunate, because absolute size is the one thing an uncalibrated photo cannot give. Hence
+// height_ratio + width_ratio: proportions are visible, inches are not. Without width_ratio the tin
+// plan falls back to a blind 0.62^i taper, and a wrong tin is a re-bake.
 export async function analyzeCake(imageUrl) {
   const prompt = `You are a master cake decorator analysing a cake photo so it can be rebuilt from a parts library.
 Describe ONLY what you can actually see. Return ONLY a JSON object, no prose:
@@ -252,7 +263,8 @@ Describe ONLY what you can actually see. Return ONLY a JSON object, no prose:
     {
       "index": <0-based; 0 = bottom>,
       "position": "<bottom|middle|top|single>",
-      "height_ratio": <0..1 relative height, optional>,
+      "height_ratio": <this tier's height as a fraction of the WHOLE cake's height, 0..1>,
+      "width_ratio": <this tier's width as a fraction of the WIDEST tier's width, 0..1>,
       "frosting": {
         "type": "<buttercream|fondant|ganache|naked|whipped>",
         "finish": "<matte|satin|glossy|textured>",
@@ -281,6 +293,11 @@ Describe ONLY what you can actually see. Return ONLY a JSON object, no prose:
 }
 Rules:
 - Use ONLY the vocabularies above for type/placement/frosting/finish; if unsure, pick the closest.
+- height_ratio and width_ratio are RELATIVE and always required. Do NOT try to estimate real
+  dimensions in inches or centimetres — a photo has no scale reference and any absolute number
+  would be a guess. Only the PROPORTIONS between tiers are asked for, and those you can see:
+  the widest tier is width_ratio 1.0 and the others are judged against it; the tier heights
+  sum to roughly 1.0. A single-tier cake is width_ratio 1.0, height_ratio 1.0.
 - "placement" uses the cake's real zones: "top_surface" (flat top), "rim" (the edge where top meets side — a piped border lives here; set rim_side top or bottom), "side" (the vertical wall of a tier), "middle_tier" (the wall of a lower tier on a stacked cake), "board" (the base board the cake sits on).
 - One tier object per visible tier, bottom first (index 0). A single-tier cake = tier_count 1, one tier, position "single".
 - Group each decoration under the tier it sits on. A shell border around the top edge of the bottom tier belongs to that tier with placement "rim", rim_side "top"; a border where the cake meets the board is placement "rim", rim_side "bottom".

@@ -31,6 +31,16 @@ export const ENTITLEMENTS = {
   // A real baker will never approach it; a runaway client will. If it ever needs to become a tier lever,
   // the machinery is already here — change the numbers, no deploy.
   max_custom_elements:    { type: 'int',  fallback: 0, label: 'Own decorations (upload ceiling)' },
+  // The monthly AI allowance, in credits, spent by the metered "smart tools" (#13) and X-Ray
+  // for photo-only orders. THE one entitlement with real marginal cost behind it, which is why
+  // it is also the thing that makes a 30-day Spark trial safe to give away: cost is bounded by
+  // this number, not by how long the trial runs.
+  //
+  // Resets every calendar month, and that reset is DERIVED rather than granted — see
+  // migrations/022_ai_credits_ledger.sql. Purchased top-ups are a separate pool that does not
+  // reset. fallback 0 (the safe floor) means a lapsed subscription can spend nothing; null on a
+  // plan means unlimited, per the int convention above.
+  ai_credits_per_month:   { type: 'int',  fallback: 0, label: 'AI credits / month' },
 };
 
 // Non-entitlement plan CONFIG that also lives in subscription_plans.features (read by

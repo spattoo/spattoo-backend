@@ -20,6 +20,7 @@ import { PERIOD }              from '../constants/billingPeriods.js';
 import { CANCELLATION_REASON } from '../constants/cancellationReasons.js';
 import { isValidGstin, normalizeGstin } from '../lib/gstin.js';
 import { emitSaleEvent }       from '../services/billingEvents.js';
+import { creditPurchase }      from '../services/aiCredits.js';
 
 const router = Router();
 
@@ -37,11 +38,11 @@ const DEFERRED_CHANGES = new Set(['downgrade', 'reactivate', 'payment_method', '
 // throw a clear error at call time when Razorpay isn't configured. `razorpayEnabled`
 // lets the subscribe route fall back to immediate (no-charge) activation in envs
 // without keys, while configured envs go through real Checkout.
-function razorpayEnabled() {
+export function razorpayEnabled() {
   return !!(config.razorpay.keyId && config.razorpay.keySecret);
 }
 let _razorpay = null;
-function razorpay() {
+export function razorpay() {
   if (!razorpayEnabled()) throw new Error('Razorpay is not configured (RAZORPAY_KEY_ID / RAZORPAY_KEY_SECRET)');
   if (!_razorpay) _razorpay = new Razorpay({ key_id: config.razorpay.keyId, key_secret: config.razorpay.keySecret });
   return _razorpay;
@@ -652,6 +653,35 @@ router.post('/billing/webhook', async (req, res) => {
     const { event } = payload;
     const sub     = payload?.payload?.subscription?.entity;
     const payment = payload?.payload?.payment?.entity;
+
+    // ── AI credit top-up (one-time payment, NOT a subscription) ─────────────────────────────────
+    // MUST run before the razorpaySubId guard below: a pack purchase is a Razorpay ORDER, so its
+    // payment entity carries no subscription_id and the guard would silently drop it — the baker
+    // would be charged and credited nothing.
+    //
+    // Identified by notes.kind, which POST /baker/ai-credits/purchase stamps on the order. The
+    // baker id comes from those notes rather than from any lookup: the notes were written
+    // server-side at checkout from the authenticated principal, so they are ours, not the client's.
+    //
+    // Idempotent by razorpay payment id (unique index on credit_transactions.idempotency_key), so a
+    // redelivery returns the original row instead of minting a second batch.
+    if (payment?.notes?.kind === 'ai_credit_pack' && event === 'payment.captured') {
+      const { baker_id: packBakerId, pack_key: packKey } = payment.notes;
+      if (packBakerId && packKey) {
+        const txId = await creditPurchase({
+          bakerId:           packBakerId,
+          packKey,
+          razorpayPaymentId: payment.id,
+          note:              `razorpay order ${payment.order_id ?? '?'}`,
+        });
+        if (!txId) console.error('[billing] credit pack purchase not recorded — unknown pack', packKey, payment.id);
+        // TODO(GST): a pack sale is a taxable supply at ISSUE (AI_CREDITS_PLAN.md §2.4) and needs an
+        // invoice, exactly like a subscription charge. emitSaleEvent() is subscription-shaped
+        // (plan_id / billing_period_id / period_months), so forcing a pack through it would put a
+        // false line in the accounting feed. Needs a sibling emitter before packs are sold for real.
+      }
+      return res.json({ ok: true });
+    }
 
     const razorpaySubId = sub?.id ?? payment?.subscription_id ?? null;
     if (!razorpaySubId) return res.json({ ok: true });

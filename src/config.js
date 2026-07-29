@@ -48,6 +48,12 @@ export const config = {
   // The completion webhook URL is configured once in the Meshy dashboard (account-global),
   // pointing at `https://<api-host>/api/webhooks/meshy`.
   meshy:    { apiKey: process.env.MESHY_API_KEY },
+  // AI metering. `usdInr` converts a provider's USD token cost into the provider_cost_inr stamped
+  // on every debit — the MARGIN GUARDRAIL only. It is never a customer-facing price: retail is
+  // credits, and those live in the credit_costs table (data, admin-editable, no deploy). So this
+  // number does not have to be exact; it has to not be stale by 20%. Retune per-env from the Render
+  // dashboard when the settlement rate drifts. See services/aiCredits.js + AI_CREDITS_PLAN.md §2.2.
+  aiCredits: { usdInr: Number(process.env.AI_USD_INR || 90) },
   redis:    { url:    process.env.REDIS_URL },
   // Background job schedules (BullMQ repeatable, cron in UTC). Retime per-env from the Render
   // dashboard without a deploy. Consistent with the UTC convention (see DATETIME_CONVENTIONS).

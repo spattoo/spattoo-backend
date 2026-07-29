@@ -1,0 +1,301 @@
+import { supabase } from './supabase.js';
+import { getEntitlements } from './entitlements.js';
+import { config } from '../config.js';
+
+// ── AI credits: reserve → call → commit / release ────────────────────────────────────
+// The metering layer for every action that costs us real money at a provider. Schema +
+// the reasoning behind the two-pool model: migrations/022_ai_credits_ledger.sql.
+// Pricing model and tier values: docs (spattoo-core) AI_CREDITS_PLAN.md.
+//
+// The ONLY safe way to spend credits is withAiCredits() at the bottom of this file. Calling
+// reserve/commit by hand is possible and is how the wrapper is built, but it puts the
+// release-on-failure path in the caller's hands — and a missed release is a baker charged for
+// a generation that never arrived, which is the one failure mode this whole design exists to
+// prevent. Reach for the wrapper.
+
+// Action keys. These identify an action; they do NOT price it — the price is a row in
+// credit_costs (admin-editable data, no deploy). A key missing from that table reserves
+// nothing and fails closed with UNKNOWN_ACTION.
+export const AI_ACTION = {
+  PHOTO_TO_XRAY_ESTIMATE: 'photo_to_xray_estimate',
+  PHOTO_TO_CAKE_DESIGN:   'photo_to_cake_design',
+  ENQUIRY_TO_DRAFT_ORDER: 'enquiry_to_draft_order',
+  STICKER_GENERATE:       'sticker_generate',
+};
+
+// 402 rather than 403: the baker is authenticated and entitled to the FEATURE, they have just
+// run out of the metered resource. The client shows a top-up prompt, not a paywall.
+export class InsufficientCreditsError extends Error {
+  constructor(detail = {}) {
+    super('Not enough AI credits');
+    this.name    = 'InsufficientCreditsError';
+    this.code    = 'INSUFFICIENT_CREDITS';
+    this.status  = 402;
+    this.detail  = detail;   // { cost, allowanceLeft, walletBalance }
+  }
+}
+
+export class UnknownAiActionError extends Error {
+  constructor(action) {
+    super(`Unknown or inactive AI action: ${action}`);
+    this.name   = 'UnknownAiActionError';
+    this.code   = 'UNKNOWN_AI_ACTION';
+    this.status = 500;       // a code/data mismatch on OUR side, never the caller's fault
+  }
+}
+
+// supabase-js returns an array for a table-returning function and a scalar for the rest.
+const one = (data) => (Array.isArray(data) ? data[0] ?? null : data);
+
+// The baker's monthly allowance, resolved through the ONE entitlement resolver. `null` means
+// unlimited (the int convention across the registry); an inactive subscription collapses to
+// the registry fallback, which is 0 — so a lapsed baker cannot spend.
+async function resolveAllowance(bakerId) {
+  const e = await getEntitlements(bakerId);
+  const raw = e.ent?.ai_credits_per_month;
+  return { allowance: raw === null ? null : Number(raw) || 0, active: e.active };
+}
+
+// ── Balance ─────────────────────────────────────────────────────────────────────────
+// What the balance UI and the pre-flight check read. Both numbers come from the same SQL the
+// reserve path uses, so the figure shown to the baker and the figure the gate enforces cannot
+// drift apart.
+export async function getAiCreditBalance(bakerId) {
+  const { allowance, active } = await resolveAllowance(bakerId);
+  const { data, error } = await supabase.rpc('ai_credit_balance', {
+    p_baker_id:  bakerId,
+    p_allowance: allowance,
+  });
+  if (error) throw error;
+  const row = one(data) ?? { allowance_used: 0, allowance_left: 0, wallet_balance: 0 };
+  return {
+    active,
+    unlimited:     allowance === null,
+    allowance,
+    allowanceUsed: row.allowance_used  ?? 0,
+    allowanceLeft: allowance === null ? null : (row.allowance_left ?? 0),
+    walletBalance: row.wallet_balance  ?? 0,
+    // What the baker can spend right now. Unlimited plans report null rather than a number,
+    // so a UI can say "included" instead of inventing a countdown.
+    spendable: allowance === null ? null : (row.allowance_left ?? 0) + (row.wallet_balance ?? 0),
+  };
+}
+
+// The live price list. Read from the DB, never from AI_ACTION — the whole point of credit_costs
+// being data is that the number can move without a deploy, and a client that computes "how many
+// build guides is my balance worth" must divide by the CURRENT price, not one baked into the
+// bundle months ago.
+export async function listAiCreditCosts() {
+  const { data, error } = await supabase
+    .from('credit_costs')
+    .select('action_key, credits, label')
+    .eq('is_active', true)
+    .order('credits', { ascending: true });
+  if (error) throw error;
+  return data ?? [];
+}
+
+// ── Top-up packs ────────────────────────────────────────────────────────────────────
+
+// The shelf. Prices come from the DB and never from the client — a checkout that trusts a
+// client-sent amount is a free-credits endpoint.
+export async function listCreditPacks() {
+  const { data, error } = await supabase
+    .from('credit_packs')
+    .select('pack_key, credits, price_paise, label')
+    .eq('is_active', true)
+    .order('sort_order', { ascending: true });
+  if (error) throw error;
+  return data ?? [];
+}
+
+export async function getCreditPack(packKey) {
+  const { data, error } = await supabase
+    .from('credit_packs')
+    .select('pack_key, credits, price_paise, label')
+    .eq('pack_key', packKey)
+    .eq('is_active', true)
+    .maybeSingle();
+  if (error) throw error;
+  return data ?? null;
+}
+
+// Credit a paid pack to the baker's wallet. Call ONLY from the payment webhook, never from a
+// client-facing route — the argument that a payment succeeded has to come from Razorpay, not
+// from the browser that just clicked pay.
+//
+// `razorpayPaymentId` is the idempotency key: Razorpay redelivers webhooks, and the unique
+// index turns a redelivery into a no-op that returns the original row instead of minting a
+// second batch of credits.
+export async function creditPurchase({ bakerId, packKey, razorpayPaymentId, note = null }) {
+  const { data, error } = await supabase.rpc('purchase_ai_credits', {
+    p_baker_id:        bakerId,
+    p_pack_key:        packKey,
+    p_idempotency_key: razorpayPaymentId,
+    p_note:            note,
+  });
+  if (error) throw error;
+  return data ?? null;   // transaction id, or null when the pack key is unknown/inactive
+}
+
+// ── Reserve ─────────────────────────────────────────────────────────────────────────
+// Holds the credits BEFORE the provider call. Returns { transactionId, cost, replay, ... }.
+// Throws InsufficientCreditsError when the baker cannot afford it — that is an expected
+// outcome, not an exception in the "something broke" sense, but throwing keeps every caller
+// from having to remember to check a flag before spending money.
+//
+// `idempotencyKey`: pass one whenever the caller can be retried (a queued job, a webhook, a
+// button a user can double-click). A replayed key returns the ORIGINAL reservation with
+// replay:true and charges nothing further. The caller MUST short-circuit on replay — this
+// service cannot return the previous result, only the previous accounting.
+export async function reserveCredits({ bakerId, action, orderId = null, idempotencyKey = null, note = null }) {
+  const { allowance } = await resolveAllowance(bakerId);
+
+  const { data, error } = await supabase.rpc('reserve_ai_credits', {
+    p_baker_id:        bakerId,
+    p_action_key:      action,
+    p_allowance:       allowance,
+    p_order_id:        orderId,
+    p_idempotency_key: idempotencyKey,
+    p_note:            note,
+  });
+  if (error) throw error;
+
+  const row = one(data);
+  if (!row) throw new Error('reserve_ai_credits returned no row');
+
+  if (!row.ok) {
+    if (row.reason === 'UNKNOWN_ACTION') throw new UnknownAiActionError(action);
+    throw new InsufficientCreditsError({
+      cost:          row.cost,
+      allowanceLeft: row.from_allowance,
+      walletBalance: row.from_wallet,
+    });
+  }
+
+  return {
+    transactionId: row.transaction_id,
+    cost:          row.cost,
+    fromAllowance: row.from_allowance,
+    fromWallet:    row.from_wallet,
+    replay:        row.reason === 'REPLAY',
+  };
+}
+
+// ── Settle ──────────────────────────────────────────────────────────────────────────
+
+// The result is good and the baker keeps it → the hold becomes a real charge, stamped with
+// what it actually cost us. `meter` is what makes the margin dashboard possible; commit still
+// succeeds without it, but every field omitted is a blind spot in §2.3's guardrail.
+export async function commitCredits(transactionId, meter = {}) {
+  const { provider = null, model = null, promptVersion = null } = meter;
+  const costInr = meter.providerCostInr ?? (meter.usage ? openAiCostInr({ model, usage: meter.usage }) : null);
+
+  const { data, error } = await supabase.rpc('commit_ai_credits', {
+    p_transaction_id:    transactionId,
+    p_provider:          provider,
+    p_model:             model,
+    p_prompt_version:    promptVersion,
+    p_provider_cost_inr: costInr,
+  });
+  if (error) throw error;
+  return data === true;
+}
+
+// The call failed, or the output failed validation → the hold evaporates and the baker is not
+// charged. The row stays as the record of an attempt we paid for; the rate of these IS the
+// retry_rate that loads every landed-cost calculation (§2.2), so they are data, not litter.
+export async function releaseCredits(transactionId, note = null) {
+  const { data, error } = await supabase.rpc('release_ai_credits', {
+    p_transaction_id: transactionId,
+    p_note:           note,
+  });
+  if (error) throw error;
+  return data === true;
+}
+
+// Give back a charge that was already committed — support gesture, or a quality problem found
+// after the fact. A separate positive row, never an edit of the original, so the audit trail
+// shows both that we charged and that we gave it back.
+export async function refundCredits(transactionId, note = null) {
+  const { data, error } = await supabase.rpc('refund_ai_credits', {
+    p_transaction_id: transactionId,
+    p_note:           note,
+  });
+  if (error) throw error;
+  return data ?? null;   // the new transaction id, or null if the row wasn't a committed debit
+}
+
+// ── The wrapper every caller should use ─────────────────────────────────────────────
+// Reserves, runs, and settles exactly once on every path — including the ones people forget:
+// a thrown provider error, a validation failure, a result the caller decides to discard.
+//
+//   const estimate = await withAiCredits(
+//     { bakerId, action: AI_ACTION.PHOTO_TO_XRAY_ESTIMATE, orderId, idempotencyKey: `xray:${orderId}` },
+//     async () => {
+//       const spec = await analyzeCake(photoUrl);
+//       if (!spec?.tiers?.length) return { keep: false };          // released, not charged
+//       return { value: spec, provider: 'openai', model: 'gpt-4o', promptVersion: 'xray-v1', usage: spec.usage };
+//     },
+//   );
+//
+// `run` returns { value, keep?, provider?, model?, promptVersion?, usage?, providerCostInr? }.
+// keep === false releases the hold and resolves to null. Anything thrown releases and rethrows,
+// so a provider outage never charges a baker.
+//
+// On a replayed idempotency key the wrapper does NOT re-run `run` — it resolves to
+// { replay: true } and leaves it to the caller to fetch whatever the first attempt stored.
+export async function withAiCredits(opts, run) {
+  const reservation = await reserveCredits(opts);
+  if (reservation.replay) return { replay: true, value: null, reservation };
+
+  let out;
+  try {
+    out = await run(reservation);
+  } catch (err) {
+    await releaseCredits(reservation.transactionId, `failed: ${String(err?.message ?? err).slice(0, 200)}`)
+      .catch(() => {});   // a failed release must not mask the real error; the sweep catches it
+    throw err;
+  }
+
+  if (!out || out.keep === false) {
+    await releaseCredits(reservation.transactionId, out?.note ?? 'discarded').catch(() => {});
+    return { replay: false, value: null, reservation };
+  }
+
+  await commitCredits(reservation.transactionId, out);
+  return { replay: false, value: out.value, reservation };
+}
+
+// ── Provider cost, for the guardrail only ───────────────────────────────────────────
+// Converts a call's token usage into the rupee figure stamped on the debit. This is
+// REPORTING, not billing: retail price is credits (credit_costs), and nothing here can change
+// what a baker pays. A stale number here makes the margin dashboard wrong, not the invoice.
+//
+// Prices are USD per 1M tokens, and they are in CODE rather than a table on purpose — the
+// blast radius of getting one wrong is a mis-drawn chart, and a table would be a second thing
+// to keep current for no gain. If this list starts churning monthly, promote it to
+// provider_model_prices and read it the way credit_costs is read.
+//
+// UNVERIFIED against a live invoice — reconcile these against the first real provider bill and
+// correct them then (AI_CREDITS_PLAN.md §2.3 says the same about the credit prices).
+const USD_PER_MTOK = {
+  'gpt-4o':                 { in: 2.50, out: 10.00 },   // what services/openai.js calls today
+  'gpt-4o-mini':            { in: 0.15, out:  0.60 },
+  'text-embedding-3-small': { in: 0.02, out:  0    },
+};
+
+export function usdToInr(usd) {
+  return Math.round((Number(usd) || 0) * (config.aiCredits?.usdInr ?? 90) * 10000) / 10000;
+}
+
+// usage = the provider's own usage block ({ prompt_tokens, completion_tokens }). Returns null
+// for an unknown model rather than guessing — a null in the column reads as "not measured",
+// where a fabricated number would quietly poison the margin average.
+export function openAiCostInr({ model, usage }) {
+  const p = USD_PER_MTOK[model];
+  if (!p || !usage) return null;
+  const inTok  = Number(usage.prompt_tokens     ?? usage.input_tokens  ?? 0);
+  const outTok = Number(usage.completion_tokens ?? usage.output_tokens ?? 0);
+  return usdToInr((inTok / 1e6) * p.in + (outTok / 1e6) * p.out);
+}
