@@ -22,7 +22,7 @@ router.post('/admin/inspiration/analyze', requireAuth, requireCapability('catalo
     const verdict = await validateCakeImage(dataUri);
     if (!verdict.ok) return res.json({ ok: false, reason: verdict.reason, category: verdict.category });
 
-    const analysis = await analyzeCake(dataUri);
+    const { analysis } = await analyzeCake(dataUri);
     res.json({ ok: true, analysis });
   } catch (err) {
     serverError(req, res, err);

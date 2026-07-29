@@ -63,8 +63,13 @@ function scoreCandidate(deco, cand) {
   };
 }
 
-async function matchDecoration(deco) {
-  const qv = await embedText(decorationQueryText(deco) || deco.type || 'cake decoration');
+async function matchDecoration(deco, calls) {
+  const { embedding: qv, usage, model } = await embedText(decorationQueryText(deco) || deco.type || 'cake decoration');
+  // Every decoration costs one embedding. Individually trivial (~$0.00002), but a metered caller
+  // that ignored them would understate its own cost by however many decorations the cake has — and
+  // the point of the margin guardrail is that it is not guessing. Collected, not summed here: the
+  // pricing table lives in services/aiCredits.js and this file has no business knowing rupees.
+  calls?.push({ model, usage });
   const cands = await retrieve(qv);
   const scored = cands
     .map(c => {
@@ -95,6 +100,9 @@ export async function matchAnalysis(analysis) {
   const tiers = [];
   let matched = 0, total = 0;
   const gaps = [], nonMatched = [];
+  // Provider calls this run made, for the caller's cost accounting. Additive to the return shape,
+  // so the (unmetered) inspiration route is free to ignore it.
+  const calls = [];
 
   for (const tier of analysis.tiers || []) {
     const items = [];
@@ -104,12 +112,12 @@ export async function matchAnalysis(analysis) {
         continue;
       }
       total++;
-      const r = await matchDecoration(deco);
+      const r = await matchDecoration(deco, calls);
       if (r.match) matched++; else gaps.push({ type: deco.type, placement: deco.placement, color_hex: deco.color_hex });
       items.push(r);
     }
     tiers.push({ index: tier.index ?? null, position: tier.position ?? null, matches: items });
   }
 
-  return { tiers, coverage: { matched, total, gaps }, nonMatched };
+  return { tiers, coverage: { matched, total, gaps }, nonMatched, calls };
 }

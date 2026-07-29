@@ -189,7 +189,12 @@ export async function reserveCredits({ bakerId, action, orderId = null, idempote
 // succeeds without it, but every field omitted is a blind spot in §2.3's guardrail.
 export async function commitCredits(transactionId, meter = {}) {
   const { provider = null, model = null, promptVersion = null } = meter;
-  const costInr = meter.providerCostInr ?? (meter.usage ? openAiCostInr({ model, usage: meter.usage }) : null);
+  // Cost, in order of how much we trust it: a figure the caller worked out itself, else the sum of
+  // the provider calls it reports (`calls`), else a single usage block. Null when none is given —
+  // "not measured", never a guess.
+  const costInr = meter.providerCostInr
+    ?? (meter.calls ? sumOpenAiCostInr(meter.calls) : null)
+    ?? (meter.usage ? openAiCostInr({ model, usage: meter.usage }) : null);
 
   const { data, error } = await supabase.rpc('commit_ai_credits', {
     p_transaction_id:    transactionId,
@@ -289,13 +294,42 @@ export function usdToInr(usd) {
   return Math.round((Number(usd) || 0) * (config.aiCredits?.usdInr ?? 90) * 10000) / 10000;
 }
 
+// The API answers with a DATED model id — 'gpt-4o-2024-08-06', not 'gpt-4o' — and we deliberately
+// record what actually ran rather than what we asked for. So the table is matched by longest
+// prefix, or every real call would miss it and silently price at null. Longest wins so that
+// 'gpt-4o-mini-…' cannot be swallowed by the 'gpt-4o' row.
+function priceFor(model) {
+  const id = String(model ?? '');
+  let best = null, bestLen = -1;
+  for (const key of Object.keys(USD_PER_MTOK)) {
+    if (id.startsWith(key) && key.length > bestLen) { best = USD_PER_MTOK[key]; bestLen = key.length; }
+  }
+  return best;
+}
+
 // usage = the provider's own usage block ({ prompt_tokens, completion_tokens }). Returns null
 // for an unknown model rather than guessing — a null in the column reads as "not measured",
 // where a fabricated number would quietly poison the margin average.
 export function openAiCostInr({ model, usage }) {
-  const p = USD_PER_MTOK[model];
+  const p = priceFor(model);
   if (!p || !usage) return null;
   const inTok  = Number(usage.prompt_tokens     ?? usage.input_tokens  ?? 0);
   const outTok = Number(usage.completion_tokens ?? usage.output_tokens ?? 0);
   return usdToInr((inTok / 1e6) * p.in + (outTok / 1e6) * p.out);
+}
+
+// One baker action is usually SEVERAL provider calls — a photo→X-Ray estimate is one vision call
+// plus an embedding per decoration — and the ledger records one cost per action. Sums what it can
+// price and ignores what it cannot.
+//
+// Returns null only when NOTHING was priceable, so the column keeps meaning "not measured" rather
+// than "free". A partial total is still the right number to record: it is the floor on what the
+// call cost us, and a floor that trends is worth more than a null that never does.
+export function sumOpenAiCostInr(calls) {
+  let total = null;
+  for (const c of calls ?? []) {
+    const v = openAiCostInr(c ?? {});
+    if (v != null) total = (total ?? 0) + v;
+  }
+  return total == null ? null : Math.round(total * 10000) / 10000;
 }

@@ -72,11 +72,15 @@ router.post('/orders/:id/design-estimate', requireAuth, requireCapability('order
     // `orders/reference/` is a public R2 folder (routes/storage.js FOLDER_POLICY), so the model
     // fetches the image by URL — no re-upload, no base64 round trip through this process.
     const generate = async () => {
-      const analysis = await analyzeCake(photoUrl);
+      const { analysis, usage, model } = await analyzeCake(photoUrl);
 
       // A response with no tiers is not a cake we can build a sheet from. keep:false releases the
       // hold — the baker is not charged for a photo the model could not read, which is the beta
       // fairness rule ("don't charge failed/regenerated attempts") made mechanical.
+      //
+      // Note the vision call has already been PAID FOR at this point. Releasing the hold means WE
+      // absorb it, which is the intended bargain during beta and is also why the released-row rate
+      // is worth watching: it is the retry_rate that loads landed cost.
       if (!analysis || !Array.isArray(analysis.tiers) || !analysis.tiers.length) {
         return { keep: false, note: 'analysis returned no tiers' };
       }
@@ -87,12 +91,16 @@ router.post('/orders/:id/design-estimate', requireAuth, requireCapability('order
       return {
         value: { snapshot, coverage },
         provider: 'openai',
-        model: MODEL,
+        // The model the API actually served (dated), not the one we asked for — so the ledger
+        // records what ran. MODEL below is only the fallback for the meta blob.
+        model: model ?? MODEL,
         promptVersion: PROMPT_VERSION,
-        // analyzeCake does not surface the usage block today, so provider_cost_inr lands null —
-        // "not measured" rather than a fabricated number that would poison the margin average.
-        // Threading usage out of services/openai.js is the follow-up that makes §2.3's guardrail
-        // real; the ledger column is already there waiting for it.
+        // EVERY provider call this action made: the vision call, plus one embedding per decoration
+        // from matchAnalysis. Summed in the ledger rather than here, because the pricing table is
+        // aiCredits.js's business. Counting only the vision call would understate the action by
+        // however many decorations the cake has — small, but the guardrail's whole value is that
+        // it is measured rather than assumed.
+        calls: [{ model, usage }, ...(matched.calls ?? [])],
       };
     };
 

@@ -337,11 +337,16 @@ Rules:
   const data = await res.json();
   const raw  = data.choices[0].message.content.trim();
   const json = raw.replace(/^```[a-z]*\n?/i, '').replace(/\n?```$/i, '').trim();
-  return JSON.parse(json);
+  // Returns { analysis, usage, model } rather than the bare analysis, because a METERED caller has
+  // to record what the call cost and cannot know that from the request alone. `model` is the id the
+  // API actually served (dated, e.g. gpt-4o-2024-08-06) — not the one we asked for — so the ledger
+  // records what ran rather than what we intended to run.
+  return { analysis: JSON.parse(json), usage: data.usage ?? null, model: data.model ?? 'gpt-4o' };
 }
 
 // Embed text for inspiration-matching retrieval. text-embedding-3-small → 1536-dim vector,
 // stored in cake_elements.description_embedding (pgvector) and used for KNN over the library.
+// Returns { embedding, usage, model } — same reason as analyzeCake above.
 export async function embedText(input) {
   let res;
   for (let attempt = 0; ; attempt++) {
@@ -361,7 +366,11 @@ export async function embedText(input) {
     throw new Error(`Embedding failed: ${text}`);
   }
   const data = await res.json();
-  return data.data[0].embedding; // Float[1536]
+  return {
+    embedding: data.data[0].embedding, // Float[1536]
+    usage: data.usage ?? null,
+    model: data.model ?? 'text-embedding-3-small',
+  };
 }
 
 // Server-side variant of /elements/suggest (description only): generate the comma-separated
