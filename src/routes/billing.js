@@ -215,8 +215,22 @@ router.post('/billing/subscribe', requireAuth, requireCapability('billing:manage
       return res.status(400).json({ error: 'tier and billing_period_id are required' });
     }
 
-    const periodName = PERIOD.NAME_BY_ID[billing_period_id];
-    if (!periodName) return res.status(400).json({ error: 'Invalid billing period' });
+    // The period must be one we CURRENTLY SELL, not merely one that exists. PERIOD.NAME_BY_ID is a
+    // code constant covering every period that ever shipped — a retired one keeps its id forever,
+    // because baker_subscriptions.billing_period_id references it and billingEvents still labels
+    // historical rows through it — so the constant cannot answer "is this on sale?".
+    // billing_periods.is_active can, and it is the same flag GET /billing/periods filters on, so the
+    // API and the picker now agree instead of the picker being the only gate.
+    const { data: period, error: periodErr } = await supabase
+      .from('billing_periods')
+      .select('name, months, is_active')
+      .eq('id', billing_period_id)
+      .single();
+    if (periodErr || !period) return res.status(400).json({ error: 'Invalid billing period' });
+    if (!period.is_active) {
+      return res.status(400).json({ error: 'That billing period is no longer offered.', code: 'billing_period_inactive' });
+    }
+    const periodName = period.name;
     const planId = PLAN.ID_BY_NAME[tier];
     if (!planId) return res.status(400).json({ error: `Unknown plan: ${tier}` });
     // Spark is the FREE baseline — it can't be subscribed to. A paid baker returning to free is a
@@ -229,7 +243,7 @@ router.post('/billing/subscribe', requireAuth, requireCapability('billing:manage
     const baker = await getBakerForUser(req.user.id, 'id, name, email, billing_subscription_id');
     if (!baker) return res.status(404).json({ error: 'Baker not found' });
 
-    const periodMonths = PERIOD.MONTHS_BY_ID[billing_period_id];
+    const periodMonths = period.months;   // from the row we just validated, not a second code mirror
     const today        = new Date().toISOString().slice(0, 10);
     const totalCount   = Math.ceil(120 / periodMonths);   // ~10 years of cycles ("until cancelled")
 
