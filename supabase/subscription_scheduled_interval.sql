@@ -66,6 +66,7 @@ LANGUAGE sql STABLE AS $$
       WHEN bs.status_id = 2 THEN 'pending'
       WHEN bs.status_id = 3 THEN 'paused'
       WHEN bs.status_id = 4 THEN 'past_due'
+      WHEN bs.status_id = 5 THEN 'expired'   -- halted/dunning-exhausted; was missing → 'unknown' → access NOT blocked
       WHEN bs.status_id = 6 THEN 'cancelled'
       ELSE 'unknown'
     END             AS derived_status,
