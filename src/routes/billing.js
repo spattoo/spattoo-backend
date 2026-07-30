@@ -933,10 +933,28 @@ router.post('/billing/webhook', async (req, res) => {
       // accounting system consumes this to issue the GST invoice. Idempotent + best-effort — see
       // billingEvents.js. Core stays GST-agnostic; the event carries the gross + snapshot only.
       if (PAYMENT_EVENT_STATUS[event] === PAYMENT_STATUS.CAPTURED) {
+        const chargedAt = payment.created_at
+          ? new Date(payment.created_at * 1000).toISOString()
+          : new Date().toISOString();
+
         await emitSaleEvent({
           payment, subRow, baker: bakerRow, sub, subscriptionId: razorpaySubId,
-          chargedAt: payment.created_at ? new Date(payment.created_at * 1000).toISOString() : new Date().toISOString(),
+          chargedAt,
         });
+
+        // Stamp "this baker has paid" ONCE, on the first captured payment. A baker who has
+        // entered a paid subscription never returns to trial, so this is a one-way fact and is
+        // never cleared (not on cancel, lapse, or downgrade). It's what lets the lapsed-access
+        // gate say "your subscription has ended" instead of the false "your trial has ended".
+        // Fill-when-null (`is('first_paid_at', null)`) makes it idempotent, so a webhook retry
+        // or a later renewal can't overwrite the original date. Best-effort: this is display
+        // metadata, so a failure must NOT throw — throwing would 500 the webhook and make
+        // Razorpay retry the whole thing, risking double-processing of the payment above.
+        const { error: firstPaidErr } = await supabase.from('bakers')
+          .update({ first_paid_at: chargedAt })
+          .eq('id', bakerId)
+          .is('first_paid_at', null);
+        if (firstPaidErr) console.error('[billing] first_paid_at stamp failed:', firstPaidErr.message);
       }
     }
 

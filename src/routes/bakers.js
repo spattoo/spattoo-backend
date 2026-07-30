@@ -316,7 +316,7 @@ router.get('/baker/profile', requireAuth, async (req, res) => {
 
     const { data: baker } = await supabase
       .from('bakers')
-      .select('id, name, slug, logo_url, logo_transparent_key, primary_color, accent_color, instagram_handle, website_url, tagline, storefront_theme_id, portrait_url, storefront_published, storefront_customizations')
+      .select('id, name, slug, logo_url, logo_transparent_key, primary_color, accent_color, instagram_handle, website_url, tagline, storefront_theme_id, portrait_url, storefront_published, storefront_customizations, first_paid_at')
       .eq('id', contact.baker_id)
       .single();
     if (!baker) return res.status(404).json({ error: 'Baker not found' });
@@ -371,6 +371,15 @@ router.get('/baker/profile', requireAuth, async (req, res) => {
         subscription_status: sub.status,
         subscription_plan:   sub.plan?.name ?? null,
         subscription_end:    sub.end_date   ?? null,
+        // The lapsed-access gate needs to tell THREE situations apart, because the wrong copy
+        // tells the baker a false story about their account: never paid (trial ran out) vs
+        // paid-then-cancelled vs paid-then-renewal-failed. Two facts decide it:
+        //   has_paid_before — one-way flag, set on the first captured payment (bakers.first_paid_at)
+        //   subscription_cancellation_reason — present when the lapse was a DELIBERATE cancel;
+        //     absent when Razorpay simply stopped being able to charge (halted / dunning exhausted)
+        has_paid_before:     !!baker.first_paid_at,
+        subscription_plan_display: sub.plan?.display_name ?? null,
+        subscription_cancellation_reason: sub.cancellation_reason ?? null,
       },
       user: { firstName: contact.first_name, lastName: contact.last_name, email: req.user.email, role: contact.role },
       pending_consents,
