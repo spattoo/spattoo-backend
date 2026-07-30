@@ -58,13 +58,24 @@ create table if not exists credit_costs (
 -- Seed values are ILLUSTRATIVE and priced off landed cost at ~80% target gross margin
 -- (AI_CREDITS_PLAN.md §2.3). 1 credit ~= Rs.1 of RETAIL value. Replace with figures from a
 -- real provider invoice before charging anyone. Idempotent: re-running updates in place.
-insert into credit_costs (action_key, credits, label) values
-  ('photo_to_xray_estimate', 15, 'Build guide from a photo'),
-  ('photo_to_cake_design',   20, 'Cake design from a photo'),
-  ('enquiry_to_draft_order',  2, 'Draft order from an enquiry'),
-  ('sticker_generate',       60, 'Generate a decoration')
+--
+-- `label` is a SHORT JOB NOUN, and that is a UI contract, not a description. The billing screen
+-- renders it as "14 build guides left this month" — it pluralises by appending "s", so a label
+-- like "Build guide from a photo" would read "build guide from a photos". Keep these short and
+-- countable.
+--
+-- ONLY the built action is active. is_active means "currently offered", and an inactive row both
+-- keeps the billing card honest (it would otherwise advertise three features that do not exist)
+-- and makes reserve_ai_credits fail closed with UNKNOWN_ACTION if anything calls one early. Flip
+-- each to true in the change that ships it.
+insert into credit_costs (action_key, credits, label, is_active) values
+  ('photo_to_xray_estimate', 15, 'Build guide',  true),
+  ('photo_to_cake_design',   20, 'Cake design',  false),   -- not built
+  ('enquiry_to_draft_order',  2, 'Draft order',  false),   -- not built; plans/enquiry-parser.md
+  ('sticker_generate',       60, 'Decoration',   false)    -- not built; Fondant Studio v1
 on conflict (action_key) do update
-  set credits = excluded.credits, label = excluded.label, updated_at = now();
+  set credits = excluded.credits, label = excluded.label,
+      is_active = excluded.is_active, updated_at = now();
 
 -- ── 2. credit_transactions — the append-only ledger ─────────────────────────────────
 -- Every movement, forever. Balance is an aggregate over this table, never a stored integer.
