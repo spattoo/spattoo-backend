@@ -12,10 +12,10 @@
     "check:boot": "node scripts/check-boot.mjs",
     "check:schema": "node scripts/check-schema.mjs",
     "check:admin-routes": "node scripts/check-admin-routes.mjs",
-    "check:design-estimate": "node scripts/check-design-estimate.mjs",
+    "check:xray-spec": "node scripts/check-xray-spec.mjs",
     "check:ai-credit-pricing": "node scripts/check-ai-credit-pricing.mjs",
     "check:feature-docs": "node ../spattoo-docs/bin/check-feature-docs.mjs --repo spattoo-api",
-    "check": "npm run check:boot && npm run check:schema && npm run check:admin-routes && npm run check:design-estimate && npm run check:ai-credit-pricing && npm run check:feature-docs"
+    "check": "npm run check:boot && npm run check:schema && npm run check:admin-routes && npm run check:xray-spec && npm run check:ai-credit-pricing && npm run check:feature-docs"
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.1036.0",

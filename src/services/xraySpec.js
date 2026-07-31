@@ -93,8 +93,8 @@ function mapTier(t, shape, index) {
 //   analysis  — analyzeCake() output
 //   matched   — matchAnalysis(analysis) output
 // Returns { snapshot, coverage } where `snapshot` is design_snapshot-shaped and `coverage` is
-// the honesty report that belongs in design_estimate_meta.
-export function buildDesignEstimate(analysis, matched) {
+// the honesty report that belongs in xray_spec_meta.
+export function buildXraySpec(analysis, matched) {
   const rawShape = String(analysis?.cake?.shape ?? 'round').toLowerCase();
   const shape    = SHAPE_MAP[rawShape] ?? 'round';
 
@@ -215,7 +215,7 @@ export function buildDesignEstimate(analysis, matched) {
   const snapshot = {
     // Marks every downstream reader. NEVER omit — the printed sheet has to be able to say this was
     // read off a photo rather than measured, and a baker must never mistake the two.
-    source: 'ai_estimate',
+    source: 'photo',
     tiers,
     texts,
     ages: [],

@@ -1,4 +1,4 @@
--- ── 022: AI credits ledger + design_estimate ────────────────────────────────────────
+-- ── 022: AI credits ledger + xray_spec ────────────────────────────────────────
 -- The metering layer behind the "smart tools" allowance (#13) and, new here, X-Ray for
 -- orders that have no design. Rationale + pricing model: docs (spattoo-core)
 -- AI_CREDITS_PLAN.md; tier values: SUBSCRIPTION_TIERS.md.
@@ -364,27 +364,27 @@ $$;
 -- The reference-photo gallery renders only while it is null (OrdersPanel.jsx), and Edit-in-3D
 -- enables only when it is set. Populating it from an estimate would hide the customer's own
 -- photo — the one piece of ground truth on the order — and light up a 3D editor over a design
--- nobody authored. X-Ray instead resolves design_snapshot ?? design_estimate_edited ??
--- design_estimate, and the order stays a photo order.
+-- nobody authored. X-Ray instead resolves design_snapshot ?? xray_spec_edited ??
+-- xray_spec, and the order stays a photo order.
 --
 -- WHY THREE COLUMNS AND NOT ONE — this is the part that is expensive to add later:
--- design_estimate is written ONCE and never updated. Baker corrections go to
--- design_estimate_edited. The diff between them is a continuously-accruing, human-labelled
+-- xray_spec is written ONCE and never updated. Baker corrections go to
+-- xray_spec_edited. The diff between them is a continuously-accruing, human-labelled
 -- evaluation set on real customer photos: which fields the model gets wrong, how often, and
 -- whether a cheaper model would do. Overwrite the estimate in place and that data never
 -- exists — and the "which model?" question gets re-opened in six months with no more
 -- evidence than today. Nothing else in this migration is irreversible; this is.
-alter table orders add column if not exists design_estimate        jsonb;
-alter table orders add column if not exists design_estimate_meta   jsonb;
-alter table orders add column if not exists design_estimate_edited jsonb;
+alter table orders add column if not exists xray_spec        jsonb;
+alter table orders add column if not exists xray_spec_meta   jsonb;
+alter table orders add column if not exists xray_spec_edited jsonb;
 
-comment on column orders.design_estimate is
-  'IMMUTABLE model output for a reference-photo order, in design_snapshot shape. Never updated in place — a regenerate replaces it only via an explicit new estimate, and corrections belong in design_estimate_edited.';
-comment on column orders.design_estimate_meta is
+comment on column orders.xray_spec is
+  'IMMUTABLE model output for a reference-photo order, in design_snapshot shape. Never updated in place — a regenerate replaces it only via an explicit new estimate, and corrections belong in xray_spec_edited.';
+comment on column orders.xray_spec_meta is
   '{ provider, model, prompt_version, confidence, credit_transaction_id, created_at } — provenance for the estimate above.';
-comment on column orders.design_estimate_edited is
-  'Baker-corrected copy of design_estimate. NULL until they change something. estimate vs edited is the accuracy signal.';
+comment on column orders.xray_spec_edited is
+  'Baker-corrected copy of xray_spec. NULL until they change something. estimate vs edited is the accuracy signal.';
 
 -- Only photo orders carry an estimate, so a partial index stays small.
-create index if not exists orders_design_estimate_idx
-  on orders (baker_id) where design_estimate is not null;
+create index if not exists orders_xray_spec_idx
+  on orders (baker_id) where xray_spec is not null;

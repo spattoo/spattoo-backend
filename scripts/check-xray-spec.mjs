@@ -1,6 +1,6 @@
 #!/usr/bin/env node
-// ── design_estimate mapper gate ───────────────────────────────────────────────
-// Exercises services/designEstimate.js over hand-written analyzeCake/matchAnalysis fixtures.
+// ── xray_spec mapper gate ───────────────────────────────────────────────
+// Exercises services/xraySpec.js over hand-written analyzeCake/matchAnalysis fixtures.
 //
 // This is a unit test wearing a check's clothes, and deliberately so: this repo has no test
 // framework, adding one is a repo-wide decision, and the mapper is the single place where "what
@@ -8,9 +8,9 @@
 // otherwise only be verified by spending a credit and eyeballing a PDF.
 //
 // The mapper is PURE, so none of this touches the network, the DB, or a model.
-// Run via `npm run check:design-estimate` (or the aggregate `npm run check`).
+// Run via `npm run check:xray-spec` (or the aggregate `npm run check`).
 
-import { buildDesignEstimate } from '../src/services/designEstimate.js';
+import { buildXraySpec } from '../src/services/xraySpec.js';
 
 let failures = 0;
 const ok = (cond, label) => {
@@ -66,10 +66,10 @@ const matched = {
   nonMatched: [{ type: 'drip' }, { type: 'lettering' }],
 };
 
-const { snapshot, coverage } = buildDesignEstimate(analysis, matched);
+const { snapshot, coverage } = buildXraySpec(analysis, matched);
 
 // ── Provenance ───────────────────────────────────────────────────────────────
-ok(snapshot.source === 'ai_estimate', 'snapshot is marked source:ai_estimate');
+ok(snapshot.source === 'photo', 'snapshot is marked source:ai_estimate');
 
 // ── Tier geometry: ratios only, round tiers sized by radius ──────────────────
 ok(snapshot.tiers.length === 2, 'two tiers mapped');
@@ -110,7 +110,7 @@ ok(drip?.tierIndex === 0, 'drip kept the tier it runs down');
 // ── Shape handling ───────────────────────────────────────────────────────────
 ok(coverage.shapeRecognised === true, 'round is a recognised footprint');
 
-const sq = buildDesignEstimate(
+const sq = buildXraySpec(
   { cake: { shape: 'square' }, tiers: [{ index: 0, height_ratio: 1, width_ratio: 1, frosting: {} }] },
   { tiers: [], coverage: {}, nonMatched: [] },
 );
@@ -118,7 +118,7 @@ ok(sq.snapshot.tiers[0].shape === 'square', 'square maps through');
 ok(sq.snapshot.tiers[0].width > 0 && sq.snapshot.tiers[0].depth > 0, 'a square tier carries width/depth (computeTinPlan isSquare)');
 ok(sq.snapshot.tiers[0].radius === undefined, 'a square tier does not also carry radius');
 
-const heart = buildDesignEstimate(
+const heart = buildXraySpec(
   { cake: { shape: 'heart' }, tiers: [{ index: 0, height_ratio: 1, width_ratio: 1, frosting: {} }] },
   { tiers: [], coverage: {}, nonMatched: [] },
 );
@@ -126,7 +126,7 @@ ok(heart.snapshot.tiers[0].shape === 'round', 'an unmappable footprint falls bac
 ok(heart.coverage.shapeRecognised === false, 'and says so, rather than pretending a heart is a circle');
 
 // ── Degenerate input must not produce a broken snapshot ──────────────────────
-const empty = buildDesignEstimate({}, {});
+const empty = buildXraySpec({}, {});
 ok(empty.snapshot.tiers.length === 1, 'an empty analysis still yields one tier (computeTinPlan needs something to walk)');
 ok(Array.isArray(empty.snapshot.stickers) && Array.isArray(empty.snapshot.texts),
    'collections are always arrays — harvest.js walks them unconditionally');
@@ -135,4 +135,4 @@ if (failures) {
   console.error(`\n${failures} design-estimate mapper check(s) failed.`);
   process.exit(1);
 }
-console.log('✓ design_estimate mapper: geometry, piping ids, placeables, cake-level types and shape fallback all hold');
+console.log('✓ xray_spec mapper: geometry, piping ids, placeables, cake-level types and shape fallback all hold');

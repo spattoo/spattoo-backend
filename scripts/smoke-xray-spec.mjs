@@ -5,7 +5,7 @@
 // WHY THIS IS CHEAP TO DO WELL: every DESIGNED order already carries both a thumbnail and the
 // design_snapshot that produced it. That is a perfectly-labelled evaluation set, sitting in the
 // orders table, costing nothing to collect. We hand the model the thumbnail, run the real
-// pipeline over its answer (analyzeCake → matchAnalysis → buildDesignEstimate), and diff the
+// pipeline over its answer (analyzeCake → matchAnalysis → buildXraySpec), and diff the
 // result against the snapshot we already know is correct.
 //
 // ⚠️ READ THE SCORES AS OPTIMISTIC. Thumbnails are OUR renders: clean studio lighting, one known
@@ -18,13 +18,13 @@
 // deliberately, which is why it is not wired into `npm run check`.
 //
 // Usage:
-//   OPENAI_API_KEY=… SUPABASE_URL=… SUPABASE_SERVICE_KEY=… node scripts/smoke-design-estimate.mjs [count]
+//   OPENAI_API_KEY=… SUPABASE_URL=… SUPABASE_SERVICE_KEY=… node scripts/smoke-xray-spec.mjs [count]
 
 import 'dotenv/config';
 import { supabase } from '../src/services/supabase.js';
 import { analyzeCake } from '../src/services/openai.js';
 import { matchAnalysis } from '../src/services/inspirationMatch.js';
-import { buildDesignEstimate } from '../src/services/designEstimate.js';
+import { buildXraySpec } from '../src/services/xraySpec.js';
 
 const COUNT = Number(process.argv[2] || 5);
 
@@ -114,7 +114,7 @@ for (const o of orders) {
   try {
     const analysis = await analyzeCake(url);
     const matched  = await matchAnalysis(analysis);
-    const { snapshot } = buildDesignEstimate(analysis, matched);
+    const { snapshot } = buildXraySpec(analysis, matched);
     const s = score(o.design_snapshot, snapshot);
     rows.push(s);
     console.log(

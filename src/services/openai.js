@@ -241,7 +241,7 @@ Keep "reason" friendly and specific (e.g. "This photo has a person in it — upl
 //
 // TWO consumers now, and the second one is why the ratios are not optional:
 //   1. "Build from Inspiration" — displays the spec / matches it to library elements.
-//   2. X-Ray for photo-only orders — services/designEstimate.js maps this onto a design_snapshot
+//   2. X-Ray for photo-only orders — services/xraySpec.js maps this onto a design_snapshot
 //      so the existing X-Ray pipeline runs over an order that never touched the 3D designer.
 //
 // For (2) the tin plan is the highest-value output, and computeTinPlan() splits the order's weight

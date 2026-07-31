@@ -801,7 +801,7 @@ router.get('/orders', requireAuth, requireCapability('order:view'), async (req, 
         id, status_id, order_statuses ( key ), weight_kg, delivery_date, delivery_time,
         delivery_mode, delivery_address, flavours,
         special_instructions, design_thumbnail_url, design_snapshot,
-        design_estimate, design_estimate_edited, design_estimate_meta,
+        xray_spec, xray_spec_edited, xray_spec_meta,
         approved_at, created_at, updated_at,
         quoted_price, quote_valid_until, current_version_id, quoted_version_id,
         ${DIETARY_EMBED},
@@ -828,8 +828,8 @@ router.get('/orders', requireAuth, requireCapability('order:view'), async (req, 
     // which is our analysis, not the browser's business. Sending both would double the heaviest
     // field in the response for exactly the orders most likely to have one.
     res.json(data.map(o => {
-      const { design_estimate, ...rest } = o;
-      const row = o.design_estimate_edited ? rest : o;
+      const { xray_spec, ...rest } = o;
+      const row = o.xray_spec_edited ? rest : o;
       return { ...withDietaryKeys(withStatusKey(row)), design_thumbnail_url: toPublicUrl(o.design_thumbnail_url), quote_stale: quoteStale(o) };
     }));
   } catch (err) {

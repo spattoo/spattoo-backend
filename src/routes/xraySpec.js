@@ -7,7 +7,7 @@ import { assertBakerOwns } from '../lib/tenantScope.js';
 import { toPublicUrl } from './elements.js';
 import { analyzeCake } from '../services/openai.js';
 import { matchAnalysis } from '../services/inspirationMatch.js';
-import { buildDesignEstimate } from '../services/designEstimate.js';
+import { buildXraySpec } from '../services/xraySpec.js';
 import { withAiCredits, AI_ACTION, InsufficientCreditsError } from '../services/aiCredits.js';
 
 const router = Router();
@@ -34,7 +34,7 @@ router.post('/orders/:id/design-estimate', requireAuth, requireCapability('order
   try {
     // SEC-14: the order must belong to the caller's bakery. req.bakerId is server-resolved.
     const order = await assertBakerOwns(req, 'orders', req.params.id, {
-      select: 'id, design_snapshot, design_estimate',
+      select: 'id, design_snapshot, xray_spec',
     });
     if (!order) return res.status(404).json({ error: 'Order not found' });
 
@@ -52,8 +52,8 @@ router.post('/orders/:id/design-estimate', requireAuth, requireCapability('order
     // explicit regenerate spends another credit, which is what makes a double-clicked button or a
     // client retry free.
     const regenerate = req.body?.regenerate === true;
-    if (order.design_estimate && !regenerate) {
-      return res.json({ ok: true, reused: true, estimate: order.design_estimate });
+    if (order.xray_spec && !regenerate) {
+      return res.json({ ok: true, reused: true, estimate: order.xray_spec });
     }
 
     // The primary reference photo IS the order's picture for a manual order (sort_order 0).
@@ -86,7 +86,7 @@ router.post('/orders/:id/design-estimate', requireAuth, requireCapability('order
       }
 
       const matched = await matchAnalysis(analysis);
-      const { snapshot, coverage } = buildDesignEstimate(analysis, matched);
+      const { snapshot, coverage } = buildXraySpec(analysis, matched);
 
       return {
         value: { snapshot, coverage },
@@ -147,16 +147,16 @@ router.post('/orders/:id/design-estimate', requireAuth, requireCapability('order
       coverage,
     };
 
-    // design_estimate is written, never edited in place. Baker corrections go to
-    // design_estimate_edited, and the diff between the two is the accuracy signal that decides
+    // xray_spec is written, never edited in place. Baker corrections go to
+    // xray_spec_edited, and the diff between the two is the accuracy signal that decides
     // every later model/prompt question (migrations/022). A regenerate REPLACES the estimate and
     // clears the corrections with it — they were corrections to a reading that no longer exists.
     const { error: updErr } = await supabase
       .from('orders')
       .update({
-        design_estimate:      snapshot,
-        design_estimate_meta: meta,
-        ...(regenerate ? { design_estimate_edited: null } : {}),
+        xray_spec:      snapshot,
+        xray_spec_meta: meta,
+        ...(regenerate ? { xray_spec_edited: null } : {}),
       })
       .eq('id', order.id);
     if (updErr) throw updErr;
@@ -175,14 +175,14 @@ router.post('/orders/:id/design-estimate', requireAuth, requireCapability('order
 });
 
 // ── PATCH /api/orders/:id/design-estimate ─────────────────────────────────────
-// The baker's corrections. Writes design_estimate_edited and NEVER touches design_estimate —
+// The baker's corrections. Writes xray_spec_edited and NEVER touches xray_spec —
 // that separation is the whole point of having two columns, and it costs no credits because no
 // model runs: the corrected snapshot flows through the same deterministic X-Ray pipeline.
 router.patch('/orders/:id/design-estimate', requireAuth, requireCapability('order:manage'), async (req, res) => {
   try {
-    const order = await assertBakerOwns(req, 'orders', req.params.id, { select: 'id, design_estimate' });
+    const order = await assertBakerOwns(req, 'orders', req.params.id, { select: 'id, xray_spec' });
     if (!order) return res.status(404).json({ error: 'Order not found' });
-    if (!order.design_estimate) {
+    if (!order.xray_spec) {
       return res.status(409).json({ error: 'This order has no estimate to correct.', code: 'NO_ESTIMATE' });
     }
 
@@ -195,7 +195,7 @@ router.patch('/orders/:id/design-estimate', requireAuth, requireCapability('orde
     // reading of a photo into a measured design, and the printed sheet must go on saying so.
     const { error } = await supabase
       .from('orders')
-      .update({ design_estimate_edited: { ...edited, source: 'ai_estimate' } })
+      .update({ xray_spec_edited: { ...edited, source: 'photo' } })
       .eq('id', order.id);
     if (error) throw error;
 

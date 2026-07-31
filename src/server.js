@@ -28,7 +28,7 @@ import legalRouter from './routes/legal.js';
 import accountRouter from './routes/account.js';
 import designSessionsRouter from './routes/designSessions.js';
 import aiCreditsRouter from './routes/aiCredits.js';
-import designEstimateRouter from './routes/designEstimate.js';
+import xraySpecRouter from './routes/xraySpec.js';
 import { requestId } from './middleware/requestId.js';
 import { errorHandler } from './middleware/errorHandler.js';
 import { requireAuth } from './middleware/auth.js';
@@ -87,7 +87,7 @@ app.use('/api', legalRouter);
 app.use('/api', accountRouter);
 app.use('/api', designSessionsRouter);
 app.use('/api', aiCreditsRouter);
-app.use('/api', designEstimateRouter);
+app.use('/api', xraySpecRouter);
 
 app.use(errorHandler);   // global safety net — must run last, after all routers
 
