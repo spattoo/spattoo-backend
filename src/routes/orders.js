@@ -799,6 +799,23 @@ router.post('/customer/orders/:id/message', requireAuth, async (req, res) => {
 //
 // Only ever true for photo orders: a designed order has no xray_spec, so the check short-circuits
 // before design_thumbnail_url (which for those is a 3D render, not a photo) is ever compared.
+// Stage images are stored as R2 KEYS inside xray_spec (the public base is deployment config and
+// would rot every stored row if it were baked in), so the API expands them on the way out — the
+// same contract every other asset column has. spattoo-core never learns the bucket.
+//
+// Returns a COPY. Mutating the row in place would write the expanded URL back into whatever the
+// caller does with it next, and an expanded URL round-tripping into storage is exactly the rot the
+// key was chosen to avoid.
+function withStageUrls(spec) {
+  const decorations = spec?.decorations;
+  if (!decorations) return spec;
+  const out = {};
+  for (const [k, v] of Object.entries(decorations)) {
+    out[k] = v?.stages_key ? { ...v, stages_url: toPublicUrl(v.stages_key) } : v;
+  }
+  return { ...spec, decorations: out };
+}
+
 function xraySpecStale(o) {
   const readKey = o?.xray_spec_meta?.source_photo_key;
   if (!o?.xray_spec || !readKey || !o?.design_thumbnail_url) return false;
@@ -929,7 +946,13 @@ router.get('/orders/:id', requireAuth, requireCapability('order:view'), async (r
       ` });
     if (!order) return res.status(404).json({ error: 'Order not found' });
 
-    res.json({ ...withDietaryKeys(withStatusKey(order)), xray_spec_stale: xraySpecStale(order), quote_stale: quoteStale(order) });
+    res.json({
+      ...withDietaryKeys(withStatusKey(order)),
+      xray_spec:        withStageUrls(order.xray_spec),
+      xray_spec_edited: withStageUrls(order.xray_spec_edited),
+      xray_spec_stale:  xraySpecStale(order),
+      quote_stale:      quoteStale(order),
+    });
   } catch (err) {
     serverError(req, res, err);
   }
