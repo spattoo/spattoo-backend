@@ -62,24 +62,25 @@ create table if not exists credit_costs (
 -- `label` is a SHORT JOB NOUN, and that is a UI contract, not a description. It must also be
 -- UNIQUE among ACTIVE rows: the billing card lists them as "{label} — {credits} credits", so two
 -- actions sharing a label render as the same job at two different prices and read as a bug. That
--- happened: photo_to_xray_estimate and element_build_guide were both "Build guide" until the
--- second was renamed to "Decoration guide" — one is the whole-cake sheet, the other is how to make
--- a single decoration. Migration 026 now ENFORCES this with a partial unique index, so the rule no
--- longer depends on anyone reading this paragraph. The billing screen
--- renders it as "14 build guides left this month" — it pluralises by appending "s", so a label
--- like "Build guide from a photo" would read "build guide from a photos". Keep these short and
--- countable.
+-- happened: photo_to_xray_estimate and element_build_guide were both "Build guide". Migration 026
+-- now ENFORCES uniqueness with a partial unique index, so the rule no longer depends on anyone
+-- reading this paragraph.
+--
+-- SUPERSEDED BY 030: labels are no longer required to be single countable nouns. That rule existed
+-- because the card rendered "14 build guides left this month" by appending an "s"; that per-tool
+-- countdown was removed (it implied separate budgets when every action draws on one pool) and the
+-- label now renders verbatim. Both actions are X-Ray and now say so.
 --
 -- ONLY the built action is active. is_active means "currently offered", and an inactive row both
 -- keeps the billing card honest (it would otherwise advertise three features that do not exist)
 -- and makes reserve_ai_credits fail closed with UNKNOWN_ACTION if anything calls one early. Flip
 -- each to true in the change that ships it.
 insert into credit_costs (action_key, credits, label, is_active) values
-  ('photo_to_xray_estimate', 15, 'Build guide',  true),
+  ('photo_to_xray_estimate', 15, 'X-Ray — read a cake photo',  true),
   ('photo_to_cake_design',   20, 'Cake design',  false),   -- not built
   ('enquiry_to_draft_order',  2, 'Draft order',  false),   -- not built; plans/enquiry-parser.md
   ('sticker_generate',       60, 'Decoration',   false),   -- not built; Fondant Studio v1
-  ('element_build_guide',    20, 'Decoration guide', true)  -- one per decoration, then free forever
+  ('element_build_guide',    20, 'X-Ray — how to make a decoration', true)  -- one per decoration, then free forever
 on conflict (action_key) do update
   set credits = excluded.credits, label = excluded.label,
       is_active = excluded.is_active, updated_at = now();

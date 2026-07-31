@@ -153,6 +153,19 @@ export function buildXraySpec(analysis, matched) {
         zone:      ZONE_MAP[d.placement] ?? 'top_surface',
         tierIndex,
         color:     colour,
+        // WHAT THE MODEL ACTUALLY SAW, kept alongside what it matched to. `name` above is the
+        // LIBRARY ELEMENT's name, and matching can be confidently wrong: zone, type, colour and
+        // mode contribute 0.60 of the score against a 0.35 floor, so a pink fondant topper
+        // certifies as any other pink fondant topper. A real cake's bow matched "Fondant doll 1".
+        //
+        // Decoration steps read the photo and must be told what to look for, so they need the
+        // description rather than the match — asking for the doll on a cake that has a bow is how
+        // a wrong match becomes a wrong answer the baker pays for.
+        seen: {
+          what:      [d.type, d.subtype].filter(Boolean).join(' ').replace(/_/g, ' ') || 'decoration',
+          color:     hex(d.color_hex),
+          placement: d.placement ?? null,
+        },
       });
     });
   });

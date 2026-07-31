@@ -13,7 +13,9 @@ import { toPublicUrl } from './elements.js';
 
 const router = Router();
 
-// Bump when the build-guide prompt changes in a way that could move the output.
+// Bump when the prompt changes in a way that could move the output. Kept as 'build-guide-v1'
+// though the feature is now called decoration steps: this string is STAMPED ON STORED ROWS, and
+// renaming it would split one prompt's history into two versions that were never different.
 const PROMPT_VERSION = 'build-guide-v1';
 
 // The formats OpenAI's vision endpoint accepts. Anything else comes back as a hard
@@ -216,7 +218,7 @@ router.put('/admin/craft-guide/:elementId', requireAuth, requireCapability('cata
   }
 });
 
-// ── POST /api/elements/:id/build-guide ────────────────────────────────────────
+// ── POST /api/elements/:id/xray/decoration-steps ──────────────────────────────
 // Generate a step-by-step build guide for ONE decoration, and keep it on the ELEMENT.
 //
 // Why per-element and not per-order: a lion topper is made the same way every time. Storing the
@@ -230,7 +232,7 @@ router.put('/admin/craft-guide/:elementId', requireAuth, requireCapability('cata
 // decoration; this spends money. Someone will eventually notice the route is about an element and
 // try to "correct" the guard: do not. (Customers hold only design:create + order:place today, so
 // they cannot reach this either way — but the rule should not depend on that staying true.)
-router.post('/elements/:id/build-guide', requireAuth, requireCapability('order:manage'), async (req, res) => {
+router.post('/elements/:id/xray/decoration-steps', requireAuth, requireCapability('order:manage'), async (req, res) => {
   try {
     if (!req.bakerId) return res.status(403).json({ error: 'Not a baker account' });
 
@@ -261,7 +263,7 @@ router.post('/elements/:id/build-guide', requireAuth, requireCapability('order:m
       {
         bakerId: req.bakerId,
         action:  AI_ACTION.ELEMENT_BUILD_GUIDE,
-        idempotencyKey: `build-guide:${el.id}`,
+        idempotencyKey: `xray-steps:element:${el.id}`,
       },
       async () => {
         const { guide, usage, model } = await suggestBuildGuide({
