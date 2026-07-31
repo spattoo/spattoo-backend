@@ -6,6 +6,10 @@ import { requireCapability } from '../middleware/rbac.js';
 import { suggestCraftGuide, suggestBuildGuide } from '../services/openai.js';
 import { withAiCredits, AI_ACTION, InsufficientCreditsError } from '../services/aiCredits.js';
 import { assertBakerOwns } from '../lib/tenantScope.js';
+// cake_elements.image_url holds an R2 object KEY, not a URL — every read path wraps it before the
+// value leaves the API (elements.js withPublicUrls). OpenAI fetches the image over HTTP, so it
+// needs the same treatment; handing it the raw key is a hard failure, not a degraded result.
+import { toPublicUrl } from './elements.js';
 
 const router = Router();
 
@@ -238,7 +242,7 @@ router.post('/elements/:id/build-guide', requireAuth, requireCapability('order:m
       },
       async () => {
         const { guide, usage, model } = await suggestBuildGuide({
-          imageUrl: el.image_url, name: el.name, description: el.description,
+          imageUrl: toPublicUrl(el.image_url), name: el.name, description: el.description,
         });
         // No steps means the model judged this not hand-modelled (a printed decal, an acrylic
         // topper). That is a USEFUL answer, not a failure — but it is not worth a credit, and
@@ -261,6 +265,9 @@ router.post('/elements/:id/build-guide', requireAuth, requireCapability('order:m
     // status stays 'draft' forever for a baker-generated guide: admin review cannot scale to every
     // baker's private decorations, so the sheet must show it as unreviewed rather than pretend a
     // model guess carries the same weight as a curated craft guide.
+    // source_image_url stores the KEY, not the rendered URL, despite the column name: the key is
+    // the stable identity of the image, while the public URL base is deployment config that can
+    // change and would rot every stored row with it. Read it back through toPublicUrl().
     const row = {
       element_id: el.id, guide_type: 'fondant_figure', guide,
       source_image_url: el.image_url, model: out.value.model ?? null,
