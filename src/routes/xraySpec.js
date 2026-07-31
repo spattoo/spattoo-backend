@@ -5,7 +5,7 @@ import { requireAuth } from '../middleware/auth.js';
 import { requireCapability } from '../middleware/rbac.js';
 import { assertBakerOwns } from '../lib/tenantScope.js';
 import { toPublicUrl } from './elements.js';
-import { analyzeCake } from '../services/openai.js';
+import { analyzeCake, suggestBuildGuide } from '../services/openai.js';
 import { matchAnalysis } from '../services/inspirationMatch.js';
 import { buildXraySpec } from '../services/xraySpec.js';
 import { withAiCredits, AI_ACTION, InsufficientCreditsError } from '../services/aiCredits.js';
@@ -18,6 +18,44 @@ const router = Router();
 // to the change that caused it (migrations/022_ai_credits_ledger.sql).
 const PROMPT_VERSION = 'xray-estimate-v1';
 const MODEL = 'gpt-4o';   // what services/openai.js analyzeCake calls today
+
+// Versioned separately from the estimate: the decoration-steps prompt moves on its own, and a
+// shared version would attribute a quality shift to whichever changed last.
+const STEPS_PROMPT_VERSION = 'xray-decoration-steps-v1';
+
+// ── Shared by both order-level X-Ray routes ───────────────────────────────────
+// Load the order, scoped to the caller's bakery, and refuse a DESIGNED one. Both routes exist
+// only for photo orders — a designed order's structure is measured and its decorations are
+// library elements — so the guard belongs in one place rather than being restated per route.
+// Returns { order } or { status, body } for the caller to return verbatim.
+async function loadPhotoOrder(req, designedMessage) {
+  // SEC-14: the order must belong to the caller's bakery. req.bakerId is server-resolved.
+  const order = await assertBakerOwns(req, 'orders', req.params.id, {
+    select: 'id, design_snapshot, xray_spec',
+  });
+  if (!order) return { status: 404, body: { error: 'Order not found' } };
+  if (order.design_snapshot) {
+    return { status: 409, body: { error: designedMessage, code: 'ORDER_HAS_DESIGN' } };
+  }
+  return { order };
+}
+
+// The primary reference photo IS the order's picture for a manual order (sort_order 0).
+// `orders/reference/` is a public R2 folder (routes/storage.js FOLDER_POLICY), so the model
+// fetches the image by URL — no re-upload, no base64 round trip through this process.
+async function primaryReferencePhoto(orderId) {
+  const { data: photos } = await supabase
+    .from('order_reference_photos')
+    .select('key').eq('order_id', orderId)
+    .order('sort_order', { ascending: true }).limit(1);
+  const key = photos?.[0]?.key ?? null;
+  return { key, url: toPublicUrl(key) };
+}
+
+const NO_PHOTO = {
+  status: 400,
+  body: { error: 'This order has no reference photo to read.', code: 'NO_REFERENCE_PHOTO' },
+};
 
 // ── POST /api/orders/:id/design-estimate ──────────────────────────────────────
 // Read a manual order's reference photo and produce a design_snapshot-shaped estimate, so the
@@ -32,21 +70,12 @@ const MODEL = 'gpt-4o';   // what services/openai.js analyzeCake calls today
 // path that isn't a committed success.
 router.post('/orders/:id/design-estimate', requireAuth, requireCapability('order:manage'), async (req, res) => {
   try {
-    // SEC-14: the order must belong to the caller's bakery. req.bakerId is server-resolved.
-    const order = await assertBakerOwns(req, 'orders', req.params.id, {
-      select: 'id, design_snapshot, xray_spec',
-    });
-    if (!order) return res.status(404).json({ error: 'Order not found' });
-
     // A designed order already has everything X-Ray needs. Estimating over it would spend a credit
     // to produce a worse copy of data we already have, and would invite someone to overwrite a real
     // design with a guess.
-    if (order.design_snapshot) {
-      return res.status(409).json({
-        error: 'This order already has a design — X-Ray reads it directly.',
-        code:  'ORDER_HAS_DESIGN',
-      });
-    }
+    const loaded = await loadPhotoOrder(req, 'This order already has a design — X-Ray reads it directly.');
+    if (!loaded.order) return res.status(loaded.status).json(loaded.body);
+    const { order } = loaded;
 
     // Idempotent by default: an estimate already exists → hand it back, charge nothing. Only an
     // explicit regenerate spends another credit, which is what makes a double-clicked button or a
@@ -56,18 +85,9 @@ router.post('/orders/:id/design-estimate', requireAuth, requireCapability('order
       return res.json({ ok: true, reused: true, estimate: order.xray_spec });
     }
 
-    // The primary reference photo IS the order's picture for a manual order (sort_order 0).
-    const { data: photos } = await supabase
-      .from('order_reference_photos')
-      .select('key').eq('order_id', order.id)
-      .order('sort_order', { ascending: true }).limit(1);
-    const photoUrl = toPublicUrl(photos?.[0]?.key);
-    if (!photoUrl) {
-      return res.status(400).json({
-        error: 'This order has no reference photo to read.',
-        code:  'NO_REFERENCE_PHOTO',
-      });
-    }
+    const photo = await primaryReferencePhoto(order.id);
+    if (!photo.url) return res.status(NO_PHOTO.status).json(NO_PHOTO.body);
+    const photoUrl = photo.url;
 
     // `orders/reference/` is a public R2 folder (routes/storage.js FOLDER_POLICY), so the model
     // fetches the image by URL — no re-upload, no base64 round trip through this process.
@@ -143,7 +163,7 @@ router.post('/orders/:id/design-estimate', requireAuth, requireCapability('order
       prompt_version: PROMPT_VERSION,
       created_at:     new Date().toISOString(),
       credit_transaction_id: result.reservation?.transactionId ?? null,
-      source_photo_key: photos?.[0]?.key ?? null,
+      source_photo_key: photo.key,
       coverage,
     };
 
@@ -201,6 +221,102 @@ router.patch('/orders/:id/design-estimate', requireAuth, requireCapability('orde
 
     res.json({ ok: true });
   } catch (err) {
+    serverError(req, res, err);
+  }
+});
+
+// ── POST /api/orders/:id/xray/decoration-steps ────────────────────────────────
+// How do I make THIS decoration — for a decoration that exists only in the customer's photo.
+//
+// The designed-order equivalent lives on the element (element_craft_guide): there the decoration
+// IS a library element, the answer is the same every time it is used, and one baker's generation
+// amortises across everyone. A photo decoration has no element, and forcing one on it is what
+// produced a detailed, faithful guide to a fondant doll for a cake that had a bow: matching scores
+// zone, type and colour at 0.60 combined against a 0.35 floor, so a pink fondant topper certifies
+// as any other pink fondant topper without the model recognising the object at all.
+//
+// So this reads the ORIGINAL PHOTO and names which decoration to look at, and stores the answer on
+// the order. Nothing is matched, so nothing can be mismatched.
+router.post('/orders/:id/xray/decoration-steps', requireAuth, requireCapability('order:manage'), async (req, res) => {
+  try {
+    // A designed order's decorations are library elements and take the element path, where the
+    // answer is shared and paid for once rather than per order.
+    const loaded = await loadPhotoOrder(req, 'This order has a design — its decorations are library elements.');
+    if (!loaded.order) return res.status(loaded.status).json(loaded.body);
+    const { order } = loaded;
+
+    if (!order.xray_spec) {
+      return res.status(409).json({ error: 'Run X-Ray on this order first.', code: 'NO_XRAY_SPEC' });
+    }
+
+    // `key` identifies the decoration within this order's spec; `label` is what to look for in the
+    // photo. Both come from the spec the client is already rendering, so the client never invents
+    // a decoration the report does not show.
+    const key   = String(req.body?.key   ?? '').trim();
+    const label = String(req.body?.label ?? '').trim();
+    if (!key || !label) return res.status(400).json({ error: 'key and label are required' });
+    if (key.length > 120 || label.length > 200) return res.status(400).json({ error: 'key or label too long' });
+
+    // Already generated → hand it back, charge nothing.
+    const existing = order.xray_spec?.decorations?.[key];
+    if (existing) return res.json({ ok: true, reused: true, key, steps: existing });
+
+    const photo = await primaryReferencePhoto(order.id);
+    if (!photo.url) return res.status(NO_PHOTO.status).json(NO_PHOTO.body);
+
+    const out = await withAiCredits(
+      {
+        bakerId: req.bakerId,
+        action:  AI_ACTION.ELEMENT_BUILD_GUIDE,
+        orderId: order.id,
+        idempotencyKey: `xray-steps:${order.id}:${key}`,
+      },
+      async () => {
+        // `focus` puts the model in whole-cake mode: read this ONE decoration and ignore the rest.
+        // Without it, given a busy cake, it describes whichever object is most prominent.
+        const { guide, usage, model } = await suggestBuildGuide({
+          imageUrl: photo.url, name: label, focus: label,
+        });
+        // No steps = "this is piped or printed, not modelled by hand". A real answer — the piping
+        // section already tells them how — but not one worth a credit.
+        if (!guide || !Array.isArray(guide.steps) || guide.steps.length === 0) {
+          return { keep: false, note: 'not a modelled decoration', value: { guide, model } };
+        }
+        return { value: { guide, model }, provider: 'openai', model, promptVersion: STEPS_PROMPT_VERSION, calls: [{ model, usage }] };
+      },
+    );
+
+    if (out.discarded) {
+      if (out.discardedValue?.guide) {
+        return res.json({ ok: true, notModelled: true, steps: out.discardedValue.guide, charged: false });
+      }
+      return res.status(422).json({ error: "We couldn't read that decoration.", code: 'STEPS_FAILED' });
+    }
+    if (!out.value?.guide) {
+      return res.status(422).json({ error: "We couldn't read that decoration.", code: 'STEPS_FAILED' });
+    }
+
+    const value = {
+      guide:          out.value.guide,
+      label,
+      model:          out.value.model ?? null,
+      prompt_version: STEPS_PROMPT_VERSION,
+      // Which picture this was read from. The order's photo can be replaced, and steps describing
+      // a cake nobody is making now look no different from correct ones.
+      source_photo_key: photo.key,
+      generated_at:   new Date().toISOString(),
+    };
+    // Merged in SQL, row-locked: two decorations generated at once must not clobber each other.
+    const { error: mergeErr } = await supabase.rpc('xray_add_decoration_steps', {
+      p_order_id: order.id, p_key: key, p_value: value,
+    });
+    if (mergeErr) throw mergeErr;
+
+    res.json({ ok: true, reused: false, key, steps: value });
+  } catch (err) {
+    if (err instanceof InsufficientCreditsError) {
+      return res.status(err.status).json({ error: err.message, code: err.code, ...err.detail });
+    }
     serverError(req, res, err);
   }
 });

@@ -480,13 +480,24 @@ export async function generateDecorationImage(referenceBuffer, prompt, size = '1
 // the order's design at render time, so ONE guide serves every colour variant of the same
 // decoration. A guide that said "roll white fondant" would be wrong the first time a baker used
 // their lion in brown.
-export async function suggestBuildGuide({ imageUrl, name, description }) {
+// `focus` switches the reading mode. Absent, the image IS the decoration (a library element's
+// thumbnail) and the model should ignore everything else in frame. Present, the image is a whole
+// CAKE photo and `focus` names which decoration on it to read — the reference-photo case, where
+// the decoration exists nowhere else. Naming the target matters more than it looks: given a cake
+// photo and no focus, the model reliably describes the most prominent object, which on a busy
+// cake is rarely the one the baker asked about.
+export async function suggestBuildGuide({ imageUrl, name, description, focus = null }) {
   const prompt = `You are a master sugar-artist writing a build guide for ONE decoration, so another baker can make it by hand.
 
 Decoration name: ${name || '(unnamed)'}
 Keywords: ${description || '(none)'}
 
-Look ONLY at the object in the image. Do not describe a cake, a board, or a background.
+${focus
+  ? `The image is a photo of a WHOLE CAKE. Read ONLY this one decoration on it: ${focus}.
+Ignore every other decoration, the cake itself, the board and the background. If you cannot find
+that decoration in the photo, return an EMPTY steps array and one tip saying so — do not describe
+a different decoration instead.`
+  : `Look ONLY at the object in the image. Do not describe a cake, a board, or a background.`}
 
 Return ONLY valid JSON, no explanation:
 {
