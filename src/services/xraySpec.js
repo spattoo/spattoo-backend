@@ -63,6 +63,13 @@ const bbox = (v) => {
   return [x, y, w, h].map(n => +n.toFixed(4));
 };
 
+// A plain 0-1 fraction, or null. Unlike `ratio` there is no fallback: a missing size must stay
+// missing rather than silently becoming a default the baker would cut fondant to.
+const unitRatio = (v) => {
+  const n = Number(v);
+  return Number.isFinite(n) && n > 0 && n <= 1 ? +n.toFixed(3) : null;
+};
+
 const ratio = (v, fallback) => {
   const n = Number(v);
   return Number.isFinite(n) && n > 0 && n <= 1 ? n : fallback;
@@ -189,6 +196,11 @@ export function buildXraySpec(analysis, matched) {
           // instead of describing it. Null whenever the model would not commit — a wrong crop
           // shows the baker a picture of the wrong thing, which is worse than showing none.
           bbox:      bbox(d.bbox),
+          // Width as a fraction of its tier, which is what turns a photo into a real measurement:
+          // the tin plan knows the tier's actual diameter, so ratio x diameter is the decoration's
+          // true size. Null is common and fine — a border has no single width, and a template
+          // printed at the wrong size is worse than none because the baker cuts to it.
+          tierWidthRatio: unitRatio(d.tier_width_ratio),
         },
       });
     });

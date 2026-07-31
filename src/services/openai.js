@@ -283,7 +283,8 @@ Describe ONLY what you can actually see. Return ONLY a JSON object, no prose:
           "text": "<for lettering, the exact text, else null>",
           "count": "<a number, or 'continuous', or 'few'>",
           "notes": "<short, optional>",
-          "bbox": "<[x, y, w, h] as fractions 0-1 of the image, tightly around THIS decoration, or null>"
+          "bbox": "<[x, y, w, h] as fractions 0-1 of the image, tightly around THIS decoration, or null>",
+          "tier_width_ratio": "<this decoration's WIDTH as a fraction of the width of the tier it sits on, or null>"
         }
       ]
     }
@@ -308,7 +309,14 @@ Rules:
   as fractions of the whole image, origin top-left. Crop tightly around the decoration itself, not
   the tier it sits on. For something repeated around the cake (a piped border, sprinkles), box ONE
   clear instance rather than the whole run. Use null when you cannot place it confidently — a
-  wrong crop shows the baker a picture of the wrong thing, which is worse than showing none.`;
+  wrong crop shows the baker a picture of the wrong thing, which is worse than showing none.
+- "tier_width_ratio" is how the sheet works out the decoration's REAL size, so it can print a
+  template at actual size. Judge it against the tier the decoration sits on: a bow spanning about
+  a third of the tier's width is 0.33. Do NOT use the bbox for this — the bbox is measured against
+  the photo, and the cake does not fill the photo. Compare the decoration to the CAKE, by eye, the
+  way you would say "that bow is about a third as wide as the cake". Use null when the decoration
+  is continuous around the cake (a piped border, sprinkles) or when you cannot judge it — a
+  template printed at the wrong size is worse than no template, because the baker cuts to it.`;
 
   const payload = JSON.stringify({
     model: 'gpt-4o',
