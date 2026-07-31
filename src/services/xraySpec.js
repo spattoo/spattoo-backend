@@ -173,6 +173,15 @@ export function buildXraySpec(analysis, matched) {
           // — but the model already told us where it saw this, and a box on the image is the same
           // answer arrived at from the other end.
           bbox:  bbox(d.bbox),
+          // The model's own read of how this was piped ("star tip (1M)"), from analyzeCake's
+          // `technique`. NOT a curated nozzle recommendation and never rendered as one — those come
+          // from element_craft_guide, which a human wrote against a real catalogue.
+          //
+          // It exists because the alternative is silence. A piping that matched no library element
+          // gets no nozzle at all today, and "we saw a shell border and have nothing to say about
+          // it" is a worse answer than "the AI thinks this is a star tip, check it" — the baker can
+          // act on the second and only shrug at the first.
+          technique: typeof d.technique === 'string' && d.technique.trim() ? d.technique.trim() : null,
         });
         return;
       }
