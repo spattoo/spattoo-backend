@@ -581,3 +581,66 @@ Rules:
   const json = raw.replace(/^```[a-z]*\n?/i, '').replace(/\n?```$/i, '').trim();
   return { guide: JSON.parse(json), usage: data.usage ?? null, model: data.model ?? 'gpt-4o' };
 }
+
+// ── The stage grid: ONE image showing how a decoration is built ──────────────────────
+// The visual half of a decoration guide (spattoo-docs plans/visual-decoration-guide.md, Phase 2).
+//
+// ONE image, not one per step. That is the whole design, and it is not only a cost decision:
+// separate generations DRIFT — the object in panel 3 stops being the object in panel 7 — and a
+// guide whose subject changes shape between steps is worse than one with no pictures at all. Drawn
+// in a single pass, the stages are the same object by construction.
+//
+// NO TEXT IN THE IMAGE. Every word on the sheet is rendered by us. Image models are unreliable at
+// letterforms and worst at exactly the strings that matter here: a misspelt step title is
+// embarrassing, but a mangled hex sends a baker to mix the wrong colour and waste a batch. We
+// already have the steps, the colours and a real gel recipe — this supplies only what we cannot
+// draw ourselves.
+//
+// An EDIT rather than a generation, for the same reason generateDecorationImage is: the crop from
+// the customer's photo is the ground truth, and input_fidelity high is the difference between
+// showing how to build THIS bow and inventing a stock one.
+//
+// Returns { buffer, usage, model } — usage so the ledger can record what the call actually cost,
+// which is what settles whether this fits inside the existing price.
+export async function generateDecorationStages(referenceBuffer, { title, stages = 6, size = '1024x1024' } = {}) {
+  const n = Math.min(9, Math.max(4, Number(stages) || 6));
+  const form = new FormData();
+  form.append('model', config.openai.imageModel);
+  form.append('image', new Blob([referenceBuffer], { type: 'image/png' }), 'reference.png');
+  form.append('prompt',
+    `A step-by-step build sequence showing how to model the decoration in the reference image` +
+    `${title ? ` (${title})` : ''}, by hand, in fondant.\n\n` +
+    `Draw exactly ${n} panels in a clean grid, in build order: the raw material first, then the ` +
+    'bulk shape, then each major part added, ending with the finished decoration exactly matching ' +
+    'the reference.\n\n' +
+    'CRITICAL RULES:\n' +
+    '- NO TEXT ANYWHERE. No numbers, no labels, no captions, no watermarks, no arrows with words. ' +
+    'Pictures only — every word is added afterwards by the layout.\n' +
+    '- The SAME object in every panel, at the same scale and the same viewing angle, changing only ' +
+    'by what has been added at that stage.\n' +
+    '- Plain white background, soft even studio lighting, photorealistic, shot straight on.\n' +
+    '- Show only the decoration and the hands-free work surface. No cake, no board, no props.');
+  form.append('size', size);
+  form.append('quality', config.openai.imageQuality);
+  form.append('output_format', 'webp');       // a grid is photographic and never needs alpha
+  form.append('input_fidelity', 'high');
+  form.append('n', '1');
+
+  const res = await fetch('https://api.openai.com/v1/images/edits', {
+    method: 'POST',
+    headers: { 'Authorization': `Bearer ${config.openai.apiKey}` },
+    body: form,
+  });
+
+  if (!res.ok) throw new Error(`${config.openai.imageModel} stages failed: ${await res.text()}`);
+  const data = await res.json();
+  const b64 = data?.data?.[0]?.b64_json;
+  if (!b64) throw new Error(`${config.openai.imageModel} returned no image data`);
+  return {
+    buffer: Buffer.from(b64, 'base64'),
+    // gpt-image models report token usage like the chat endpoints, so the existing pricing path
+    // works unchanged — see USD_PER_MTOK in services/aiCredits.js.
+    usage:  data?.usage ?? null,
+    model:  config.openai.imageModel,
+  };
+}

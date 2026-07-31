@@ -344,6 +344,13 @@ const USD_PER_MTOK = {
   'gpt-4o':                 { in: 2.50, out: 10.00 },   // what services/openai.js calls today
   'gpt-4o-mini':            { in: 0.15, out:  0.60 },
   'text-embedding-3-small': { in: 0.02, out:  0    },
+  // Image models. `in` uses the IMAGE-input rate rather than the text one: every call we make is an
+  // EDIT conditioned on a photo crop, so image tokens dominate the input and pricing them at the
+  // cheaper text rate would understate the cost of the one action where cost is actually in doubt.
+  // `out` is where nearly all of it lands anyway — a rendered image is thousands of output tokens.
+  'gpt-image-1':            { in: 10.00, out: 40.00 },
+  'gpt-image-1.5':          { in: 10.00, out: 40.00 },
+  'gpt-image-2':            { in: 10.00, out: 40.00 },
 };
 
 export function usdToInr(usd) {

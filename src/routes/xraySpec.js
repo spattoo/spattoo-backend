@@ -5,7 +5,9 @@ import { requireAuth } from '../middleware/auth.js';
 import { requireCapability } from '../middleware/rbac.js';
 import { assertBakerOwns } from '../lib/tenantScope.js';
 import { toPublicUrl } from './elements.js';
-import { analyzeCake, suggestBuildGuide } from '../services/openai.js';
+import { analyzeCake, suggestBuildGuide, generateDecorationStages } from '../services/openai.js';
+import { cropRegion, composeReference } from '../services/imageCrop.js';
+import { getObjectBuffer, putObject } from '../services/r2.js';
 import { matchAnalysis } from '../services/inspirationMatch.js';
 import { buildXraySpec } from '../services/xraySpec.js';
 import { withAiCredits, AI_ACTION, InsufficientCreditsError } from '../services/aiCredits.js';
@@ -225,6 +227,43 @@ router.patch('/orders/:id/design-estimate', requireAuth, requireCapability('orde
   }
 });
 
+
+// The decoration's box in the reference photo, from whichever half of the spec holds the design.
+// Written by buildXraySpec onto each sticker as `seen.bbox`; null when the model would not commit,
+// which is common and must not be treated as an error.
+function findDecorationBbox(spec, key) {
+  const design = spec?.design ?? spec;      // pre-029 rows are a bare design_snapshot
+  const all = [...(design?.stickers ?? []), ...(design?.decorations ?? [])];
+  return all.find(d => d?.id === key)?.seen?.bbox ?? null;
+}
+
+// Generate the stage grid and put it in R2. Returns { key, usage, model } or throws — the caller
+// treats a throw as "no picture", never as "no guide".
+//
+// ORDER-SCOPED KEY. A photo decoration exists only on this order, so its picture must not be
+// reachable from any other bakery's sheet, and it must fall inside the account-erasure sweep the
+// way the order's own photos already do.
+async function generateStageImage({ photoKey, bbox, orderId, key, title, stepCount }) {
+  const source = await getObjectBuffer(photoKey);
+  // Pad and square the crop the way the element-extraction pipeline does. A crop that clips the
+  // decoration is unrecoverable — the model invents the missing half — while surrounding cake is
+  // harmless, because the prompt tells it to drop the background.
+  const cropped = bbox ? await cropRegion(source, bbox) : source;
+  const { buffer: reference, size } = await composeReference(cropped);
+
+  const { buffer, usage, model } = await generateDecorationStages(reference, {
+    title,
+    // One panel per step reads as a comic strip and costs detail in each. The stages worth drawing
+    // are the ones where the SHAPE changes, which is always fewer than the number of written steps.
+    stages: Math.min(9, Math.max(4, Math.round(stepCount * 0.75))),
+    size,
+  });
+
+  const objectKey = `orders/guides/${orderId}/${encodeURIComponent(key)}/stages.webp`;
+  await putObject(objectKey, buffer, 'image/webp');
+  return { key: objectKey, usage, model };
+}
+
 // ── POST /api/orders/:id/xray/decoration-steps ────────────────────────────────
 // How do I make THIS decoration — for a decoration that exists only in the customer's photo.
 //
@@ -261,6 +300,11 @@ router.post('/orders/:id/xray/decoration-steps', requireAuth, requireCapability(
     const existing = order.xray_spec?.decorations?.[key];
     if (existing) return res.json({ ok: true, reused: true, key, steps: existing });
 
+    // Where this decoration is in the photo, so the stage grid can be conditioned on the real
+    // thing rather than on the whole cake. Absent is fine — the grid falls back to the full photo,
+    // which is worse but not wrong, and the model is told what to look for either way.
+    const bbox = findDecorationBbox(order.xray_spec, key);
+
     const photo = await primaryReferencePhoto(order.id);
     if (!photo.url) return res.status(NO_PHOTO.status).json(NO_PHOTO.body);
 
@@ -282,7 +326,26 @@ router.post('/orders/:id/xray/decoration-steps', requireAuth, requireCapability(
         if (!guide || !Array.isArray(guide.steps) || guide.steps.length === 0) {
           return { keep: false, note: 'not a modelled decoration', value: { guide, model } };
         }
-        return { value: { guide, model }, provider: 'openai', model, promptVersion: STEPS_PROMPT_VERSION, calls: [{ model, usage }] };
+
+        // The stage grid. Best-effort ON PURPOSE: the words are the product and the pictures are
+        // the improvement, so an image failure must not throw away steps the baker is about to be
+        // charged for. A guide with no picture is a worse guide; a 500 after a successful text
+        // generation is a wasted credit.
+        const stages = await generateStageImage({
+          photoKey: photo.key, bbox, orderId: order.id, key, title: guide.title || label,
+          stepCount: guide.steps.length,
+        }).catch(err => {
+          console.warn('[xray] stage image failed, steps kept:', err?.message);
+          return null;
+        });
+
+        return {
+          value: { guide, model, stagesKey: stages?.key ?? null },
+          provider: 'openai', model, promptVersion: STEPS_PROMPT_VERSION,
+          // BOTH calls. The image is the expensive half and the whole question of whether this
+          // fits inside the current price is settled by measuring it, not by estimating it.
+          calls: [{ model, usage }, ...(stages ? [{ model: stages.model, usage: stages.usage }] : [])],
+        };
       },
     );
 
@@ -298,6 +361,8 @@ router.post('/orders/:id/xray/decoration-steps', requireAuth, requireCapability(
 
     const value = {
       guide:          out.value.guide,
+      // R2 KEY, never a URL — the public base is deployment config and would rot every stored row.
+      stages_key:     out.value.stagesKey ?? null,
       label,
       model:          out.value.model ?? null,
       prompt_version: STEPS_PROMPT_VERSION,

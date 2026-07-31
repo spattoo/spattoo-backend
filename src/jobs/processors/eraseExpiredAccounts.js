@@ -115,6 +115,38 @@ async function eraseUploads(bakerId) {
   if (delErr) throw new Error(`upload row delete failed: ${delErr.message}`);
 }
 
+// X-Ray stage images: the generated build-sequence picture for one decoration on one order.
+//
+// These are NOT in baker_uploads — they are written by the API, not uploaded by anyone, so the
+// upload sweep above cannot see them. They are derived from the CUSTOMER's reference photo, which
+// makes them personal data by provenance, and an erasure that leaves them behind leaves a picture
+// of the customer's cake in a bucket after the account is gone.
+//
+// The key lives in orders.xray_spec.decorations[<key>].stages_key. Deleting the object is enough:
+// the row itself goes when the order does, and a dangling key on a deleted order harms nobody.
+async function eraseXrayStageImages(bakerId) {
+  const { data: orders, error } = await supabase
+    .from('orders')
+    .select('id, xray_spec')
+    .eq('baker_id', bakerId)
+    .not('xray_spec', 'is', null);
+  if (error) throw new Error(`stage image query failed: ${error.message}`);
+
+  for (const o of orders ?? []) {
+    const decorations = o?.xray_spec?.decorations ?? {};
+    for (const entry of Object.values(decorations)) {
+      const key = entry?.stages_key;
+      if (!key) continue;
+      // Isolated per object, like the uploads above: one already-gone key must not abort the rest.
+      try {
+        await deleteObject(key);
+      } catch (e) {
+        console.error(`[erase-accounts] R2 delete ${key} failed:`, e.message);
+      }
+    }
+  }
+}
+
 async function eraseOneBaker(bakerId) {
   // Capture auth logins BEFORE anonymizing, so we can delete them (removes email/phone from
   // auth.users too — that PII lives outside our tables).
@@ -138,6 +170,7 @@ async function eraseOneBaker(bakerId) {
   // leave the promoted cake_elements row live in every customer's picker — a deletion that did not
   // delete. Promotion links back (source_upload_id) precisely so erasure can follow it.
   await eraseUploads(bakerId);
+  await eraseXrayStageImages(bakerId);
 
   // Delete the Supabase Auth users (blocks login + erases their auth-side PII).
   for (const u of appusers ?? []) {
