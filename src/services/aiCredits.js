@@ -21,6 +21,7 @@ export const AI_ACTION = {
   PHOTO_TO_CAKE_DESIGN:   'photo_to_cake_design',
   ENQUIRY_TO_DRAFT_ORDER: 'enquiry_to_draft_order',
   STICKER_GENERATE:       'sticker_generate',
+  ELEMENT_BUILD_GUIDE:    'element_build_guide',
 };
 
 // 402 rather than 403: the baker is authenticated and entitled to the FEATURE, they have just

@@ -72,7 +72,8 @@ insert into credit_costs (action_key, credits, label, is_active) values
   ('photo_to_xray_estimate', 15, 'Build guide',  true),
   ('photo_to_cake_design',   20, 'Cake design',  false),   -- not built
   ('enquiry_to_draft_order',  2, 'Draft order',  false),   -- not built; plans/enquiry-parser.md
-  ('sticker_generate',       60, 'Decoration',   false)    -- not built; Fondant Studio v1
+  ('sticker_generate',       60, 'Decoration',   false),   -- not built; Fondant Studio v1
+  ('element_build_guide',    20, 'Build guide',  true)     -- one per decoration, then free forever
 on conflict (action_key) do update
   set credits = excluded.credits, label = excluded.label,
       is_active = excluded.is_active, updated_at = now();

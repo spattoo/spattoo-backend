@@ -3,11 +3,16 @@ import { serverError } from '../lib/httpError.js';
 import { supabase } from '../services/supabase.js';
 import { requireAuth } from '../middleware/auth.js';
 import { requireCapability } from '../middleware/rbac.js';
-import { suggestCraftGuide } from '../services/openai.js';
+import { suggestCraftGuide, suggestBuildGuide } from '../services/openai.js';
+import { withAiCredits, AI_ACTION, InsufficientCreditsError } from '../services/aiCredits.js';
+import { assertBakerOwns } from '../lib/tenantScope.js';
 
 const router = Router();
 
-const CRAFT_FIELDS = 'element_id, nozzle_recs, consistency, technique, updated_at';
+// Bump when the build-guide prompt changes in a way that could move the output.
+const PROMPT_VERSION = 'build-guide-v1';
+
+const CRAFT_FIELDS = 'element_id, guide_type, nozzle_recs, consistency, technique, guide, status, model, prompt_version, generated_at, updated_at';
 const CONSISTENCIES = ['stiff', 'medium', 'soft'];
 const RANKS = ['primary', 'secondary', 'alternative'];
 
@@ -184,6 +189,92 @@ router.put('/admin/craft-guide/:elementId', requireAuth, requireCapability('cata
 
     res.json(data);
   } catch (err) {
+    serverError(req, res, err);
+  }
+});
+
+// ── POST /api/elements/:id/build-guide ────────────────────────────────────────
+// Generate a step-by-step build guide for ONE decoration, and keep it on the ELEMENT.
+//
+// Why per-element and not per-order: a lion topper is made the same way every time. Storing the
+// guide on the order would charge a baker again for every cake that uses it; storing it on the
+// element charges once and every future cake gets it free. The colours that DO vary per cake come
+// from the design snapshot at render time, which is why the guide uses role tokens rather than
+// colour names.
+//
+// GATED ON order:manage — the BAKER-only capability — and deliberately NOT on element:manage.
+// The guard follows WHO PAYS, not what the object is. `element:manage` is about editing a
+// decoration; this spends money. Someone will eventually notice the route is about an element and
+// try to "correct" the guard: do not. (Customers hold only design:create + order:place today, so
+// they cannot reach this either way — but the rule should not depend on that staying true.)
+router.post('/elements/:id/build-guide', requireAuth, requireCapability('order:manage'), async (req, res) => {
+  try {
+    if (!req.bakerId) return res.status(403).json({ error: 'Not a baker account' });
+
+    // A baker may generate a guide for their OWN element, or for a global library one (baker_id
+    // null) they used on a cake. Never for another bakery's private decoration.
+    const { data: el } = await supabase
+      .from('cake_elements').select('id, name, description, image_url, baker_id').eq('id', req.params.id).maybeSingle();
+    if (!el) return res.status(404).json({ error: 'Element not found' });
+    if (el.baker_id && el.baker_id !== req.bakerId) {
+      return res.status(404).json({ error: 'Element not found' });   // not "forbidden" — do not confirm it exists
+    }
+    if (!el.image_url) {
+      return res.status(400).json({ error: 'This decoration has no image to read.', code: 'NO_ELEMENT_IMAGE' });
+    }
+
+    // Already generated → hand it back, charge nothing. This is the amortisation: the second cake
+    // using this decoration, and every one after, is free.
+    const { data: existing } = await supabase
+      .from('element_craft_guide').select(CRAFT_FIELDS)
+      .eq('element_id', el.id).eq('guide_type', 'fondant_figure').maybeSingle();
+    if (existing) return res.json({ ok: true, reused: true, guide: existing });
+
+    const out = await withAiCredits(
+      {
+        bakerId: req.bakerId,
+        action:  AI_ACTION.ELEMENT_BUILD_GUIDE,
+        idempotencyKey: `build-guide:${el.id}`,
+      },
+      async () => {
+        const { guide, usage, model } = await suggestBuildGuide({
+          imageUrl: el.image_url, name: el.name, description: el.description,
+        });
+        // No steps means the model judged this not hand-modelled (a printed decal, an acrylic
+        // topper). That is a USEFUL answer, not a failure — but it is not worth a credit, and
+        // charging for "we looked and there is nothing to make" would feel like a con.
+        if (!guide || !Array.isArray(guide.steps) || guide.steps.length === 0) {
+          return { keep: false, note: 'not a modelled decoration', value: { guide, model } };
+        }
+        return { value: { guide, model }, provider: 'openai', model, promptVersion: PROMPT_VERSION, calls: [{ model, usage }] };
+      },
+    );
+
+    if (!out.value?.guide) {
+      return res.status(422).json({ error: "We couldn't read that decoration.", code: 'GUIDE_FAILED' });
+    }
+    const guide = out.value.guide;
+    if (!Array.isArray(guide.steps) || guide.steps.length === 0) {
+      return res.status(200).json({ ok: true, notModelled: true, guide, charged: false });
+    }
+
+    // status stays 'draft' forever for a baker-generated guide: admin review cannot scale to every
+    // baker's private decorations, so the sheet must show it as unreviewed rather than pretend a
+    // model guess carries the same weight as a curated craft guide.
+    const row = {
+      element_id: el.id, guide_type: 'fondant_figure', guide,
+      source_image_url: el.image_url, model: out.value.model ?? null,
+      prompt_version: PROMPT_VERSION, status: 'draft',
+      baker_id: req.bakerId, generated_at: new Date().toISOString(),
+    };
+    const { error: upErr } = await supabase.from('element_craft_guide').upsert(row, { onConflict: 'element_id,guide_type' });
+    if (upErr) throw upErr;
+
+    res.json({ ok: true, reused: false, guide: row });
+  } catch (err) {
+    if (err instanceof InsufficientCreditsError) {
+      return res.status(err.status).json({ error: err.message, code: err.code, ...err.detail });
+    }
     serverError(req, res, err);
   }
 });

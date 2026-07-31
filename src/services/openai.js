@@ -468,3 +468,86 @@ export async function generateDecorationImage(referenceBuffer, prompt, size = '1
   if (!b64) throw new Error(`${config.openai.imageModel} returned no image data`);
   return Buffer.from(b64, 'base64');
 }
+
+// Read a decoration's image and write a step-by-step BUILD GUIDE for making it by hand — the
+// fondant_figure guide type from FONDANT_BUILD_GUIDE_PLAN.md, generated for a baker's own uploaded
+// decoration (which is always a 2D image; 3D elements are admin-authored).
+//
+// GROUNDED THE SAME WAY suggestCraftGuide IS: the model may not invent a technique it cannot see.
+// It is describing ONE object in a picture, not designing a cake.
+//
+// STEPS USE ROLE TOKENS, never literal colours — "{body}", "{mane}". The actual colours come from
+// the order's design at render time, so ONE guide serves every colour variant of the same
+// decoration. A guide that said "roll white fondant" would be wrong the first time a baker used
+// their lion in brown.
+export async function suggestBuildGuide({ imageUrl, name, description }) {
+  const prompt = `You are a master sugar-artist writing a build guide for ONE decoration, so another baker can make it by hand.
+
+Decoration name: ${name || '(unnamed)'}
+Keywords: ${description || '(none)'}
+
+Look ONLY at the object in the image. Do not describe a cake, a board, or a background.
+
+Return ONLY valid JSON, no explanation:
+{
+  "title": "<short name of the thing being made>",
+  "medium": "<fondant|gumpaste|modelling_chocolate|other>",
+  "roles": ["<lowercase_token>", …],
+  "materials": [{ "role": "<token>", "label": "<what to prepare, e.g. 'fondant (head)'>" }],
+  "parts":     [{ "name": "<part>", "note": "<which roles it uses, e.g. 'outer {body}, inner {inner_ear}'>" }],
+  "steps": [
+    { "n": 1, "title": "<short step title>",
+      "instructions": ["<one imperative sentence>", …],
+      "tools": ["<real modelling tool>", …] }
+  ],
+  "tips":     ["<short practical tip>", …],
+  "set_time": "<how long it needs to firm up, e.g. '2–4 hours'>"
+}
+
+Rules:
+- ROLE TOKENS, NEVER COLOUR NAMES. A role is a recolourable area of the object ("body", "mane",
+  "inner_ear"). Write "{body}" inside instructions where the material goes. NEVER write "white
+  fondant" or "pink" — the same decoration gets made in other colours, and a colour baked into the
+  text would be wrong every other time.
+- Steps in the order a hand actually works: bulk shapes first, fine detail and attachment last.
+- 4 to 12 steps. Fewer, meatier steps beat many trivial ones.
+- Tools must be real and namable (Ball Tool, Dresden Tool, Rolling Pin, Brush (Water), Craft Knife).
+- If the object is clearly NOT hand-modelled — a printed image, a flat decal, an acrylic topper —
+  return "medium": "other", an EMPTY steps array, and one tip saying it looks printed or
+  pre-made rather than modelled. Do not invent a modelling process for something nobody models.`;
+
+  const payload = JSON.stringify({
+    model: 'gpt-4o',
+    max_tokens: 1600,
+    messages: [{
+      role: 'user',
+      content: [
+        { type: 'image_url', image_url: { url: imageUrl, detail: 'high' } },
+        { type: 'text', text: prompt },
+      ],
+    }],
+  });
+
+  // Same 429 backoff as the other vision calls.
+  let res;
+  for (let attempt = 0; ; attempt++) {
+    res = await fetch('https://api.openai.com/v1/chat/completions', {
+      method: 'POST',
+      headers: { 'Authorization': `Bearer ${config.openai.apiKey}`, 'Content-Type': 'application/json' },
+      body: payload,
+    });
+    if (res.ok) break;
+    const text = await res.text();
+    if (res.status === 429 && attempt < 6) {
+      const m = text.match(/try again in ([\d.]+)s/);
+      const waitMs = m ? Math.ceil(parseFloat(m[1]) * 1000) + 750 : 6000 * (attempt + 1);
+      await sleep(waitMs);
+      continue;
+    }
+    throw new Error(`GPT-4o build-guide failed: ${text}`);
+  }
+  const data = await res.json();
+  const raw  = data.choices[0].message.content.trim();
+  const json = raw.replace(/^```[a-z]*\n?/i, '').replace(/\n?```$/i, '').trim();
+  return { guide: JSON.parse(json), usage: data.usage ?? null, model: data.model ?? 'gpt-4o' };
+}
