@@ -785,6 +785,26 @@ router.post('/customer/orders/:id/message', requireAuth, async (req, res) => {
 });
 
 
+// Has the reference photo changed since we read it?
+//
+// A build guide is generated once and cached on the order (xray_spec). If the baker then replaces
+// the reference photo — uploads a clearer one, or the customer sends a different cake — the cached
+// guide silently describes the OLD picture. Nothing about the sheet would look wrong; it would just
+// be about a different cake.
+//
+// Costs nothing to detect: design_thumbnail_url is the primary reference photo's key (mirrored at
+// create/edit time — see supabase/order_reference_photos.sql), and xray_spec_meta.source_photo_key
+// records which photo we actually read. Both are bare keys here, before toPublicUrl expands one of
+// them, so it is a string comparison rather than a join.
+//
+// Only ever true for photo orders: a designed order has no xray_spec, so the check short-circuits
+// before design_thumbnail_url (which for those is a 3D render, not a photo) is ever compared.
+function xraySpecStale(o) {
+  const readKey = o?.xray_spec_meta?.source_photo_key;
+  if (!o?.xray_spec || !readKey || !o?.design_thumbnail_url) return false;
+  return readKey !== o.design_thumbnail_url;
+}
+
 // ── GET /api/orders ───────────────────────────────────────────────────────────
 // Baker-facing: list orders for the authenticated baker's account.
 // Query params: status, from, to (ISO dates)
@@ -830,7 +850,12 @@ router.get('/orders', requireAuth, requireCapability('order:view'), async (req, 
     res.json(data.map(o => {
       const { xray_spec, ...rest } = o;
       const row = o.xray_spec_edited ? rest : o;
-      return { ...withDietaryKeys(withStatusKey(row)), design_thumbnail_url: toPublicUrl(o.design_thumbnail_url), quote_stale: quoteStale(o) };
+      return {
+        ...withDietaryKeys(withStatusKey(row)),
+        design_thumbnail_url: toPublicUrl(o.design_thumbnail_url),
+        xray_spec_stale: xraySpecStale(o),
+        quote_stale: quoteStale(o),
+      };
     }));
   } catch (err) {
     serverError(req, res, err);
@@ -904,7 +929,7 @@ router.get('/orders/:id', requireAuth, requireCapability('order:view'), async (r
       ` });
     if (!order) return res.status(404).json({ error: 'Order not found' });
 
-    res.json({ ...withDietaryKeys(withStatusKey(order)), quote_stale: quoteStale(order) });
+    res.json({ ...withDietaryKeys(withStatusKey(order)), xray_spec_stale: xraySpecStale(order), quote_stale: quoteStale(order) });
   } catch (err) {
     serverError(req, res, err);
   }
