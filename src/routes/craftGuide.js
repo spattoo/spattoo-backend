@@ -277,13 +277,21 @@ router.post('/elements/:id/build-guide', requireAuth, requireCapability('order:m
       },
     );
 
+    // Discarded, so nothing was charged. Two very different reasons, and the baker must be able
+    // to tell them apart: the model looked and judged this piped/printed rather than modelled
+    // (an ANSWER — a piped rosette's real instruction is the nozzle section above), or it gave
+    // us nothing usable (a FAILURE). Collapsing both into "we couldn't read that decoration"
+    // made the feature look broken on exactly the decorations it handled correctly.
+    if (out.discarded) {
+      if (out.discardedValue?.guide) {
+        return res.status(200).json({ ok: true, notModelled: true, guide: out.discardedValue.guide, charged: false });
+      }
+      return res.status(422).json({ error: "We couldn't read that decoration.", code: 'GUIDE_FAILED' });
+    }
     if (!out.value?.guide) {
       return res.status(422).json({ error: "We couldn't read that decoration.", code: 'GUIDE_FAILED' });
     }
     const guide = out.value.guide;
-    if (!Array.isArray(guide.steps) || guide.steps.length === 0) {
-      return res.status(200).json({ ok: true, notModelled: true, guide, charged: false });
-    }
 
     // status stays 'draft' forever for a baker-generated guide: admin review cannot scale to every
     // baker's private decorations, so the sheet must show it as unreviewed rather than pretend a

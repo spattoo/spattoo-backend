@@ -316,7 +316,12 @@ export async function withAiCredits(opts, run) {
 
   if (!out || out.keep === false) {
     await releaseCredits(reservation.transactionId, out?.note ?? 'discarded').catch(() => {});
-    return { replay: false, value: null, reservation };
+    // `value` stays null — it means "what the baker was charged for", and nothing was charged.
+    // But a discarded result is not always a failure: "we looked, and this is piped rather than
+    // modelled" is a real answer worth showing, just not worth billing. Handing it back under a
+    // separate name lets the caller tell those apart, instead of every discard surfacing as
+    // "we couldn't read that".
+    return { replay: false, value: null, discarded: true, discardedValue: out?.value ?? null, reservation };
   }
 
   await commitCredits(reservation.transactionId, out);
