@@ -167,6 +167,12 @@ export function buildXraySpec(analysis, matched) {
           id:    m.id,               // the field harvestPiping() reads → craft guide lookup
           name:  m.name ?? 'Piping',
           color: colour ?? '#ffffff',
+          // Where this border sits IN THE PHOTO. A designed order lands its leader lines by
+          // rebuilding the thumbnail's camera and projecting a 3D anchor (xrayProject.js), which
+          // works only because that thumbnail is our own render. A photo has no camera to rebuild
+          // — but the model already told us where it saw this, and a box on the image is the same
+          // answer arrived at from the other end.
+          bbox:  bbox(d.bbox),
         });
         return;
       }
