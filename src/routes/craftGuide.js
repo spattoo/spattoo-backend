@@ -16,6 +16,25 @@ const router = Router();
 // Bump when the build-guide prompt changes in a way that could move the output.
 const PROMPT_VERSION = 'build-guide-v1';
 
+// The formats OpenAI's vision endpoint accepts. Anything else comes back as a hard
+// invalid_image_format, not a degraded answer.
+const VISION_FORMATS = /\.(png|jpe?g|gif|webp)(\?|$)/i;
+
+// Which stored key do we hand the model?
+//
+// NOT image_url, which is the SOURCE asset: for a library element that is frequently a .glb or an
+// .svg, and OpenAI rejects both outright. thumbnail_url and thumb_key are always raster — written
+// by services/thumbnails.js as WebP with an image/webp content-type — which is why autoTag, the
+// one OpenAI-by-URL path already proven in production, feeds the thumbnail rather than the source.
+//
+// Ordered best-detail-first: the source when it happens to be a usable raster (a baker's own
+// uploaded decoration is a PNG, and it is sharper than any thumbnail we derive), then the master
+// thumbnail, then the size-suffixed one. Extension-checked rather than assumed, so a new asset
+// type added later degrades to the thumbnail instead of failing at the provider.
+function visionImageKey(el) {
+  return [el.image_url, el.thumbnail_url, el.thumb_key].find(k => k && VISION_FORMATS.test(k)) ?? null;
+}
+
 const CRAFT_FIELDS = 'element_id, guide_type, nozzle_recs, consistency, technique, guide, status, model, prompt_version, generated_at, updated_at';
 const CONSISTENCIES = ['stiff', 'medium', 'soft'];
 const RANKS = ['primary', 'secondary', 'alternative'];
@@ -218,12 +237,16 @@ router.post('/elements/:id/build-guide', requireAuth, requireCapability('order:m
     // A baker may generate a guide for their OWN element, or for a global library one (baker_id
     // null) they used on a cake. Never for another bakery's private decoration.
     const { data: el } = await supabase
-      .from('cake_elements').select('id, name, description, image_url, baker_id').eq('id', req.params.id).maybeSingle();
+      .from('cake_elements').select('id, name, description, image_url, thumbnail_url, thumb_key, baker_id')
+      .eq('id', req.params.id).maybeSingle();
     if (!el) return res.status(404).json({ error: 'Element not found' });
     if (el.baker_id && el.baker_id !== req.bakerId) {
       return res.status(404).json({ error: 'Element not found' });   // not "forbidden" — do not confirm it exists
     }
-    if (!el.image_url) {
+    // A 3D element whose thumbnails never rendered has nothing a vision model can read. Say so as
+    // a 400 rather than letting the provider reject it as a 500 the baker cannot act on.
+    const imageKey = visionImageKey(el);
+    if (!imageKey) {
       return res.status(400).json({ error: 'This decoration has no image to read.', code: 'NO_ELEMENT_IMAGE' });
     }
 
@@ -242,7 +265,7 @@ router.post('/elements/:id/build-guide', requireAuth, requireCapability('order:m
       },
       async () => {
         const { guide, usage, model } = await suggestBuildGuide({
-          imageUrl: toPublicUrl(el.image_url), name: el.name, description: el.description,
+          imageUrl: toPublicUrl(imageKey), name: el.name, description: el.description,
         });
         // No steps means the model judged this not hand-modelled (a printed decal, an acrylic
         // topper). That is a USEFUL answer, not a failure — but it is not worth a credit, and
@@ -270,7 +293,7 @@ router.post('/elements/:id/build-guide', requireAuth, requireCapability('order:m
     // change and would rot every stored row with it. Read it back through toPublicUrl().
     const row = {
       element_id: el.id, guide_type: 'fondant_figure', guide,
-      source_image_url: el.image_url, model: out.value.model ?? null,
+      source_image_url: imageKey, model: out.value.model ?? null,
       prompt_version: PROMPT_VERSION, status: 'draft',
       baker_id: req.bakerId, generated_at: new Date().toISOString(),
     };
