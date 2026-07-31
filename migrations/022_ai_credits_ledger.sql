@@ -64,7 +64,8 @@ create table if not exists credit_costs (
 -- actions sharing a label render as the same job at two different prices and read as a bug. That
 -- happened: photo_to_xray_estimate and element_build_guide were both "Build guide" until the
 -- second was renamed to "Decoration guide" — one is the whole-cake sheet, the other is how to make
--- a single decoration. The billing screen
+-- a single decoration. Migration 026 now ENFORCES this with a partial unique index, so the rule no
+-- longer depends on anyone reading this paragraph. The billing screen
 -- renders it as "14 build guides left this month" — it pluralises by appending "s", so a label
 -- like "Build guide from a photo" would read "build guide from a photos". Keep these short and
 -- countable.
