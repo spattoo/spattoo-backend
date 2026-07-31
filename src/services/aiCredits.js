@@ -53,7 +53,41 @@ const one = (data) => (Array.isArray(data) ? data[0] ?? null : data);
 async function resolveAllowance(bakerId) {
   const e = await getEntitlements(bakerId);
   const raw = e.ent?.ai_credits_per_month;
-  return { allowance: raw === null ? null : Number(raw) || 0, active: e.active };
+  return {
+    allowance: raw === null ? null : Number(raw) || 0,
+    active: e.active,
+    canBuy: e.ent?.can_buy_credits === true,
+  };
+}
+
+// When the monthly allowance next refreshes: the start of the next calendar month, IST — the same
+// boundary the ledger meters on (migrations/022). Returned to the client because the copy that
+// matters says a DATE ("they refresh on 1 September"), not "next cycle", which makes someone go
+// and check a calendar.
+export function nextAllowanceReset() {
+  const IST = 5.5 * 3600 * 1000;
+  const nowIst = new Date(Date.now() + IST);
+  const firstOfNextIst = Date.UTC(nowIst.getUTCFullYear(), nowIst.getUTCMonth() + 1, 1);
+  return new Date(firstOfNextIst - IST).toISOString();
+}
+
+// ── The stock ceiling ────────────────────────────────────────────────────────────────────────────
+// A baker may hold at most ONE MONTH'S ALLOWANCE in purchased credits, on top of the monthly ones.
+//
+// Why a ceiling exists at all: credits never expire, so without one a Blaze baker could buy a
+// year's worth in an afternoon, downgrade to Flame, and run Blaze-level usage at Flame's price.
+// can_buy_credits alone does not stop that — it controls WHO may buy, not HOW MUCH they may
+// accumulate before doing something else with their subscription.
+//
+// Why it is derived from the allowance rather than a number of its own: it self-scales per plan
+// (Blaze 800, Forge 2000), there is nothing extra to seed or keep in sync, and it states a clean
+// invariant — you can never bank more than about a month ahead. That caps the arbitrage at roughly
+// one month of discounted usage, which is not worth anyone's trouble.
+//
+// The trade we accept: a Blaze baker genuinely preparing for a peak month cannot pre-buy three
+// months of credits. Their allowance renews monthly and they can top up again as it drains.
+export function creditCeiling(allowance) {
+  return allowance === null ? null : allowance;   // null = unlimited plan; nothing to stockpile for
 }
 
 // ── Balance ─────────────────────────────────────────────────────────────────────────
@@ -61,7 +95,7 @@ async function resolveAllowance(bakerId) {
 // reserve path uses, so the figure shown to the baker and the figure the gate enforces cannot
 // drift apart.
 export async function getAiCreditBalance(bakerId) {
-  const { allowance, active } = await resolveAllowance(bakerId);
+  const { allowance, active, canBuy } = await resolveAllowance(bakerId);
   const { data, error } = await supabase.rpc('ai_credit_balance', {
     p_baker_id:  bakerId,
     p_allowance: allowance,
@@ -70,6 +104,9 @@ export async function getAiCreditBalance(bakerId) {
   const row = one(data) ?? { allowance_used: 0, allowance_left: 0, wallet_balance: 0 };
   return {
     active,
+    canBuy,
+    resetsOn:      nextAllowanceReset(),
+    ceiling:       creditCeiling(allowance),
     unlimited:     allowance === null,
     allowance,
     allowanceUsed: row.allowance_used  ?? 0,
@@ -149,7 +186,7 @@ export async function creditPurchase({ bakerId, packKey, razorpayPaymentId, note
 // replay:true and charges nothing further. The caller MUST short-circuit on replay — this
 // service cannot return the previous result, only the previous accounting.
 export async function reserveCredits({ bakerId, action, orderId = null, idempotencyKey = null, note = null }) {
-  const { allowance } = await resolveAllowance(bakerId);
+  const { allowance, canBuy } = await resolveAllowance(bakerId);
 
   const { data, error } = await supabase.rpc('reserve_ai_credits', {
     p_baker_id:        bakerId,
@@ -166,10 +203,15 @@ export async function reserveCredits({ bakerId, action, orderId = null, idempote
 
   if (!row.ok) {
     if (row.reason === 'UNKNOWN_ACTION') throw new UnknownAiActionError(action);
+    // The client renders a different sentence for a baker who can top up than for one who must
+    // wait, so the server — which already knows — says which. Cheaper and more reliable than
+    // making the launcher fetch entitlements to find out.
     throw new InsufficientCreditsError({
       cost:          row.cost,
       allowanceLeft: row.from_allowance,
       walletBalance: row.from_wallet,
+      canTopUp:      canBuy,
+      resetsOn:      nextAllowanceReset(),
     });
   }
 

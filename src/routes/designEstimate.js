@@ -166,6 +166,8 @@ router.post('/orders/:id/design-estimate', requireAuth, requireCapability('order
     // Out of credits is an expected outcome with its own status (402) and a top-up prompt on the
     // other end — not a 500. Everything else goes through the non-leaky shared responder.
     if (err instanceof InsufficientCreditsError) {
+      // detail carries canTopUp + resetsOn so the client can say the right thing (a Flame baker
+      // must wait; a Blaze baker can top up) without a second round trip for entitlements.
       return res.status(err.status).json({ error: err.message, code: err.code, ...err.detail });
     }
     serverError(req, res, err);

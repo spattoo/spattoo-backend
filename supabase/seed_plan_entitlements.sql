@@ -31,7 +31,7 @@ update subscription_plans set features = jsonb_build_object(
   'storefront', true, 'custom_branding', true, 'custom_templates', false,
   'ai_background_removal', false, 'whatsapp_notifications', false, 'xray_reports', false,
   'max_orders_total', null, 'max_team_members', 1, 'max_saved_templates', 3,
-  'ai_credits_per_month', 200,
+  'ai_credits_per_month', 200, 'can_buy_credits', false,
   'trial_days', 30
 ) where name = 'spark';
 
@@ -39,19 +39,19 @@ update subscription_plans set features = jsonb_build_object(
   'storefront', true, 'custom_branding', true, 'custom_templates', false,
   'ai_background_removal', false, 'whatsapp_notifications', false, 'xray_reports', false,
   'max_orders_total', null, 'max_team_members', 2, 'max_saved_templates', 30,
-  'ai_credits_per_month', 200
+  'ai_credits_per_month', 200, 'can_buy_credits', false
 ) where name = 'flame';
 
 update subscription_plans set features = jsonb_build_object(
   'storefront', true, 'custom_branding', true, 'custom_templates', true,
   'ai_background_removal', true, 'whatsapp_notifications', false, 'xray_reports', true,
   'max_orders_total', null, 'max_team_members', 4, 'max_saved_templates', null,
-  'ai_credits_per_month', 800
+  'ai_credits_per_month', 800, 'can_buy_credits', true
 ) where name = 'blaze';
 
 update subscription_plans set features = jsonb_build_object(
   'storefront', true, 'custom_branding', true, 'custom_templates', true,
   'ai_background_removal', true, 'whatsapp_notifications', false, 'xray_reports', true,
   'max_orders_total', null, 'max_team_members', 10, 'max_saved_templates', null,
-  'ai_credits_per_month', 2000
+  'ai_credits_per_month', 2000, 'can_buy_credits', true
 ) where name = 'forge';

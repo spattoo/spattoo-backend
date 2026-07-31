@@ -71,20 +71,40 @@ router.get('/baker/ai-credits/packs', requireAuth, resolvePrincipal, async (req,
   try {
     if (!req.bakerId) return res.status(403).json({ error: 'Not a baker account' });
 
-    const [packs, costs] = await Promise.all([listCreditPacks(), listAiCreditCosts()]);
+    const [packs, costs, balance] = await Promise.all([
+      listCreditPacks(), listAiCreditCosts(), getAiCreditBalance(req.bakerId),
+    ]);
+
+    // TWO independent gates, and the response reports them separately so the UI can say which
+    // one is in the way — "your plan doesn't include top-ups" and "you're already well stocked"
+    // are different sentences and lead to different actions.
+    //
+    //   canBuy  — the PLAN may buy at all (can_buy_credits). Flame's wall is a real wall.
+    //   blocked — this particular pack would breach the stock ceiling. Per-pack, so a small pack
+    //             stays available when a large one does not, rather than refusing everything.
+    const ceiling = balance.ceiling;
+    const wallet  = balance.walletBalance ?? 0;
+    const rows = packs.map(p => ({
+      packKey:    p.pack_key,
+      label:      p.label,
+      credits:    p.credits,
+      pricePaise: p.price_paise,
+      blocked:    ceiling != null && (wallet + p.credits) > ceiling,
+      buys: costs.map(c => ({
+        actionKey: c.action_key,
+        label:     c.label,
+        count:     Math.floor(p.credits / c.credits),
+      })),
+    }));
 
     res.json({
-      packs: packs.map(p => ({
-        packKey:    p.pack_key,
-        label:      p.label,
-        credits:    p.credits,
-        pricePaise: p.price_paise,
-        buys: costs.map(c => ({
-          actionKey: c.action_key,
-          label:     c.label,
-          count:     Math.floor(p.credits / c.credits),
-        })),
-      })),
+      canBuy:  balance.canBuy,
+      // 'plan' → the tier cannot buy · 'stocked' → it can, but everything would breach the ceiling
+      reason:  !balance.canBuy ? 'plan' : (rows.every(r => r.blocked) ? 'stocked' : null),
+      ceiling,
+      walletBalance: wallet,
+      resetsOn: balance.resetsOn,
+      packs: rows,
     });
   } catch (err) {
     serverError(req, res, err);
@@ -116,6 +136,25 @@ router.post('/baker/ai-credits/purchase', requireAuth, requireCapability('billin
 
     const pack = await getCreditPack(packKey);
     if (!pack) return res.status(404).json({ error: 'Unknown or inactive pack' });
+
+    // Both gates enforced HERE, not only in the UI. A disabled button is a courtesy; this is the
+    // rule. Checked before a Razorpay order exists, so a refusal never leaves a payable order.
+    const balance = await getAiCreditBalance(req.bakerId);
+    if (!balance.canBuy) {
+      return res.status(403).json({
+        error: 'Your plan does not include credit top-ups.',
+        code:  'TOPUP_NOT_AVAILABLE',
+        resetsOn: balance.resetsOn,
+      });
+    }
+    if (balance.ceiling != null && (balance.walletBalance ?? 0) + pack.credits > balance.ceiling) {
+      return res.status(409).json({
+        error: `You can hold up to ${balance.ceiling} top-up credits. Add more once your balance drops.`,
+        code:  'TOPUP_LIMIT_REACHED',
+        ceiling: balance.ceiling,
+        walletBalance: balance.walletBalance ?? 0,
+      });
+    }
 
     const order = await razorpay().orders.create({
       amount:   pack.price_paise,          // from the DB, never the request

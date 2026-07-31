@@ -41,6 +41,22 @@ export const ENTITLEMENTS = {
   // reset. fallback 0 (the safe floor) means a lapsed subscription can spend nothing; null on a
   // plan means unlimited, per the int convention above.
   ai_credits_per_month:   { type: 'int',  fallback: 0, label: 'AI credits / month' },
+  // Can this plan BUY more credits when the monthly allowance runs out?
+  //
+  // This is the Flame→Blaze lever, and it is the only thing that stops the two plans collapsing
+  // into "same features, different amount of credits". Flame's wall is a real wall — the credits
+  // refresh next month and that is the answer; Blaze's is a speed bump it can pay past. That
+  // difference is felt only by bakers who actually run out, which is exactly the volume segment
+  // Blaze is for, so the lever aims itself.
+  //
+  // It gates BUYING, never SPENDING. A Blaze baker who tops up and later downgrades keeps every
+  // credit they paid for — those are prepaid money and they never expire. Confiscating them would
+  // be a trust problem far more expensive than the leak it closes.
+  //
+  // NOT sufficient on its own: without the stock ceiling in services/aiCredits.js a Blaze baker
+  // could buy a year of credits in one afternoon, downgrade to Flame, and run Blaze usage at
+  // Flame's price. The flag says WHO may buy; the ceiling says WHEN.
+  can_buy_credits:        { type: 'bool', fallback: false, label: 'Can buy AI credit top-ups' },
 };
 
 // Non-entitlement plan CONFIG that also lives in subscription_plans.features (read by
