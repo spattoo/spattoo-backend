@@ -59,7 +59,12 @@ create table if not exists credit_costs (
 -- (AI_CREDITS_PLAN.md §2.3). 1 credit ~= Rs.1 of RETAIL value. Replace with figures from a
 -- real provider invoice before charging anyone. Idempotent: re-running updates in place.
 --
--- `label` is a SHORT JOB NOUN, and that is a UI contract, not a description. The billing screen
+-- `label` is a SHORT JOB NOUN, and that is a UI contract, not a description. It must also be
+-- UNIQUE among ACTIVE rows: the billing card lists them as "{label} — {credits} credits", so two
+-- actions sharing a label render as the same job at two different prices and read as a bug. That
+-- happened: photo_to_xray_estimate and element_build_guide were both "Build guide" until the
+-- second was renamed to "Decoration guide" — one is the whole-cake sheet, the other is how to make
+-- a single decoration. The billing screen
 -- renders it as "14 build guides left this month" — it pluralises by appending "s", so a label
 -- like "Build guide from a photo" would read "build guide from a photos". Keep these short and
 -- countable.
@@ -73,7 +78,7 @@ insert into credit_costs (action_key, credits, label, is_active) values
   ('photo_to_cake_design',   20, 'Cake design',  false),   -- not built
   ('enquiry_to_draft_order',  2, 'Draft order',  false),   -- not built; plans/enquiry-parser.md
   ('sticker_generate',       60, 'Decoration',   false),   -- not built; Fondant Studio v1
-  ('element_build_guide',    20, 'Build guide',  true)     -- one per decoration, then free forever
+  ('element_build_guide',    20, 'Decoration guide', true)  -- one per decoration, then free forever
 on conflict (action_key) do update
   set credits = excluded.credits, label = excluded.label,
       is_active = excluded.is_active, updated_at = now();
