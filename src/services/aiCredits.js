@@ -204,6 +204,14 @@ export async function reserveCredits({ bakerId, action, orderId = null, idempote
 
   if (!row.ok) {
     if (row.reason === 'UNKNOWN_ACTION') throw new UnknownAiActionError(action);
+    // Only an actual shortfall may be reported as one. This used to fall through for EVERY
+    // ok=false, which is how a released reservation (pre-028: replayed as ok=false) told bakers
+    // they were out of credits — an error they could not act on, that topping up did not fix,
+    // and that pointed the investigation at the ledger instead of at the replay path. A reason
+    // we do not recognise is a bug in the RPC contract, and it should read like one.
+    if (row.reason !== 'INSUFFICIENT_CREDITS') {
+      throw new Error(`reserve_ai_credits refused '${action}' with unexpected reason: ${row.reason ?? 'null'}`);
+    }
     // The client renders a different sentence for a baker who can top up than for one who must
     // wait, so the server — which already knows — says which. Cheaper and more reliable than
     // making the launcher fetch entitlements to find out.
