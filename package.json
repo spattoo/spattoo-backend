@@ -14,8 +14,9 @@
     "check:admin-routes": "node scripts/check-admin-routes.mjs",
     "check:xray-spec": "node scripts/check-xray-spec.mjs",
     "check:ai-credit-pricing": "node scripts/check-ai-credit-pricing.mjs",
+    "check:dup": "jscpd src",
     "check:feature-docs": "node ../spattoo-docs/bin/check-feature-docs.mjs --repo spattoo-api",
-    "check": "npm run check:boot && npm run check:schema && npm run check:admin-routes && npm run check:xray-spec && npm run check:ai-credit-pricing && npm run check:feature-docs"
+    "check": "npm run check:boot && npm run check:schema && npm run check:admin-routes && npm run check:xray-spec && npm run check:ai-credit-pricing && npm run check:dup && npm run check:feature-docs"
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.1036.0",
@@ -33,6 +34,7 @@
     "sharp": "^0.35.2"
   },
   "devDependencies": {
+    "jscpd": "^5.0.14",
     "nodemon": "^3.1.0"
   }
 }

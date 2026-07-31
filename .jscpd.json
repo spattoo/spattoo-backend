@@ -1,0 +1,10 @@
+{
+  "//": "Copy-paste detector — a HARD GATE in `npm run check` (and the pre-commit hook). `threshold` is the max % of duplicated lines allowed; the build fails above it. RATCHET IT DOWN AGGRESSIVELY — keep it a hair above the current floor, never leave slack. The slack is what lets a clone slip in unnoticed. Set threshold ≈ floor + 0.04 so ANY new ~8-line clone trips it; when you pay a clone off, drop the threshold to the new floor in the SAME commit. STARTING FLOOR IS HIGH ON PURPOSE (6.28%) — this gate was added long after the code, so it starts by locking in 'no worse' rather than pretending the code is clean. It is not a target, it is a ceiling that only ever comes down. Measured at introduction: routes 8.14% (65 clones) · services 4.86% (7) · middleware 2.33% (1) · jobs 1.57% (1) · lib and constants 0.00%. NEXT, in rough order of value-per-risk: (1) services/openai.js — SIX near-identical fetch + 429-backoff blocks across identifyElements/suggestCraftGuide/validateCakeImage/analyzeCake/embedText/suggestDescription/suggestBuildGuide; a single postJson helper collapses all of them and it is pure plumbing, but it is also the code that spends money and has no test coverage, so it wants its own reviewed commit. (2) routes/* — the repeated `const { data: appUser } = await supabase.from('baker_appusers')…` tenant-resolution preamble, and the near-identical order photo-set handlers. A deliberate, reviewed clone goes between `// jscpd:ignore-start` … `// jscpd:ignore-end` so it doesn't count. History: 6.28% (gate introduced, no refactoring).",
+  "threshold": 6.32,
+  "minTokens": 50,
+  "minLines": 8,
+  "absolute": true,
+  "gitignore": true,
+  "ignore": ["**/*.test.js", "**/node_modules/**", "**/migrations/**", "**/supabase/**"],
+  "reporters": ["console"]
+}
