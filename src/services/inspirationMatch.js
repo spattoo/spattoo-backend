@@ -4,13 +4,15 @@ import { config } from '../config.js';
 import {
   TYPE_MAP, isMatchable, ZONE_ADJACENCY,
   normalizeZones, zoneCompat, bestZone, modeCompat, colourProximity, decorationQueryText,
+  isConfidentMatch,
 } from './inspirationMaps.js';
 
 // Score weights — semantic dominates, placement is the strong secondary signal.
 const W = { semantic: 0.40, zone: 0.25, type: 0.15, mode: 0.08, colour: 0.12 };
 const ZONE_FLOOR = 0.1;       // a placement-incompatible candidate (e.g. board-only for a top-rim deco) is dropped
-const CONFIDENCE_MIN = 0.35;  // best score below this → reported as a coverage gap (no confident match)
 const SHORTLIST = 20;
+// CONFIDENCE_MIN / SEMANTIC_MIN and the gate itself live in inspirationMaps.js with the other
+// knobs, so the policy can be tested without pulling in supabase and the whole config.
 
 function publicUrl(key) {
   if (!key) return null;
@@ -86,11 +88,17 @@ async function matchDecoration(deco, calls) {
     .filter(Boolean)
     .sort((a, b) => b.score - a.score);
   const best = scored[0] || null;
+  const confident = isConfidentMatch(best);
   return {
     decoration: { type: deco.type, subtype: deco.subtype, placement: deco.placement, rim_side: deco.rim_side, color_hex: deco.color_hex, count: deco.count, text: deco.text },
-    match: best && best.score >= CONFIDENCE_MIN ? best : null,
+    match: confident ? best : null,
     alternatives: scored.slice(1, 4),
     confidence: best ? +best.score.toFixed(3) : 0,
+    // The semantic term on its own, kept whether or not the match was accepted. Without it a
+    // rejection is unattributable — a composite of 0.58 looks like a near-miss when it may have
+    // been 0.58 of pure placement agreement — and SEMANTIC_MIN could only ever be re-argued
+    // rather than measured. This is the tuning signal.
+    semantic: best ? best.breakdown.semantic : 0,
   };
 }
 

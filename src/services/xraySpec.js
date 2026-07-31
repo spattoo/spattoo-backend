@@ -119,7 +119,11 @@ export function buildXraySpec(analysis, matched) {
       const d = item?.decoration ?? {};
       const m = item?.match;
 
-      // No confident match (matchAnalysis floors at 0.35). Recorded, never guessed at.
+      // No confident match. Recorded, never guessed at. TWO gates can produce this: the composite
+      // score (0.35) or the semantic floor (0.45) — and they mean different things. A low
+      // composite is "nothing in the library is close". A high composite with a low semantic is
+      // "something sits in the right place in the right colour, but is not this object" — which is
+      // exactly the bow that matched a fondant doll. Both scores travel so the two are separable.
       if (!m?.id) {
         unidentified.push({
           what:       [d.type, d.subtype].filter(Boolean).join(' ').replace(/_/g, ' ') || 'decoration',
@@ -127,6 +131,7 @@ export function buildXraySpec(analysis, matched) {
           placement:  d.placement ?? null,
           color:      hex(d.color_hex),
           confidence: item?.confidence ?? 0,
+          semantic:   item?.semantic ?? 0,
         });
         return;
       }
