@@ -49,6 +49,20 @@ const hex = (v) => {
   return m ? `#${m[1].toLowerCase()}` : null;
 };
 
+// [x, y, w, h] as fractions of the image. Rejected wholesale unless every number is present, in
+// range, and describes a box with area — a partially-valid box would crop to the wrong place, and
+// the sheet is better with no close-up than with a picture of the wrong decoration. A generous
+// pad is applied at crop time, not here: this stays the model's raw claim.
+const bbox = (v) => {
+  const a = Array.isArray(v) ? v : null;
+  if (!a || a.length !== 4) return null;
+  const [x, y, w, h] = a.map(Number);
+  if (![x, y, w, h].every(n => Number.isFinite(n))) return null;
+  if (w <= 0 || h <= 0) return null;
+  if (x < 0 || y < 0 || x + w > 1.0001 || y + h > 1.0001) return null;
+  return [x, y, w, h].map(n => +n.toFixed(4));
+};
+
 const ratio = (v, fallback) => {
   const n = Number(v);
   return Number.isFinite(n) && n > 0 && n <= 1 ? n : fallback;
@@ -132,6 +146,7 @@ export function buildXraySpec(analysis, matched) {
           color:      hex(d.color_hex),
           confidence: item?.confidence ?? 0,
           semantic:   item?.semantic ?? 0,
+          bbox:       bbox(d.bbox),
         });
         return;
       }
@@ -170,6 +185,10 @@ export function buildXraySpec(analysis, matched) {
           what:      [d.type, d.subtype].filter(Boolean).join(' ').replace(/_/g, ' ') || 'decoration',
           color:     hex(d.color_hex),
           placement: d.placement ?? null,
+          // Where it is IN THE PHOTO, so the sheet can show a close-up of the real decoration
+          // instead of describing it. Null whenever the model would not commit — a wrong crop
+          // shows the baker a picture of the wrong thing, which is worse than showing none.
+          bbox:      bbox(d.bbox),
         },
       });
     });

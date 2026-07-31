@@ -90,7 +90,7 @@ async function matchDecoration(deco, calls) {
   const best = scored[0] || null;
   const confident = isConfidentMatch(best);
   return {
-    decoration: { type: deco.type, subtype: deco.subtype, placement: deco.placement, rim_side: deco.rim_side, color_hex: deco.color_hex, count: deco.count, text: deco.text },
+    decoration: { type: deco.type, subtype: deco.subtype, placement: deco.placement, rim_side: deco.rim_side, color_hex: deco.color_hex, count: deco.count, text: deco.text, bbox: deco.bbox ?? null },
     match: confident ? best : null,
     alternatives: scored.slice(1, 4),
     confidence: best ? +best.score.toFixed(3) : 0,

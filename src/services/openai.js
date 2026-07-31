@@ -282,7 +282,8 @@ Describe ONLY what you can actually see. Return ONLY a JSON object, no prose:
           "technique": "<short, e.g. 'star tip (1M)', or null>",
           "text": "<for lettering, the exact text, else null>",
           "count": "<a number, or 'continuous', or 'few'>",
-          "notes": "<short, optional>"
+          "notes": "<short, optional>",
+          "bbox": "<[x, y, w, h] as fractions 0-1 of the image, tightly around THIS decoration, or null>"
         }
       ]
     }
@@ -302,7 +303,12 @@ Rules:
 - One tier object per visible tier, bottom first (index 0). A single-tier cake = tier_count 1, one tier, position "single".
 - Group each decoration under the tier it sits on. A shell border around the top edge of the bottom tier belongs to that tier with placement "rim", rim_side "top"; a border where the cake meets the board is placement "rim", rim_side "bottom".
 - ALWAYS give colours as hex AND a human name. "palette" = the 3-6 distinct colours used overall.
-- Ignore the plate/stand/background; "board" is the cake board only.`;
+- Ignore the plate/stand/background; "board" is the cake board only.
+- "bbox" locates ONE decoration in the photo so the sheet can show a close-up of it. [x, y, w, h]
+  as fractions of the whole image, origin top-left. Crop tightly around the decoration itself, not
+  the tier it sits on. For something repeated around the cake (a piped border, sprinkles), box ONE
+  clear instance rather than the whole run. Use null when you cannot place it confidently — a
+  wrong crop shows the baker a picture of the wrong thing, which is worse than showing none.`;
 
   const payload = JSON.stringify({
     model: 'gpt-4o',
@@ -504,6 +510,7 @@ Return ONLY valid JSON, no explanation:
   "title": "<short name of the thing being made>",
   "medium": "<fondant|gumpaste|modelling_chocolate|other>",
   "roles": ["<lowercase_token>", …],
+  "colours": [{ "role": "<token>", "hex": "<hex you can SEE on this decoration>", "name": "<colour name>" }],
   "materials": [{ "role": "<token>", "label": "<what to prepare, e.g. 'fondant (head)'>" }],
   "parts":     [{ "name": "<part>", "note": "<which roles it uses, e.g. 'outer {body}, inner {inner_ear}'>" }],
   "steps": [
@@ -523,6 +530,10 @@ Rules:
 - Steps in the order a hand actually works: bulk shapes first, fine detail and attachment last.
 - 4 to 12 steps. Fewer, meatier steps beat many trivial ones.
 - Tools must be real and namable (Ball Tool, Dresden Tool, Rolling Pin, Brush (Water), Craft Knife).
+- "colours" gives ONE hex per role, read off the image. This is the only place a colour may appear:
+  the steps stay colour-free so the same guide serves the decoration in any colour, and the sheet
+  prints the swatches beside them. Omit a role you cannot see clearly rather than guessing — the
+  baker mixes gel paste from these, and a wrong hex wastes a batch.
 - If the object is clearly NOT hand-modelled — a printed image, a flat decal, an acrylic topper —
   return "medium": "other", an EMPTY steps array, and one tip saying it looks printed or
   pre-made rather than modelled. Do not invent a modelling process for something nobody models.`;
