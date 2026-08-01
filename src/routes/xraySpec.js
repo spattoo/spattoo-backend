@@ -319,7 +319,7 @@ router.post('/orders/:id/xray/decoration-steps', requireAuth, requireCapability(
           provider: 'openai', model, promptVersion: STEPS_PROMPT_VERSION,
           // BOTH calls. The image is the expensive half and the whole question of whether this
           // fits inside the current price is settled by measuring it, not by estimating it.
-          calls: [{ model, usage }, ...(stages ? [{ model: stages.model, usage: stages.usage }] : [])],
+          calls: [{ model, usage }, ...(stages ? [{ model: stages.model, usage: stages.usage, image: stages.image }] : [])],
         };
       },
     );

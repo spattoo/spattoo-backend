@@ -31,7 +31,7 @@ export async function renderStageImage({ sourceKey, bbox = null, objectKey, titl
   // that is portrait regardless of what the decoration looks like.
   const { buffer: reference } = await composeReference(cropped);
 
-  const { buffer, usage, model } = await generateDecorationStages(reference, {
+  const { buffer, usage, image, model } = await generateDecorationStages(reference, {
     title,
     // The sheet illustrates THESE steps. Without them the model invents its own sequence — always
     // empty, then partial, then complete, which is an assembly story rather than this guide.
@@ -40,7 +40,7 @@ export async function renderStageImage({ sourceKey, bbox = null, objectKey, titl
   });
 
   await putObject(objectKey, buffer, 'image/webp');
-  return { key: objectKey, usage, model };
+  return { key: objectKey, usage, image, model };
 }
 
 // Where a photo decoration's picture lives. Order-scoped, so it is unreachable from another

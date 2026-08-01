@@ -361,14 +361,37 @@ const USD_PER_MTOK = {
   'gpt-4o':                 { in: 2.50, out: 10.00 },   // what services/openai.js calls today
   'gpt-4o-mini':            { in: 0.15, out:  0.60 },
   'text-embedding-3-small': { in: 0.02, out:  0    },
-  // Image models. `in` uses the IMAGE-input rate rather than the text one: every call we make is an
-  // EDIT conditioned on a photo crop, so image tokens dominate the input and pricing them at the
-  // cheaper text rate would understate the cost of the one action where cost is actually in doubt.
-  // `out` is where nearly all of it lands anyway — a rendered image is thousands of output tokens.
-  'gpt-image-1':            { in: 10.00, out: 40.00 },
-  'gpt-image-1.5':          { in: 10.00, out: 40.00 },
-  'gpt-image-2':            { in: 10.00, out: 40.00 },
 };
+
+// ── Images are priced PER IMAGE, not per token ──────────────────────────────────────
+// USD per generated image, by quality and shape. OpenAI bills images this way, and the token
+// path cannot substitute: /v1/images/edits does not reliably return a `usage` block, and
+// sumOpenAiCostInr SKIPS anything it cannot price — so an image call recorded nothing at all and
+// the ledger reported a guide at ~R1 when the picture alone costs ~R5.5.
+//
+// That failure is quiet and one-directional: the margin dashboard reads LOW, which is exactly the
+// direction that would let something unprofitable ship. Hence a table that needs no cooperation
+// from the response.
+//
+// UNVERIFIED against a live invoice, like USD_PER_MTOK above. Reconcile both against the first
+// real bill.
+const USD_PER_IMAGE = {
+  low:    { square: 0.011, tall: 0.016 },
+  medium: { square: 0.042, tall: 0.063 },
+  high:   { square: 0.167, tall: 0.250 },
+};
+
+// A call is an IMAGE call when it says so — the caller passes { image: { quality, size } } rather
+// than a usage block. Returns null for anything it does not recognise, which keeps "not measured"
+// distinct from "free".
+export function imageCostInr(image) {
+  if (!image) return null;
+  const byQuality = USD_PER_IMAGE[image.quality] ?? USD_PER_IMAGE.medium;
+  // Anything that is not 1024x1024 is one of the two larger shapes, which cost the same as each
+  // other — so the only distinction that matters is square vs not.
+  const shape = String(image.size ?? '') === '1024x1024' ? 'square' : 'tall';
+  return usdToInr((byQuality[shape] ?? byQuality.square) * (Number(image.n) || 1));
+}
 
 export function usdToInr(usd) {
   return Math.round((Number(usd) || 0) * (config.aiCredits?.usdInr ?? 90) * 10000) / 10000;
@@ -390,7 +413,9 @@ function priceFor(model) {
 // usage = the provider's own usage block ({ prompt_tokens, completion_tokens }). Returns null
 // for an unknown model rather than guessing — a null in the column reads as "not measured",
 // where a fabricated number would quietly poison the margin average.
-export function openAiCostInr({ model, usage }) {
+export function openAiCostInr({ model, usage, image }) {
+  // An image call prices per image and never per token — see USD_PER_IMAGE.
+  if (image) return imageCostInr(image);
   const p = priceFor(model);
   if (!p || !usage) return null;
   const inTok  = Number(usage.prompt_tokens     ?? usage.input_tokens  ?? 0);

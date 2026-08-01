@@ -724,8 +724,13 @@ export async function generateDecorationStages(referenceBuffer, { title, steps =
   if (!b64) throw new Error(`${config.openai.imageModel} returned no image data`);
   return {
     buffer: Buffer.from(b64, 'base64'),
-    // gpt-image models report token usage like the chat endpoints, so the existing pricing path
-    // works unchanged — see USD_PER_MTOK in services/aiCredits.js.
+    // WHAT WE ASKED FOR, not what came back. Images are billed per image by quality and shape, and
+    // /v1/images/edits does not reliably return a usage block — relying on one meant the call
+    // recorded NOTHING and a guide costing ~R6.5 was logged at ~R1. The request parameters are
+    // known for certain, so the cost is computed from those (services/aiCredits.js imageCostInr).
+    image:  { quality: config.openai.imageQuality, size, n: 1 },
+    // Kept when the provider does return it — useful for reconciling against the real invoice,
+    // and harmless: imageCostInr takes precedence for an image call.
     usage:  data?.usage ?? null,
     model:  config.openai.imageModel,
   };

@@ -63,7 +63,7 @@ export async function buildElementGuide(el, { ownerBakerId = null } = {}) {
     console.warn(`[decoration-guide] stage image failed for ${el.id}, guide kept:`, err?.message);
     return null;
   });
-  if (stages) calls.push({ model: stages.model, usage: stages.usage });
+  if (stages) calls.push({ model: stages.model, usage: stages.usage, image: stages.image });
 
   const row = {
     element_id: el.id,
