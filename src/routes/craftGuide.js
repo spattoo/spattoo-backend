@@ -179,6 +179,12 @@ router.get('/admin/craft-guide/:elementId', requireAuth, requireCapability('cata
       .from('element_craft_guide')
       .select(CRAFT_FIELDS)
       .eq('element_id', req.params.elementId)
+      // REQUIRED since migration 025 widened the key to (element_id, guide_type). Without it an
+      // element carrying BOTH a nozzle guide and a decoration guide returns two rows and
+      // maybeSingle() errors — so the authoring editor broke for exactly the elements that have
+      // the most guidance. This endpoint is the NOZZLE editor; a decoration guide is read
+      // elsewhere and must not be mistaken for one here.
+      .eq('guide_type', 'piping_nozzle')
       .maybeSingle();
 
     if (error) return serverError(req, res, error);
@@ -207,12 +213,16 @@ router.put('/admin/craft-guide/:elementId', requireAuth, requireCapability('cata
       .upsert(
         {
           element_id:  elementId,
+          // Both REQUIRED since 025. The conflict target must name the FULL key or the upsert has
+          // no unique constraint to match: the row would be inserted rather than updated, silently,
+          // until a later read found two nozzle guides for one element.
+          guide_type:  'piping_nozzle',
           nozzle_recs: recs.value,
           consistency: consistency || null,
           technique:   technique?.trim() || null,
           updated_at:  new Date().toISOString(),
         },
-        { onConflict: 'element_id' },
+        { onConflict: 'element_id,guide_type' },
       )
       .select(CRAFT_FIELDS)
       .single();
