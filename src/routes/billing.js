@@ -656,6 +656,29 @@ router.get('/billing/payments', requireAuth, requireCapability('billing:manage')
 // ── POST /billing/webhook ─────────────────────────────────────────────────────
 // TODO: this will be called by Razorpay when subscription events occur.
 //       Until Razorpay is live this endpoint won't be hit.
+// The notes that identify what a payment was FOR.
+//
+// Razorpay keeps order notes on the ORDER and payment notes on the PAYMENT, and does not copy
+// between them. We stamp ours at order creation (routes/aiCredits.js), so the webhook has to go and
+// fetch them — reading payment.notes alone silently mis-classified every pack purchase as "not a
+// pack" and dropped it.
+//
+// Payment notes first anyway: a client that passes notes to Checkout puts them there, and that
+// path costs no API call. Falls back to the order, and returns whatever it has rather than throwing
+// — a webhook that 500s gets retried forever, and an unfetchable order is not a reason to reject a
+// payment we already hold.
+async function notesForPayment(payment) {
+  if (payment?.notes && Object.keys(payment.notes).length) return payment.notes;
+  if (!payment?.order_id) return payment?.notes ?? null;
+  try {
+    const order = await razorpay().orders.fetch(payment.order_id);
+    return order?.notes ?? null;
+  } catch (e) {
+    console.error('[billing] could not fetch order for', payment.id, e?.message);
+    return payment?.notes ?? null;
+  }
+}
+
 router.post('/billing/webhook', async (req, res) => {
   try {
     const signature = req.headers['x-razorpay-signature'];
@@ -679,8 +702,17 @@ router.post('/billing/webhook', async (req, res) => {
     //
     // Idempotent by razorpay payment id (unique index on credit_transactions.idempotency_key), so a
     // redelivery returns the original row instead of minting a second batch.
-    if (payment?.notes?.kind === 'ai_credit_pack' && event === 'payment.captured') {
-      const { baker_id: packBakerId, pack_key: packKey } = payment.notes;
+    // The notes are on the ORDER, not the payment — Razorpay does NOT copy them across, and
+    // reading payment.notes alone meant this branch never matched: a captured pack payment fell
+    // through to the subscription guard below, which found no subscription_id and returned ok. The
+    // baker was charged and credited nothing, silently, with a 200 telling Razorpay all was well.
+    //
+    // So: try the payment's own notes (present if a future client passes them at Checkout), then
+    // fetch the order and read the notes we actually wrote.
+    const paymentNotes = await notesForPayment(payment);
+
+    if (paymentNotes?.kind === 'ai_credit_pack' && event === 'payment.captured') {
+      const { baker_id: packBakerId, pack_key: packKey } = paymentNotes;
       if (packBakerId && packKey) {
         const txId = await creditPurchase({
           bakerId:           packBakerId,
@@ -689,6 +721,10 @@ router.post('/billing/webhook', async (req, res) => {
           note:              `razorpay order ${payment.order_id ?? '?'}`,
         });
         if (!txId) console.error('[billing] credit pack purchase not recorded — unknown pack', packKey, payment.id);
+      } else {
+        // Stamped as a pack but missing what it needs. Loud, because the alternative is a baker
+        // who paid and got nothing while the webhook reported success.
+        console.error('[billing] ai_credit_pack notes incomplete', payment?.id, paymentNotes);
         // TODO(GST): a pack sale is a taxable supply at ISSUE (AI_CREDITS_PLAN.md §2.4) and needs an
         // invoice, exactly like a subscription charge. emitSaleEvent() is subscription-shaped
         // (plan_id / billing_period_id / period_months), so forcing a pack through it would put a
