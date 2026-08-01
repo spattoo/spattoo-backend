@@ -296,7 +296,7 @@ router.get('/admin/elements/:id', requireAuth, requireCapability('catalog:admin'
 router.patch('/admin/elements/:id', requireAuth, requireCapability('catalog:admin'), async (req, res) => {
   try {
     const { id } = req.params;
-    const { name, description, image_url, thumbnail_url, element_type_id, parent_id, allowed_zones, placement_config, allowed_actions, default_color, sort_order, is_active, file_size } = req.body;
+    const { name, description, image_url, thumbnail_url, element_type_id, parent_id, allowed_zones, placement_config, allowed_actions, default_color, sort_order, is_active, file_size, medium } = req.body;
 
     const updates = {};
     if (name            != null)      updates.name             = name;
@@ -313,6 +313,10 @@ router.patch('/admin/elements/:id', requireAuth, requireCapability('catalog:admi
     if (is_active       != null)      updates.is_active        = is_active;
     // Sent alongside a new image_url when an asset is replaced; null clears a stale size.
     if (file_size       !== undefined) updates.file_size        = file_size;
+    // Material (migration 032). Editable after publish because it is often only settled once
+    // someone looks at the real decoration — and changing it changes what X-Ray offers, so it
+    // must not be write-once at create.
+    if (medium          !== undefined) updates.medium           = medium || null;
     // GLB cost stats (re-sent when a 3D asset is replaced via the Studio review).
     Object.assign(updates, glbStatColumns(req.body));
 
