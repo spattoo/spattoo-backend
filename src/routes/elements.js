@@ -251,7 +251,10 @@ router.post(
 
 // The admin element projection — shared by the list and the by-id read so the two can never drift
 // (a column added for the list is instantly available to whatever opens a single element).
-const ADMIN_ELEM_FIELDS = 'id, name, description, image_url, thumbnail_url, thumb_key, element_type_id, parent_id, allowed_zones, placement_config, allowed_actions, default_color, sort_order, is_active, baker_id, file_size, asset_class, tri_count, texture_max_dim, decoded_mem_kb, optimized_size_kb, over_cap';
+// EXPLICIT column list, so a new column is invisible to admin until it is named here — which is
+// exactly how `medium` appeared to not save at all: the PATCH stored it, the read never returned
+// it, and the form reloaded blank. Add new admin-editable columns HERE as well as to the writer.
+const ADMIN_ELEM_FIELDS = 'id, name, description, image_url, thumbnail_url, thumb_key, element_type_id, parent_id, allowed_zones, placement_config, allowed_actions, default_color, sort_order, is_active, baker_id, file_size, asset_class, tri_count, texture_max_dim, decoded_mem_kb, optimized_size_kb, over_cap, medium';
 
 // asset_class is a compact surrogate in the DB; admin clients speak the readable key (schema-scale rule).
 const toAdminElement = el => ({ ...withPublicUrls(el), asset_class: ASSET_CLASS_KEY[el.asset_class] ?? null });
