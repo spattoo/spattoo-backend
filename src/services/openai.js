@@ -664,7 +664,12 @@ Rules:
 //
 // The model IS given the guide's own steps, so the sheet illustrates this guide rather than
 // inventing its own sequence. How many panels that needs is its business, not ours.
-export async function generateDecorationStages(referenceBuffer, { title, steps = [], size = '1024x1536', dimension = null } = {}) {
+// `quality` overrides the configured default for ONE call. Admin-only in practice: a catalogue
+// guide that came out unreadable at low can be rebuilt higher without changing the default for
+// every baker. Validated by the caller — an unrecognised value would be rejected by the provider,
+// and worse, would be recorded at the wrong price.
+export async function generateDecorationStages(referenceBuffer, { title, steps = [], size = '1024x1536', dimension = null, quality = null } = {}) {
+  const imageQuality = quality || config.openai.guideImageQuality;
   const readable = (t) => String(t ?? '').replace(/\{(\w+)\}/g, (_, r) => r.replace(/_/g, ' '));
   const stepList = (steps ?? []).map((st, i) => {
     const lines = (st?.instructions ?? []).map(readable).join(' ');
@@ -707,7 +712,7 @@ export async function generateDecorationStages(referenceBuffer, { title, steps =
     `Spell every word correctly. Keep captions short. Do NOT print any colour codes or hex values ` +
     `— those are listed separately.`);
   form.append('size', size);
-  form.append('quality', config.openai.guideImageQuality);
+  form.append('quality', imageQuality);
   form.append('output_format', 'webp');
   form.append('input_fidelity', 'high');
   form.append('n', '1');
@@ -728,7 +733,9 @@ export async function generateDecorationStages(referenceBuffer, { title, steps =
     // /v1/images/edits does not reliably return a usage block — relying on one meant the call
     // recorded NOTHING and a guide costing ~R6.5 was logged at ~R1. The request parameters are
     // known for certain, so the cost is computed from those (services/aiCredits.js imageCostInr).
-    image:  { quality: config.openai.guideImageQuality, size, n: 1 },
+    // The quality ACTUALLY used, not the configured default — a rebuild at medium costs four
+    // times a low one, and the ledger has to say so or the margin figure is fiction.
+    image:  { quality: imageQuality, size, n: 1 },
     // Kept when the provider does return it — useful for reconciling against the real invoice,
     // and harmless: imageCostInr takes precedence for an image call.
     usage:  data?.usage ?? null,

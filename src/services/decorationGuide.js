@@ -44,7 +44,7 @@ export const GUIDE_PROMPT_VERSION = 'build-guide-v2';
 //
 // Never throws for 'not_modelled'. That distinction is what lets the caller charge for one and not
 // the other, and what stops the UI reporting a correct answer as a failure.
-export async function buildElementGuide(el, { ownerBakerId = null } = {}) {
+export async function buildElementGuide(el, { ownerBakerId = null, quality = null } = {}) {
   const imageKey = visionImageKey(el);
   if (!imageKey) return { status: 'no_image', row: null };
 
@@ -71,6 +71,7 @@ export async function buildElementGuide(el, { ownerBakerId = null } = {}) {
     // The picture must agree with the steps about what is being made — a flat cut-out drawn as a
     // standing figurine contradicts every instruction beside it.
     dimension,
+    quality,
   }).catch(err => {
     console.warn(`[decoration-guide] stage image failed for ${el.id}, guide kept:`, err?.message);
     return null;

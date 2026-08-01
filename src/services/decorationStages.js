@@ -19,7 +19,7 @@ import { getObjectBuffer, putObject } from './r2.js';
 // Throws on any failure. Every caller treats that as "no picture", never as "no guide": the words
 // are the product and the picture is the improvement, so an image failure must not throw away
 // steps the baker is about to be charged for.
-export async function renderStageImage({ sourceKey, bbox = null, objectKey, title, steps = [], dimension = null }) {
+export async function renderStageImage({ sourceKey, bbox = null, objectKey, title, steps = [], dimension = null, quality = null }) {
   const source = await getObjectBuffer(sourceKey);
 
   // cropRegion pads the box outward before cutting — vision models are imprecise at boundaries, and
@@ -37,6 +37,7 @@ export async function renderStageImage({ sourceKey, bbox = null, objectKey, titl
     // empty, then partial, then complete, which is an assembly story rather than this guide.
     steps,
     dimension,
+    quality,
   });
 
   await putObject(objectKey, buffer, 'image/webp');

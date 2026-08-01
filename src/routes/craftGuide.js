@@ -284,7 +284,15 @@ router.post('/admin/elements/:id/decoration-guide', requireAuth, requireCapabili
       }
     }
 
-    const out = await buildElementGuide(el, { ownerBakerId: null });
+    // Admin may override the image quality for one rebuild — the catalogue default is `low`
+    // because it is legible and a quarter of the cost, but a decoration that came out unreadable
+    // deserves a second try at medium without changing the default for everyone.
+    //
+    // ALLOWLISTED, not passed through: an unrecognised value would be rejected by the provider and,
+    // worse, priced wrongly in the ledger — imageCostInr keys off exactly these three.
+    const quality = ['low', 'medium', 'high'].includes(req.body?.quality) ? req.body.quality : null;
+
+    const out = await buildElementGuide(el, { ownerBakerId: null, quality });
     if (out.status === 'no_image') {
       return res.status(400).json({ error: 'This decoration has no image to read.', code: 'NO_ELEMENT_IMAGE' });
     }
