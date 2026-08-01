@@ -159,7 +159,12 @@ router.post('/baker/ai-credits/purchase', requireAuth, requireCapability('billin
     const order = await razorpay().orders.create({
       amount:   pack.price_paise,          // from the DB, never the request
       currency: 'INR',
-      receipt:  `credits:${req.bakerId}:${pack.pack_key}`,
+      // RAZORPAY CAPS `receipt` AT 40 CHARACTERS and rejects the whole order if it is longer.
+      // 'credits:' + a uuid + ':' + a pack key is 54, so every purchase failed with a 500 that
+      // said nothing about length. The uuid is truncated to its first block, which is plenty to
+      // recognise a payment in the dashboard — full identity travels in `notes` below, which is
+      // what the webhook actually reads and what reconciliation depends on.
+      receipt:  `cr:${String(req.bakerId).slice(0, 8)}:${pack.pack_key}`.slice(0, 40),
       notes: {
         kind:     'ai_credit_pack',        // the webhook branches on this
         baker_id: req.bakerId,
