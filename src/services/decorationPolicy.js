@@ -43,15 +43,29 @@ const STICKER_TYPES = new Set(['Cake Topper', 'Image topper', 'Top&Side Decors',
 // FLAT or IN THE ROUND. The two crafts share almost no steps — one is "roll a sheet and cut the
 // outline", the other is "roll a ball and pinch out a tail" — so a guide written for the wrong one
 // is not roughly right, it is unusable. A real generation for a flat sticker came back as
-// instructions for sculpting a standing figurine.
+// instructions for sculpting a standing figurine, and the picture agreed with it.
 //
-// A STICKER IS FLAT BY DEFINITION. It is a 2D image placed on the cake, which is the whole reason
-// its material is ambiguous in the first place. Anything else we cannot claim to know: a topper
-// authored as a GLB is genuinely three-dimensional, and a photo decoration could be either — so
-// those return null and the prompt says nothing rather than guessing.
+// THE ASSET DECIDES, not the type name. A .glb is a three-dimensional model and renders as one on
+// the cake; anything else is a 2D image lying flat on it. That is a structural fact about the file
+// we hold, so it cannot fall behind the catalogue the way a hand-kept list of type names does —
+// and it already did: the first version keyed on TYPE_MAP's names, which are a subset of the real
+// element_types, so any type not in that list silently got no instruction at all.
+//
+// The type list survives only as a fallback for the case the asset cannot answer: no image yet.
+const MODEL_ASSET = /\.(glb|gltf)(\?|$)/i;
+
 export function decorationDimension(el) {
+  const asset = el?.image_url ?? '';
+  if (MODEL_ASSET.test(asset)) return '3d';
+  if (asset) return '2d';
+
+  // No asset to judge. A sticker type is still flat by definition — it is a 2D image placed on the
+  // cake, which is the same fact that makes its MATERIAL ambiguous and gave us the medium column.
   const type = el?.element_types?.name ?? el?.element_type ?? null;
   if (STICKER_TYPES.has(type)) return '2d';
+
+  // Genuinely unknown. Say nothing rather than guess: the prompt then falls back to its own
+  // judgement, which is better than being told the wrong thing with confidence.
   return null;
 }
 
