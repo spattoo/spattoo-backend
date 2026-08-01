@@ -10,6 +10,8 @@ import { removeBackground } from '../services/removebg.js';
 import { jobQueue } from '../jobs/queue.js';
 import { reindexElement } from '../services/elementIndex.js';
 import { generateWebpThumbnail } from '../services/thumbnails.js';
+import { buildElementGuide } from '../services/decorationGuide.js';
+import { decorationPolicy } from '../services/decorationPolicy.js';
 
 const router = Router();
 
@@ -333,9 +335,39 @@ router.patch('/admin/elements/:id', requireAuth, requireCapability('catalog:admi
   }
 });
 
+// Pre-build the modelling guide for a decoration we are publishing.
+//
+// AFTER the response and fire-and-forget: a slow or failed model call must not make publishing an
+// element slow or fail. The guide enhances the catalogue; it is not part of the element being
+// valid, and the baker-facing route can still generate one on demand if this never ran.
+//
+// Re-reads the row rather than trusting the request body, because the policy needs the element's
+// TYPE — and because thumb_key is written by a separate fire-and-forget job. image_url is often a
+// .glb or .svg that the vision endpoint rejects outright, so the raster is what makes this work at
+// all for exactly the elements that need it most.
+async function ensureDecorationGuide(elementId) {
+  try {
+    const { data: el } = await supabase
+      .from('cake_elements')
+      .select('id, name, description, image_url, thumbnail_url, thumb_key, medium, element_types(name)')
+      .eq('id', elementId).maybeSingle();
+    if (!el) return;
+
+    // Element type first, medium only for the flat placeables where an image genuinely cannot say
+    // fondant from printed sheet from acrylic (services/decorationPolicy.js).
+    const policy = decorationPolicy(el);
+    if (!policy.modelling) return;
+
+    const out = await buildElementGuide(el, { ownerBakerId: null });   // ours, never a baker's
+    if (out.status !== 'ok') console.log(`[element-guide] ${elementId}: ${out.status}`);
+  } catch (e) {
+    console.error(`[element-guide] ${elementId} failed:`, e.message);
+  }
+}
+
 router.post('/admin/elements', requireAuth, requireCapability('catalog:admin'), async (req, res) => {
   try {
-    const { name, description, image_url, thumbnail_url, element_type_id, parent_id, allowed_zones, placement_config, allowed_actions, default_color, sort_order, file_size } = req.body;
+    const { name, description, image_url, thumbnail_url, element_type_id, parent_id, allowed_zones, placement_config, allowed_actions, default_color, sort_order, file_size, medium } = req.body;
     if (!name || !element_type_id) {
       return res.status(400).json({ error: 'name and element_type_id are required' });
     }
@@ -355,6 +387,10 @@ router.post('/admin/elements', requireAuth, requireCapability('catalog:admin'), 
         default_color:    default_color ?? null,
         sort_order:       sort_order ?? 0,
         file_size:        file_size ?? null,
+        // WHAT IT IS MADE OF. Technique already lives in element_types (Cream Piping vs Palette
+        // knife art), so this is material only — see migration 032. A HINT for what we pre-build,
+        // never a restriction on what a baker may do with the decoration.
+        medium:           medium ?? null,
         ...glbStatColumns(req.body),
         baker_id:         null,
         is_active:        true,
@@ -369,6 +405,9 @@ router.post('/admin/elements', requireAuth, requireCapability('catalog:admin'), 
     reindexElement(data.id).catch(e => console.error('reindex(create) failed:', e.message));
     // Generate the optimised WebP picker thumbnail (raw PNG stays as the source). Fire-and-forget.
     ensureThumbKey(data.id, thumbnail_url);
+    // A catalogue decoration should ARRIVE with its guide, so that no baker is ever the one who
+    // triggers it. Ours to pay for and therefore unmetered.
+    ensureDecorationGuide(data.id);
   } catch (err) {
     serverError(req, res, err);
   }

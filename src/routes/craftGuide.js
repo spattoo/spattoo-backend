@@ -3,9 +3,11 @@ import { serverError } from '../lib/httpError.js';
 import { supabase } from '../services/supabase.js';
 import { requireAuth } from '../middleware/auth.js';
 import { requireCapability } from '../middleware/rbac.js';
-import { suggestCraftGuide, suggestBuildGuide } from '../services/openai.js';
-import { renderStageImage, elementStagesKey } from '../services/decorationStages.js';
+import { suggestCraftGuide } from '../services/openai.js';
+import { buildElementGuide } from '../services/decorationGuide.js';
+import { decorationPolicy, visionImageKey } from '../services/decorationPolicy.js';
 import { withAiCredits, AI_ACTION, InsufficientCreditsError } from '../services/aiCredits.js';
+import { GUIDE_PROMPT_VERSION } from '../services/decorationGuide.js';
 import { assertBakerOwns } from '../lib/tenantScope.js';
 // cake_elements.image_url holds an R2 object KEY, not a URL — every read path wraps it before the
 // value leaves the API (elements.js withPublicUrls). OpenAI fetches the image over HTTP, so it
@@ -13,30 +15,6 @@ import { assertBakerOwns } from '../lib/tenantScope.js';
 import { toPublicUrl } from './elements.js';
 
 const router = Router();
-
-// Bump when the prompt changes in a way that could move the output. Kept as 'build-guide-v1'
-// though the feature is now called decoration steps: this string is STAMPED ON STORED ROWS, and
-// renaming it would split one prompt's history into two versions that were never different.
-const PROMPT_VERSION = 'build-guide-v1';
-
-// The formats OpenAI's vision endpoint accepts. Anything else comes back as a hard
-// invalid_image_format, not a degraded answer.
-const VISION_FORMATS = /\.(png|jpe?g|gif|webp)(\?|$)/i;
-
-// Which stored key do we hand the model?
-//
-// NOT image_url, which is the SOURCE asset: for a library element that is frequently a .glb or an
-// .svg, and OpenAI rejects both outright. thumbnail_url and thumb_key are always raster — written
-// by services/thumbnails.js as WebP with an image/webp content-type — which is why autoTag, the
-// one OpenAI-by-URL path already proven in production, feeds the thumbnail rather than the source.
-//
-// Ordered best-detail-first: the source when it happens to be a usable raster (a baker's own
-// uploaded decoration is a PNG, and it is sharper than any thumbnail we derive), then the master
-// thumbnail, then the size-suffixed one. Extension-checked rather than assumed, so a new asset
-// type added later degrades to the thumbnail instead of failing at the provider.
-function visionImageKey(el) {
-  return [el.image_url, el.thumbnail_url, el.thumb_key].find(k => k && VISION_FORMATS.test(k)) ?? null;
-}
 
 const CRAFT_FIELDS = 'element_id, guide_type, nozzle_recs, consistency, technique, guide, stages_key, status, model, prompt_version, generated_at, updated_at';
 const CONSISTENCIES = ['stiff', 'medium', 'soft'];
@@ -182,8 +160,7 @@ router.get('/admin/craft-guide/:elementId', requireAuth, requireCapability('cata
       // REQUIRED since migration 025 widened the key to (element_id, guide_type). Without it an
       // element carrying BOTH a nozzle guide and a decoration guide returns two rows and
       // maybeSingle() errors — so the authoring editor broke for exactly the elements that have
-      // the most guidance. This endpoint is the NOZZLE editor; a decoration guide is read
-      // elsewhere and must not be mistaken for one here.
+      // the most guidance. This endpoint is the nozzle editor; the decoration guide has its own.
       .eq('guide_type', 'piping_nozzle')
       .maybeSingle();
 
@@ -213,9 +190,9 @@ router.put('/admin/craft-guide/:elementId', requireAuth, requireCapability('cata
       .upsert(
         {
           element_id:  elementId,
-          // Both REQUIRED since 025. The conflict target must name the FULL key or the upsert has
-          // no unique constraint to match: the row would be inserted rather than updated, silently,
-          // until a later read found two nozzle guides for one element.
+          // Both REQUIRED since 025. The conflict target must name the full key or the upsert has
+          // no unique constraint to match, and the row would be inserted rather than updated —
+          // silently, until the next read found two nozzle guides for one element.
           guide_type:  'piping_nozzle',
           nozzle_recs: recs.value,
           consistency: consistency || null,
@@ -233,6 +210,89 @@ router.put('/admin/craft-guide/:elementId', requireAuth, requireCapability('cata
     }
 
     res.json(data);
+  } catch (err) {
+    serverError(req, res, err);
+  }
+});
+
+// ── GET /api/admin/elements/:id/decoration-guide ──────────────────────────────
+// Read the MODELLING guide for one element — the steps and the build-sequence picture.
+//
+// Separate from GET /admin/craft-guide/:elementId, which reads the NOZZLE guide. They are two rows
+// on the same rail (element_craft_guide, keyed by guide_type) answering different questions, and
+// collapsing them into one endpoint is how that key got mishandled in the first place.
+//
+// Also returns what the policy would allow, so the screen can explain an ABSENT guide instead of
+// showing an empty panel: "this is a printed sheet" and "nobody has generated one yet" look
+// identical otherwise, and only one of them is worth acting on.
+router.get('/admin/elements/:id/decoration-guide', requireAuth, requireCapability('catalog:admin'), async (req, res) => {
+  try {
+    const { data: el } = await supabase
+      .from('cake_elements')
+      .select('id, name, medium, baker_id, element_types(name)')
+      .eq('id', req.params.id).maybeSingle();
+    if (!el) return res.status(404).json({ error: 'Element not found' });
+
+    const { data, error } = await supabase
+      .from('element_craft_guide').select(CRAFT_FIELDS)
+      .eq('element_id', el.id).eq('guide_type', 'fondant_figure').maybeSingle();
+    if (error) return serverError(req, res, error);
+
+    res.json({
+      guide: data ? withStageUrl(data) : null,
+      policy: decorationPolicy(el),
+      medium: el.medium ?? null,
+      elementType: el.element_types?.name ?? null,
+    });
+  } catch (err) {
+    serverError(req, res, err);
+  }
+});
+
+// ── POST /api/admin/elements/:id/decoration-guide ─────────────────────────────
+// Build, or rebuild, the modelling guide for ONE catalogue element.
+//
+// Publish-time generation only helps elements published from now on, and a prompt change should be
+// re-runnable against a decoration whose guide came out badly. UNMETERED: this is our catalogue,
+// and its guides were never a baker's to pay for.
+//
+// `force` is required to replace an existing guide. One that a human has read and approved must
+// not be quietly swapped for a fresh draft by someone clicking the same button twice.
+router.post('/admin/elements/:id/decoration-guide', requireAuth, requireCapability('catalog:admin'), async (req, res) => {
+  try {
+    const { data: el } = await supabase
+      .from('cake_elements')
+      .select('id, name, description, image_url, thumbnail_url, thumb_key, medium, baker_id, element_types(name)')
+      .eq('id', req.params.id).maybeSingle();
+    if (!el) return res.status(404).json({ error: 'Element not found' });
+    // A baker's own decoration is theirs to generate and theirs to pay for. Admin generating it
+    // unmetered would move that cost onto us for something we did not author.
+    if (el.baker_id) {
+      return res.status(400).json({ error: "This is a baker's own decoration, not catalogue.", code: 'NOT_CATALOGUE' });
+    }
+
+    if (req.body?.force !== true) {
+      const { data: existing } = await supabase
+        .from('element_craft_guide').select('element_id, status')
+        .eq('element_id', el.id).eq('guide_type', 'fondant_figure').maybeSingle();
+      if (existing) {
+        return res.status(409).json({
+          error: 'This decoration already has a guide. Pass force to rebuild it.',
+          code: 'GUIDE_EXISTS', status: existing.status,
+        });
+      }
+    }
+
+    const out = await buildElementGuide(el, { ownerBakerId: null });
+    if (out.status === 'no_image') {
+      return res.status(400).json({ error: 'This decoration has no image to read.', code: 'NO_ELEMENT_IMAGE' });
+    }
+    // Not a failure: the model looked and judged this printed or pre-made. Reported plainly so an
+    // admin learns the medium hint was wrong, rather than that something broke.
+    if (out.status === 'not_modelled') {
+      return res.json({ ok: true, notModelled: true, guide: out.guide ?? null });
+    }
+    res.json({ ok: true, guide: withStageUrl(out.row) });
   } catch (err) {
     serverError(req, res, err);
   }
@@ -259,7 +319,8 @@ router.post('/elements/:id/xray/decoration-steps', requireAuth, requireCapabilit
     // A baker may generate a guide for their OWN element, or for a global library one (baker_id
     // null) they used on a cake. Never for another bakery's private decoration.
     const { data: el } = await supabase
-      .from('cake_elements').select('id, name, description, image_url, thumbnail_url, thumb_key, baker_id')
+      .from('cake_elements')
+      .select('id, name, description, image_url, thumbnail_url, thumb_key, medium, baker_id, element_types(name)')
       .eq('id', req.params.id).maybeSingle();
     if (!el) return res.status(404).json({ error: 'Element not found' });
     if (el.baker_id && el.baker_id !== req.bakerId) {
@@ -272,6 +333,24 @@ router.post('/elements/:id/xray/decoration-steps', requireAuth, requireCapabilit
       return res.status(400).json({ error: 'This decoration has no image to read.', code: 'NO_ELEMENT_IMAGE' });
     }
 
+    // Nothing to model. A printed icing sheet has no hand-made version and an acrylic topper is
+    // bought, so a modelling guide would describe a process that does not exist — and the baker
+    // would have paid for it. The type decides this for most decorations; `medium` only speaks for
+    // the flat placeables, where an image alone cannot tell the three apart.
+    //
+    // NOT a restriction on the decoration itself: printing it at actual size stays available
+    // either way, and a FONDANT element keeps both paths precisely because bakers substitute one
+    // for the other constantly.
+    const policy = decorationPolicy(el);
+    if (!policy.modelling) {
+      return res.status(409).json({
+        error: 'This decoration is not hand-modelled — print it at actual size instead.',
+        code:  'NOT_MODELLED_MEDIUM',
+        reason: policy.reason,
+        canPrint: policy.print,
+      });
+    }
+
     // Already generated → hand it back, charge nothing. This is the amortisation: the second cake
     // using this decoration, and every one after, is free.
     const { data: existing } = await supabase
@@ -279,15 +358,16 @@ router.post('/elements/:id/xray/decoration-steps', requireAuth, requireCapabilit
       .eq('element_id', el.id).eq('guide_type', 'fondant_figure').maybeSingle();
     if (existing) return res.json({ ok: true, reused: true, guide: withStageUrl(existing) });
 
+
     // ── WHO PAYS ────────────────────────────────────────────────────────────────────
     // A SPATTOO element must already carry its guide by the time a baker meets it — building it
     // belongs to publishing the element, not to the first baker who happens to open one. Charging
-    // them would mean one bakery funding our catalogue for everyone else, and would make a
-    // library decoration feel metered on first use when it should feel instant.
+    // them would mean one bakery funding our catalogue for everyone else, and would make a library
+    // decoration feel metered on first use when it should feel instant.
     //
-    // Until every catalogue element is backfilled, this generates it FREE rather than refusing:
-    // the cost is ours by the same rule, and it self-heals — each global element is generated at
-    // most once, ever, so the total is bounded by the size of the catalogue and not by traffic.
+    // Until every catalogue element is backfilled this generates it FREE rather than refusing: the
+    // cost is ours by the same rule, and it self-heals — each global element is generated at most
+    // once, ever, so the total is bounded by the size of the catalogue and not by traffic.
     //
     // Credits are for what we could NOT know in advance: a photo we have never seen, or a
     // decoration the baker made themselves.
@@ -301,77 +381,32 @@ router.post('/elements/:id/xray/decoration-steps', requireAuth, requireCapabilit
         free: oursToPayFor,
       },
       async () => {
-        const { guide, usage, model } = await suggestBuildGuide({
-          imageUrl: toPublicUrl(imageKey), name: el.name, description: el.description,
-        });
-        // No steps means the model judged this not hand-modelled (a printed decal, an acrylic
-        // topper). That is a USEFUL answer, not a failure — but it is not worth a credit, and
-        // charging for "we looked and there is nothing to make" would feel like a con.
-        if (!guide || !Array.isArray(guide.steps) || guide.steps.length === 0) {
-          return { keep: false, note: 'not a modelled decoration', value: { guide, model } };
+        const built = await buildElementGuide(el, { ownerBakerId: oursToPayFor ? null : req.bakerId });
+        // "This is printed or pre-made, not modelled" is an ANSWER, not a failure — and not one
+        // worth a credit. keep:false releases the hold; the value still travels so the route can
+        // tell the baker what we found instead of reporting it as an error.
+        if (built.status !== 'ok') {
+          return { keep: false, note: built.status, value: { guide: built.guide ?? null } };
         }
-
-        // The build sequence. THIS is the case an image pays for itself in: an element guide is
-        // generated once and every future cake using that decoration gets it free, so one image
-        // call amortises across every baker who ever places the element — where a photo
-        // decoration's picture belongs to one order and can never be reused.
-        //
-        // Best-effort, like the photo path: the words are the product, and an image failure must
-        // not throw away steps the baker is about to be charged for.
-        const stages = await renderStageImage({
-          sourceKey: imageKey,                       // an element image IS the isolated decoration
-          objectKey: elementStagesKey(el.id),
-          title: guide.title || el.name,
-          stepCount: guide.steps.length,
-        }).catch(err => {
-          console.warn('[xray] element stage image failed, steps kept:', err?.message);
-          return null;
-        });
-
         return {
-          value: { guide, model, stagesKey: stages?.key ?? null },
-          provider: 'openai', model, promptVersion: PROMPT_VERSION,
-          calls: [{ model, usage }, ...(stages ? [{ model: stages.model, usage: stages.usage }] : [])],
+          value: { row: built.row },
+          provider: 'openai', model: built.model, promptVersion: GUIDE_PROMPT_VERSION,
+          calls: built.calls,
         };
       },
     );
 
-    // Discarded, so nothing was charged. Two very different reasons, and the baker must be able
-    // to tell them apart: the model looked and judged this piped/printed rather than modelled
-    // (an ANSWER — a piped rosette's real instruction is the nozzle section above), or it gave
-    // us nothing usable (a FAILURE). Collapsing both into "we couldn't read that decoration"
-    // made the feature look broken on exactly the decorations it handled correctly.
     if (out.discarded) {
       if (out.discardedValue?.guide) {
         return res.status(200).json({ ok: true, notModelled: true, guide: out.discardedValue.guide, charged: false });
       }
       return res.status(422).json({ error: "We couldn't read that decoration.", code: 'GUIDE_FAILED' });
     }
-    if (!out.value?.guide) {
+    if (!out.value?.row) {
       return res.status(422).json({ error: "We couldn't read that decoration.", code: 'GUIDE_FAILED' });
     }
-    const guide = out.value.guide;
 
-    // status stays 'draft' forever for a baker-generated guide: admin review cannot scale to every
-    // baker's private decorations, so the sheet must show it as unreviewed rather than pretend a
-    // model guess carries the same weight as a curated craft guide.
-    // source_image_url stores the KEY, not the rendered URL, despite the column name: the key is
-    // the stable identity of the image, while the public URL base is deployment config that can
-    // change and would rot every stored row with it. Read it back through toPublicUrl().
-    const row = {
-      element_id: el.id, guide_type: 'fondant_figure', guide,
-      // Who this belongs to, not who triggered it. A guide on OUR element is ours — the baker who
-      // happened to open it first did not pay for it and does not own it.
-      // baker_id below follows the same rule.
-      source_image_url: imageKey, stages_key: out.value.stagesKey ?? null,
-      model: out.value.model ?? null,
-      prompt_version: PROMPT_VERSION, status: 'draft',
-      baker_id: oursToPayFor ? null : req.bakerId, generated_at: new Date().toISOString(),
-    };
-    const { error: upErr } = await supabase.from('element_craft_guide').upsert(row, { onConflict: 'element_id,guide_type' });
-    if (upErr) throw upErr;
-
-    res.json({ ok: true, reused: false, charged: !oursToPayFor, guide: withStageUrl(row) });
+    res.json({ ok: true, reused: false, charged: !oursToPayFor, guide: withStageUrl(out.value.row) });
   } catch (err) {
     if (err instanceof InsufficientCreditsError) {
       return res.status(err.status).json({ error: err.message, code: err.code, ...err.detail });
