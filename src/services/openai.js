@@ -500,7 +500,13 @@ export async function generateDecorationImage(referenceBuffer, prompt, size = '1
 // the decoration exists nowhere else. Naming the target matters more than it looks: given a cake
 // photo and no focus, the model reliably describes the most prominent object, which on a busy
 // cake is rarely the one the baker asked about.
-export async function suggestBuildGuide({ imageUrl, name, description, focus = null }) {
+// `dimension` — '2d' for a FLAT decoration (rolled out, cut to an outline, layered), '3d' for one
+// modelled in the round. Without it the model reaches for 3D by default and describes sculpting a
+// figurine: a real generation for a flat sticker came back "roll body into a large oval, pinch and
+// extend one end to form a tail", which is a lovely fondant animal and not the decoration on the
+// cake. The two crafts share almost no steps, so this is not a nuance — it is the difference
+// between a usable guide and a wrong one.
+export async function suggestBuildGuide({ imageUrl, name, description, focus = null, dimension = null }) {
   const prompt = `You are a master sugar-artist writing a build guide for ONE decoration, so another baker can make it by hand.
 
 Decoration name: ${name || '(unnamed)'}
@@ -512,6 +518,21 @@ Ignore every other decoration, the cake itself, the board and the background. If
 that decoration in the photo, return an EMPTY steps array and one tip saying so — do not describe
 a different decoration instead.`
   : `Look ONLY at the object in the image. Do not describe a cake, a board, or a background.`}
+
+${dimension === '2d'
+  ? `THIS IS A FLAT, 2D DECORATION. It is cut from a rolled sheet of fondant and laid on the cake —
+it is NOT modelled in the round. Write it that way:
+- Roll the fondant to an even sheet, 2-3mm thick, on a cornstarch-dusted surface.
+- Cut the OUTLINE of the shape with a small knife, a cutter, or around a paper template.
+- Build any detail as further FLAT pieces cut or rolled thin and laid on top, never as balls,
+  cylinders or sculpted limbs.
+- Tool the surface for detail (a Dresden tool or toothpick for lines, a ball tool for dimples).
+- Let it firm up flat, then attach to the cake with a little water or edible glue.
+NEVER say "roll into a ball", "form a cylinder", "attach the legs", "blend the joints" or anything
+else that belongs to modelling in the round. There are no joints on a flat cut-out.`
+  : dimension === '3d'
+    ? `THIS IS A 3D DECORATION, modelled in the round from shaped pieces of fondant.`
+    : ''}
 
 Return ONLY valid JSON, no explanation:
 {
@@ -602,22 +623,35 @@ Rules:
 //
 // Returns { buffer, usage, model } — usage so the ledger can record what the call actually cost,
 // which is what settles whether this fits inside the existing price.
-export async function generateDecorationStages(referenceBuffer, { title, stages = 6, size = '1024x1024' } = {}) {
+export async function generateDecorationStages(referenceBuffer, { title, stages = 6, size = '1024x1024', dimension = null } = {}) {
   const n = Math.min(9, Math.max(4, Number(stages) || 6));
   const form = new FormData();
   form.append('model', config.openai.imageModel);
   form.append('image', new Blob([referenceBuffer], { type: 'image/png' }), 'reference.png');
+  // The picture must agree with the steps about what is being made. Given no instruction the model
+  // renders a 3D figurine even from a flat reference — so a 2D sticker came back as a sculpted
+  // animal standing on a table, which contradicts a guide that says "cut the outline from a sheet".
+  const flat = dimension === '2d';
   form.append('prompt',
-    `A step-by-step build sequence showing how to model the decoration in the reference image` +
+    `A step-by-step build sequence showing how to make the decoration in the reference image` +
     `${title ? ` (${title})` : ''}, by hand, in fondant.\n\n` +
-    `Draw exactly ${n} panels in a clean grid, in build order: the raw material first, then the ` +
-    'bulk shape, then each major part added, ending with the finished decoration exactly matching ' +
-    'the reference.\n\n' +
+    (flat
+      ? `THE DECORATION IS FLAT — cut from a rolled sheet of fondant, like a cookie or a sticker, ` +
+        `NOT modelled in the round. Every panel shows it FLAT ON THE WORK SURFACE, PHOTOGRAPHED ` +
+        `FROM DIRECTLY ABOVE. It must never stand up, never be three-dimensional, never cast the ` +
+        `shadow of a sculpted object.\n\n` +
+        `Draw exactly ${n} panels in a clean grid, in build order: the rolled sheet of fondant, ` +
+        `the outline cut from it, then each flat detail piece laid on top, ending with the ` +
+        `finished decoration exactly matching the reference.\n\n`
+      : `Draw exactly ${n} panels in a clean grid, in build order: the raw material first, then the ` +
+        'bulk shape, then each major part added, ending with the finished decoration exactly ' +
+        'matching the reference.\n\n') +
     'CRITICAL RULES:\n' +
     '- NO TEXT ANYWHERE. No numbers, no labels, no captions, no watermarks, no arrows with words. ' +
     'Pictures only — every word is added afterwards by the layout.\n' +
     '- The SAME object in every panel, at the same scale and the same viewing angle, changing only ' +
     'by what has been added at that stage.\n' +
+    (flat ? '- FLAT in every panel. Viewed from straight above, lying on the surface.\n' : '') +
     '- Plain white background, soft even studio lighting, photorealistic, shot straight on.\n' +
     '- Show only the decoration and the hands-free work surface. No cake, no board, no props.');
   form.append('size', size);

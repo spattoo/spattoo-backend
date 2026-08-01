@@ -2,7 +2,7 @@ import { supabase } from './supabase.js';
 import { suggestBuildGuide } from './openai.js';
 import { renderStageImage, elementStagesKey } from './decorationStages.js';
 import { toPublicUrl } from '../routes/elements.js';
-import { visionImageKey } from './decorationPolicy.js';
+import { visionImageKey, decorationDimension } from './decorationPolicy.js';
 
 // ── Building one element's decoration guide ──────────────────────────────────────────
 // Shared by the two callers that produce the same artefact for different reasons:
@@ -35,8 +35,11 @@ export async function buildElementGuide(el, { ownerBakerId = null } = {}) {
   const imageKey = visionImageKey(el);
   if (!imageKey) return { status: 'no_image', row: null };
 
+  // Flat or in the round. A sticker is flat by definition; anything else we do not claim to know.
+  const dimension = decorationDimension(el);
+
   const { guide, usage, model } = await suggestBuildGuide({
-    imageUrl: toPublicUrl(imageKey), name: el.name, description: el.description,
+    imageUrl: toPublicUrl(imageKey), name: el.name, description: el.description, dimension,
   });
   const calls = [{ model, usage }];
 
@@ -52,6 +55,9 @@ export async function buildElementGuide(el, { ownerBakerId = null } = {}) {
     objectKey: elementStagesKey(el.id),
     title: guide.title || el.name,
     stepCount: guide.steps.length,
+    // The picture must agree with the steps about what is being made — a flat cut-out drawn as a
+    // standing figurine contradicts every instruction beside it.
+    dimension,
   }).catch(err => {
     console.warn(`[decoration-guide] stage image failed for ${el.id}, guide kept:`, err?.message);
     return null;

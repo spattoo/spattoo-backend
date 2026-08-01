@@ -40,6 +40,21 @@ export function visionImageKey(el) {
 const CREAM_TYPES   = new Set(['Cream Piping', 'Palette knife art']);
 const STICKER_TYPES = new Set(['Cake Topper', 'Image topper', 'Top&Side Decors', 'Scattered Decor']);
 
+// FLAT or IN THE ROUND. The two crafts share almost no steps — one is "roll a sheet and cut the
+// outline", the other is "roll a ball and pinch out a tail" — so a guide written for the wrong one
+// is not roughly right, it is unusable. A real generation for a flat sticker came back as
+// instructions for sculpting a standing figurine.
+//
+// A STICKER IS FLAT BY DEFINITION. It is a 2D image placed on the cake, which is the whole reason
+// its material is ambiguous in the first place. Anything else we cannot claim to know: a topper
+// authored as a GLB is genuinely three-dimensional, and a photo decoration could be either — so
+// those return null and the prompt says nothing rather than guessing.
+export function decorationDimension(el) {
+  const type = el?.element_types?.name ?? el?.element_type ?? null;
+  if (STICKER_TYPES.has(type)) return '2d';
+  return null;
+}
+
 // Returns { modelling, print, reason } — what X-Ray may offer for this decoration.
 //
 // `print` is deliberately generous. Printing a decoration at actual size is a real option for
