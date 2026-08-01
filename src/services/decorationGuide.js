@@ -17,10 +17,22 @@ import { visionImageKey, decorationDimension } from './decorationPolicy.js';
 // craftGuide.js `oursToPayFor`). Keeping the generation here means the two can never drift into
 // producing subtly different guides for the same kind of object.
 
-// Bump when the prompt changes in a way that could move the output. Kept as 'build-guide-v1' though
-// the feature is now called decoration steps: this string is STAMPED ON STORED ROWS, and renaming
-// it would split one prompt's history into two versions that were never different.
-export const GUIDE_PROMPT_VERSION = 'build-guide-v1';
+// Bump when the prompt changes in a way that could move the output — and it has, a lot.
+//
+// v2 (2026-08-01) is a different guide from v1, not a refinement of it:
+//   * FLAT vs modelled in the round is now stated, so a 2D sticker stops being described as a
+//     sculpted figurine
+//   * cutting each piece became the body of the guide rather than a preamble to assembly
+//   * every distinct piece must be enumerated first, and a compound part gets its own assembly step
+//   * tools are required on every step
+//   * one hex per role, so the sheet can print swatches
+//
+// A v1 row and a v2 row are not comparable, which is the point of stamping it: without a bump every
+// guide claims the same provenance and there is no way to tell which came from which prompt or to
+// requeue only the stale ones. The name keeps 'build-guide' rather than following the rename to
+// decoration steps, because this string identifies a PROMPT LINEAGE and renaming it would split one
+// history into two that were never different.
+export const GUIDE_PROMPT_VERSION = 'build-guide-v2';
 
 // Generate and store the guide for ONE element.
 //

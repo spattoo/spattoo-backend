@@ -17,12 +17,26 @@ const router = Router();
 // output. Stamped on every estimate, because most quality movement comes from prompt/mapper
 // changes rather than model swaps — and without a version you cannot attribute an accuracy shift
 // to the change that caused it (migrations/022_ai_credits_ledger.sql).
-const PROMPT_VERSION = 'xray-estimate-v1';
+// v2 (2026-08-01). Its own rule — bump when the prompt, the matcher weights or the mapper change
+// in a way that could move the output — and all three did:
+//   * analyzeCake now returns a bbox and a tier-width ratio per decoration
+//   * inspirationMatch gained a SEMANTIC FLOOR, so matches that cleared the composite score on
+//     placement and colour alone are now coverage gaps instead. That changes which decorations get
+//     identified at all, which is the largest output shift this feature has had.
+//   * the mapper carries `seen` (what the model saw) alongside the matched element
+//
+// A v1 spec and a v2 spec are not comparable, and the xray_spec / xray_spec_edited diff is only an
+// honest accuracy measure within one version.
+const PROMPT_VERSION = 'xray-estimate-v2';
 const MODEL = 'gpt-4o';   // what services/openai.js analyzeCake calls today
 
 // Versioned separately from the estimate: the decoration-steps prompt moves on its own, and a
 // shared version would attribute a quality shift to whichever changed last.
-const STEPS_PROMPT_VERSION = 'xray-decoration-steps-v1';
+//
+// v2 (2026-08-01) tracks the same prompt rewrite as GUIDE_PROMPT_VERSION — flat-vs-3D, cutting as
+// the body of the guide, full decomposition, tools per step, a hex per role — since both paths call
+// suggestBuildGuide and get the identical instructions.
+const STEPS_PROMPT_VERSION = 'xray-decoration-steps-v2';
 
 // ── Shared by both order-level X-Ray routes ───────────────────────────────────
 // Load the order, scoped to the caller's bakery, and refuse a DESIGNED one. Both routes exist
