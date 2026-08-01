@@ -707,7 +707,7 @@ export async function generateDecorationStages(referenceBuffer, { title, steps =
     `Spell every word correctly. Keep captions short. Do NOT print any colour codes or hex values ` +
     `— those are listed separately.`);
   form.append('size', size);
-  form.append('quality', config.openai.imageQuality);
+  form.append('quality', config.openai.guideImageQuality);
   form.append('output_format', 'webp');
   form.append('input_fidelity', 'high');
   form.append('n', '1');
@@ -728,7 +728,7 @@ export async function generateDecorationStages(referenceBuffer, { title, steps =
     // /v1/images/edits does not reliably return a usage block — relying on one meant the call
     // recorded NOTHING and a guide costing ~R6.5 was logged at ~R1. The request parameters are
     // known for certain, so the cost is computed from those (services/aiCredits.js imageCostInr).
-    image:  { quality: config.openai.imageQuality, size, n: 1 },
+    image:  { quality: config.openai.guideImageQuality, size, n: 1 },
     // Kept when the provider does return it — useful for reconciling against the real invoice,
     // and harmless: imageCostInr takes precedence for an image call.
     usage:  data?.usage ?? null,

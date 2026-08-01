@@ -32,6 +32,14 @@ export const config = {
     // Quality on 1024x1024: low ≈ $0.009, medium ≈ $0.034, high ≈ $0.133 per image.
     imageModel:   process.env.OPENAI_IMAGE_MODEL   || 'gpt-image-1.5',
     imageQuality: process.env.OPENAI_IMAGE_QUALITY || 'medium',
+    // The GUIDE SHEET's quality, separately settable. Shares a default with imageQuality but not a
+    // knob, because the two do different jobs and cost differently: an extracted element becomes a
+    // permanent library asset, while a guide sheet is a tutorial illustration a baker follows once.
+    //
+    // It is also the single biggest lever on this feature's margin — medium is ~R5.7 a sheet and
+    // low is ~R1.4 — so it needs to be tunable WITHOUT degrading the element pipeline as a side
+    // effect. One shared variable made that experiment impossible to run cleanly.
+    guideImageQuality: process.env.OPENAI_GUIDE_IMAGE_QUALITY || process.env.OPENAI_IMAGE_QUALITY || 'medium',
   },
   removeBg: { apiKey: process.env.REMOVE_BG_API_KEY },
   // Background removal for user uploads ("My Decorations"). `removebg` = the paid vendor (metered per
