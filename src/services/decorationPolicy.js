@@ -132,3 +132,19 @@ export function stageGrid(stepCount) {
   const cols = n <= 4 ? 2 : 3;
   return { count: n, cols, rows: Math.ceil(n / cols) };
 }
+
+// The output size to ask the image model for, chosen so ONE CELL COMES OUT SQUARE.
+//
+// Not cosmetic. Each step displays its own cell in a square box, and a non-square cell is then
+// either stretched or cropped — which is exactly what a 3x2 grid rendered into a square 1024x1024
+// did: cells 341 wide by 512 tall, shown square, so every panel framed parts of its neighbours.
+//
+// The model offers three sizes, so match the grid's aspect to the nearest:
+//   3x2 -> 1536x1024 -> cells 512 square    2x2 -> 1024x1024 -> cells 512 square
+//   3x3 -> 1024x1024 -> cells 341 square    3x4 -> 1024x1536 -> cells 341x384, near enough
+export function stageSize(grid) {
+  const aspect = (grid?.cols ?? 1) / (grid?.rows ?? 1);
+  if (aspect > 1.2)  return '1536x1024';
+  if (aspect < 0.85) return '1024x1536';
+  return '1024x1024';
+}

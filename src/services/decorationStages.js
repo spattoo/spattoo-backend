@@ -1,7 +1,7 @@
 import { generateDecorationStages } from './openai.js';
 import { cropRegion, composeReference } from './imageCrop.js';
 import { getObjectBuffer, putObject } from './r2.js';
-import { stageGrid } from './decorationPolicy.js';
+import { stageGrid, stageSize } from './decorationPolicy.js';
 
 // ── The build-sequence image, for either kind of decoration ──────────────────────────
 // One image showing a decoration at each stage of being made (spattoo-docs
@@ -27,14 +27,18 @@ export async function renderStageImage({ sourceKey, bbox = null, objectKey, titl
   // a crop that clips the decoration is unrecoverable (the model invents the missing half) while
   // surrounding cake is harmless, because the prompt tells it to drop the background.
   const cropped = bbox ? await cropRegion(source, bbox) : source;
-  const { buffer: reference, size } = await composeReference(cropped);
+  // composeReference also returns a size matched to the CROP's shape — right for a single-subject
+  // render, wrong here. The output is a GRID, so its shape must follow the grid or the cells come
+  // out non-square and every panel frames parts of its neighbours.
+  const { buffer: reference } = await composeReference(cropped);
+  const grid = stageGrid(stepCount);
 
   const { buffer, usage, model } = await generateDecorationStages(reference, {
     title,
     // The stages worth drawing are the ones where the SHAPE changes, which is always fewer than the
     // number of written steps — one panel per step reads as a comic strip and costs detail in each.
-    grid: stageGrid(stepCount),
-    size,
+    grid,
+    size: stageSize(grid),
     // Flat cut-out or modelled in the round. The picture and the written steps must agree about
     // which — a sculpted figurine drawn beside "cut the outline from a sheet" reads as a mistake in
     // whichever one the baker happens to trust less.
