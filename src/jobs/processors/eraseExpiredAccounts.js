@@ -147,6 +147,29 @@ async function eraseXrayStageImages(bakerId) {
   }
 }
 
+// The same picture, for a decoration in the baker's OWN element library. Derived from an image
+// they uploaded, so it goes with them.
+//
+// SCOPED TO THEIR OWN ELEMENTS, never to a guide they generated on a GLOBAL one. Those are shared:
+// the row records who paid for it, but the answer belongs to every baker who uses that element, and
+// deleting it because one account closed would take a picture away from everyone else.
+async function eraseElementStageImages(bakerId) {
+  const { data: rows, error } = await supabase
+    .from('element_craft_guide')
+    .select('stages_key, cake_elements!inner(baker_id)')
+    .eq('cake_elements.baker_id', bakerId)
+    .not('stages_key', 'is', null);
+  if (error) throw new Error(`element stage image query failed: ${error.message}`);
+
+  for (const r of rows ?? []) {
+    try {
+      await deleteObject(r.stages_key);
+    } catch (e) {
+      console.error(`[erase-accounts] R2 delete ${r.stages_key} failed:`, e.message);
+    }
+  }
+}
+
 async function eraseOneBaker(bakerId) {
   // Capture auth logins BEFORE anonymizing, so we can delete them (removes email/phone from
   // auth.users too — that PII lives outside our tables).
@@ -171,6 +194,7 @@ async function eraseOneBaker(bakerId) {
   // delete. Promotion links back (source_upload_id) precisely so erasure can follow it.
   await eraseUploads(bakerId);
   await eraseXrayStageImages(bakerId);
+  await eraseElementStageImages(bakerId);
 
   // Delete the Supabase Auth users (blocks login + erases their auth-side PII).
   for (const u of appusers ?? []) {

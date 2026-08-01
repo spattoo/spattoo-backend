@@ -4,6 +4,7 @@ import { supabase } from '../services/supabase.js';
 import { requireAuth } from '../middleware/auth.js';
 import { requireCapability } from '../middleware/rbac.js';
 import { suggestCraftGuide, suggestBuildGuide } from '../services/openai.js';
+import { renderStageImage, elementStagesKey } from '../services/decorationStages.js';
 import { withAiCredits, AI_ACTION, InsufficientCreditsError } from '../services/aiCredits.js';
 import { assertBakerOwns } from '../lib/tenantScope.js';
 // cake_elements.image_url holds an R2 object KEY, not a URL — every read path wraps it before the
@@ -37,7 +38,7 @@ function visionImageKey(el) {
   return [el.image_url, el.thumbnail_url, el.thumb_key].find(k => k && VISION_FORMATS.test(k)) ?? null;
 }
 
-const CRAFT_FIELDS = 'element_id, guide_type, nozzle_recs, consistency, technique, guide, status, model, prompt_version, generated_at, updated_at';
+const CRAFT_FIELDS = 'element_id, guide_type, nozzle_recs, consistency, technique, guide, stages_key, status, model, prompt_version, generated_at, updated_at';
 const CONSISTENCIES = ['stiff', 'medium', 'soft'];
 const RANKS = ['primary', 'secondary', 'alternative'];
 
@@ -76,6 +77,15 @@ function normalizeNozzleRecs(input) {
   return { ok: true, value };
 }
 
+// Stage images are stored as R2 KEYS (the public base is deployment config and would rot every
+// stored row), so the API expands them on the way out — the same contract every other asset column
+// has, and spattoo-core never learns the bucket. Returns a COPY: an expanded URL round-tripping
+// back into storage is exactly the rot the key was chosen to avoid.
+function withStageUrl(row) {
+  if (!row?.stages_key) return row;
+  return { ...row, stages_url: toPublicUrl(row.stages_key) };
+}
+
 // ── Read (any authenticated user — bakers viewing X-Ray, admins authoring) ─────
 
 // GET /api/craft-guide?element_ids=id1,id2,...
@@ -98,7 +108,7 @@ router.get('/craft-guide', requireAuth, requireCapability('design:create'), asyn
       .in('element_id', ids);
 
     if (error) return serverError(req, res, error);
-    res.json(data);
+    res.json((data ?? []).map(withStageUrl));
   } catch (err) {
     serverError(req, res, err);
   }
@@ -257,7 +267,7 @@ router.post('/elements/:id/xray/decoration-steps', requireAuth, requireCapabilit
     const { data: existing } = await supabase
       .from('element_craft_guide').select(CRAFT_FIELDS)
       .eq('element_id', el.id).eq('guide_type', 'fondant_figure').maybeSingle();
-    if (existing) return res.json({ ok: true, reused: true, guide: existing });
+    if (existing) return res.json({ ok: true, reused: true, guide: withStageUrl(existing) });
 
     const out = await withAiCredits(
       {
@@ -275,7 +285,29 @@ router.post('/elements/:id/xray/decoration-steps', requireAuth, requireCapabilit
         if (!guide || !Array.isArray(guide.steps) || guide.steps.length === 0) {
           return { keep: false, note: 'not a modelled decoration', value: { guide, model } };
         }
-        return { value: { guide, model }, provider: 'openai', model, promptVersion: PROMPT_VERSION, calls: [{ model, usage }] };
+
+        // The build sequence. THIS is the case an image pays for itself in: an element guide is
+        // generated once and every future cake using that decoration gets it free, so one image
+        // call amortises across every baker who ever places the element — where a photo
+        // decoration's picture belongs to one order and can never be reused.
+        //
+        // Best-effort, like the photo path: the words are the product, and an image failure must
+        // not throw away steps the baker is about to be charged for.
+        const stages = await renderStageImage({
+          sourceKey: imageKey,                       // an element image IS the isolated decoration
+          objectKey: elementStagesKey(el.id),
+          title: guide.title || el.name,
+          stepCount: guide.steps.length,
+        }).catch(err => {
+          console.warn('[xray] element stage image failed, steps kept:', err?.message);
+          return null;
+        });
+
+        return {
+          value: { guide, model, stagesKey: stages?.key ?? null },
+          provider: 'openai', model, promptVersion: PROMPT_VERSION,
+          calls: [{ model, usage }, ...(stages ? [{ model: stages.model, usage: stages.usage }] : [])],
+        };
       },
     );
 
@@ -303,14 +335,15 @@ router.post('/elements/:id/xray/decoration-steps', requireAuth, requireCapabilit
     // change and would rot every stored row with it. Read it back through toPublicUrl().
     const row = {
       element_id: el.id, guide_type: 'fondant_figure', guide,
-      source_image_url: imageKey, model: out.value.model ?? null,
+      source_image_url: imageKey, stages_key: out.value.stagesKey ?? null,
+      model: out.value.model ?? null,
       prompt_version: PROMPT_VERSION, status: 'draft',
       baker_id: req.bakerId, generated_at: new Date().toISOString(),
     };
     const { error: upErr } = await supabase.from('element_craft_guide').upsert(row, { onConflict: 'element_id,guide_type' });
     if (upErr) throw upErr;
 
-    res.json({ ok: true, reused: false, guide: row });
+    res.json({ ok: true, reused: false, guide: withStageUrl(row) });
   } catch (err) {
     if (err instanceof InsufficientCreditsError) {
       return res.status(err.status).json({ error: err.message, code: err.code, ...err.detail });

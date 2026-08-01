@@ -5,9 +5,8 @@ import { requireAuth } from '../middleware/auth.js';
 import { requireCapability } from '../middleware/rbac.js';
 import { assertBakerOwns } from '../lib/tenantScope.js';
 import { toPublicUrl } from './elements.js';
-import { analyzeCake, suggestBuildGuide, generateDecorationStages } from '../services/openai.js';
-import { cropRegion, composeReference } from '../services/imageCrop.js';
-import { getObjectBuffer, putObject } from '../services/r2.js';
+import { analyzeCake, suggestBuildGuide } from '../services/openai.js';
+import { renderStageImage, orderStagesKey } from '../services/decorationStages.js';
 import { matchAnalysis } from '../services/inspirationMatch.js';
 import { buildXraySpec } from '../services/xraySpec.js';
 import { withAiCredits, AI_ACTION, InsufficientCreditsError } from '../services/aiCredits.js';
@@ -237,33 +236,6 @@ function findDecorationBbox(spec, key) {
   return all.find(d => d?.id === key)?.seen?.bbox ?? null;
 }
 
-// Generate the stage grid and put it in R2. Returns { key, usage, model } or throws — the caller
-// treats a throw as "no picture", never as "no guide".
-//
-// ORDER-SCOPED KEY. A photo decoration exists only on this order, so its picture must not be
-// reachable from any other bakery's sheet, and it must fall inside the account-erasure sweep the
-// way the order's own photos already do.
-async function generateStageImage({ photoKey, bbox, orderId, key, title, stepCount }) {
-  const source = await getObjectBuffer(photoKey);
-  // Pad and square the crop the way the element-extraction pipeline does. A crop that clips the
-  // decoration is unrecoverable — the model invents the missing half — while surrounding cake is
-  // harmless, because the prompt tells it to drop the background.
-  const cropped = bbox ? await cropRegion(source, bbox) : source;
-  const { buffer: reference, size } = await composeReference(cropped);
-
-  const { buffer, usage, model } = await generateDecorationStages(reference, {
-    title,
-    // One panel per step reads as a comic strip and costs detail in each. The stages worth drawing
-    // are the ones where the SHAPE changes, which is always fewer than the number of written steps.
-    stages: Math.min(9, Math.max(4, Math.round(stepCount * 0.75))),
-    size,
-  });
-
-  const objectKey = `orders/guides/${orderId}/${encodeURIComponent(key)}/stages.webp`;
-  await putObject(objectKey, buffer, 'image/webp');
-  return { key: objectKey, usage, model };
-}
-
 // ── POST /api/orders/:id/xray/decoration-steps ────────────────────────────────
 // How do I make THIS decoration — for a decoration that exists only in the customer's photo.
 //
@@ -331,8 +303,11 @@ router.post('/orders/:id/xray/decoration-steps', requireAuth, requireCapability(
         // the improvement, so an image failure must not throw away steps the baker is about to be
         // charged for. A guide with no picture is a worse guide; a 500 after a successful text
         // generation is a wasted credit.
-        const stages = await generateStageImage({
-          photoKey: photo.key, bbox, orderId: order.id, key, title: guide.title || label,
+        const stages = await renderStageImage({
+          sourceKey: photo.key,
+          bbox,                                      // the photo is a whole cake — crop to this one
+          objectKey: orderStagesKey(order.id, key),
+          title: guide.title || label,
           stepCount: guide.steps.length,
         }).catch(err => {
           console.warn('[xray] stage image failed, steps kept:', err?.message);
