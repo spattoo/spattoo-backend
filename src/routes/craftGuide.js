@@ -5,6 +5,7 @@ import { requireAuth } from '../middleware/auth.js';
 import { requireCapability } from '../middleware/rbac.js';
 import { suggestCraftGuide } from '../services/openai.js';
 import { buildElementGuide } from '../services/decorationGuide.js';
+import { archiveObject } from '../services/r2.js';
 import { decorationPolicy, visionImageKey } from '../services/decorationPolicy.js';
 import { withAiCredits, AI_ACTION, InsufficientCreditsError } from '../services/aiCredits.js';
 import { GUIDE_PROMPT_VERSION } from '../services/decorationGuide.js';
@@ -293,6 +294,46 @@ router.post('/admin/elements/:id/decoration-guide', requireAuth, requireCapabili
       return res.json({ ok: true, notModelled: true, guide: out.guide ?? null });
     }
     res.json({ ok: true, guide: withStageUrl(out.row) });
+  } catch (err) {
+    serverError(req, res, err);
+  }
+});
+
+// ── DELETE /api/admin/elements/:id/decoration-guide ───────────────────────────
+// Remove a decoration guide — the row, and its picture into the bin.
+//
+// Wanted because a guide can be wrong in ways a rebuild will not fix: the element is not modelled
+// at all, or its medium was mis-set, and the right end state is NO guide rather than a better one.
+// Without this the only lever was a SQL delete, which orphans the R2 object.
+//
+// The picture is ARCHIVED under deleted/, not destroyed. It cost money to generate and cannot be
+// reproduced — the model will not return the same image twice — so a mistaken delete should be
+// recoverable. The bin is reviewed and emptied by hand.
+router.delete('/admin/elements/:id/decoration-guide', requireAuth, requireCapability('catalog:admin'), async (req, res) => {
+  try {
+    const { data: existing } = await supabase
+      .from('element_craft_guide').select('element_id, stages_key')
+      .eq('element_id', req.params.id).eq('guide_type', 'fondant_figure').maybeSingle();
+    if (!existing) return res.status(404).json({ error: 'No decoration guide to delete.' });
+
+    // Row first. An orphaned object in the bin is tidy-up; a row pointing at an archived key is a
+    // broken image on a baker's sheet.
+    const { error } = await supabase
+      .from('element_craft_guide').delete()
+      .eq('element_id', req.params.id).eq('guide_type', 'fondant_figure');
+    if (error) return serverError(req, res, error);
+
+    let archived = null;
+    if (existing.stages_key) {
+      archived = await archiveObject(existing.stages_key).catch(e => {
+        // The guide IS gone, which is what was asked for. A picture left in place is litter, not
+        // a failure, and reporting this as an error would invite a retry that finds no row.
+        console.warn(`[decoration-guide] ${existing.stages_key} not archived:`, e?.message);
+        return null;
+      });
+    }
+
+    res.json({ ok: true, archived });
   } catch (err) {
     serverError(req, res, err);
   }

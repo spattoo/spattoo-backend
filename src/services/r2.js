@@ -73,6 +73,25 @@ export async function deleteObject(key) {
   await r2.send(new DeleteObjectCommand({ Bucket: config.r2.bucket, Key: key }));
 }
 
+// ── Soft delete ─────────────────────────────────────────────────────────────────────
+// Move an object under `deleted/` instead of destroying it, so a wrong call is recoverable and
+// the bin can be reviewed before anything is really gone.
+//
+// The generated assets this exists for cost real money to produce and are impossible to
+// reconstruct — the model will not return the same picture twice — so "delete" meaning "gone" is
+// the wrong default for them. Reviewed and emptied by hand; this is deliberately NOT swept
+// automatically, because an automatic sweep is just a slower permanent delete.
+//
+// Copy-then-delete rather than a move (S3 has no move). If the copy fails, nothing is deleted and
+// the caller sees the error — the object is never lost between the two calls.
+export async function archiveObject(key) {
+  if (!key) return null;
+  const archived = `deleted/${key}`;
+  await copyObject(key, archived);
+  await deleteObject(key);
+  return archived;
+}
+
 // Returns a signed URL to read a file (expires in 1 hour)
 export async function getSignedReadUrl(key) {
   const command = new GetObjectCommand({
