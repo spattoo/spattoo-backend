@@ -540,6 +540,9 @@ put finished pieces next to each other; they need to know how to GET each piece.
   bevelled.
 - Only AFTER every piece exists may a step assemble them. Assembly is one or two steps at the end,
   never the body of the guide.
+- A COMPOUND PART GETS ITS OWN ASSEMBLY STEP. Five petals and a centre become a flower in a step of
+  their own, before the flower goes onto the decoration — a baker builds it in their hand, not on
+  the cake, and a guide that jumps from loose petals to a finished piece has hidden the fiddly part.
 - Detail is added as further FLAT pieces cut thin and laid on top, or tooled into the surface with a
   Dresden tool, veiner or toothpick — never as balls, cylinders or sculpted limbs.
 - Finish with firming up flat, then attaching with water or edible glue.
@@ -685,11 +688,22 @@ export async function generateDecorationStages(referenceBuffer, { title, steps =
         `following the outline, the piece still in the sheet, the waste fondant around it. A sheet ` +
         `that jumps from rolled fondant to finished shapes has skipped everything that mattered.\n\n`
       : '') +
-    `Follow THESE steps, in this order — one clearly numbered panel each:\n${stepList}\n\n` +
-    `LAYOUT: a clean grid of numbered panels with a short caption under each, a title at the top, ` +
-    `and the finished decoration shown at the end. Use as many panels as the steps need. White ` +
-    `background, soft even lighting, photorealistic, shot straight on. The same object throughout, ` +
-    `at the same scale and angle, changing only by what that step adds.\n\n` +
+    `Follow THESE steps, in this order — ONE PANEL EACH:\n${stepList}\n\n` +
+    `EVERY STEP GETS ITS OWN PANEL. Do not merge two steps into one picture, do not skip a step ` +
+    `because its piece is small, and do not let a step appear only as an object lying in the ` +
+    `background of another panel. A step with no panel of its own is a step the baker cannot see.\n\n` +
+    // The palm's flower kept losing: five petals and a centre reduced to a few specks beside a
+    // trunk, because the model kept every panel at the whole decoration's scale.
+    `ZOOM IN FOR SMALL PIECES. A petal, an eye or a spot must FILL its panel — shown at the scale ` +
+    `it needs to be understood, not at the scale of the finished decoration. A small part rendered ` +
+    `tiny in the corner of its own panel teaches nothing. Close up on the hands and the piece being ` +
+    `worked.\n\n` +
+    `SHOW THE WHOLE OF EACH STEP. If a step cuts five petals, show five petals being cut and laid ` +
+    `out. If it assembles a flower, show the petals going together into the flower. The picture ` +
+    `should carry the step on its own, so a baker who reads nothing still knows what to do.\n\n` +
+    `LAYOUT: a clean grid of panels, EACH NUMBERED in a corner with a short caption under it, a ` +
+    `title across the top, and the finished decoration as the last panel. Use as many panels as the ` +
+    `steps need. White background, soft even lighting, photorealistic, shot straight down.\n\n` +
     `Spell every word correctly. Keep captions short. Do NOT print any colour codes or hex values ` +
     `— those are listed separately.`);
   form.append('size', size);
