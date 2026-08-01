@@ -1,7 +1,6 @@
 import { generateDecorationStages } from './openai.js';
 import { cropRegion, composeReference } from './imageCrop.js';
 import { getObjectBuffer, putObject } from './r2.js';
-import { stageGrid, stageSize } from './decorationPolicy.js';
 
 // ── The build-sequence image, for either kind of decoration ──────────────────────────
 // One image showing a decoration at each stage of being made (spattoo-docs
@@ -27,24 +26,16 @@ export async function renderStageImage({ sourceKey, bbox = null, objectKey, titl
   // a crop that clips the decoration is unrecoverable (the model invents the missing half) while
   // surrounding cake is harmless, because the prompt tells it to drop the background.
   const cropped = bbox ? await cropRegion(source, bbox) : source;
-  // composeReference also returns a size matched to the CROP's shape — right for a single-subject
-  // render, wrong here. The output is a GRID, so its shape must follow the grid or the cells come
-  // out non-square and every panel frames parts of its neighbours.
+  // Only the reference buffer is wanted. composeReference also returns an output size matched to
+  // the CROP's shape, which is right for rendering one subject and wrong for a tutorial sheet —
+  // that is portrait regardless of what the decoration looks like.
   const { buffer: reference } = await composeReference(cropped);
-  const grid = stageGrid(steps.length);
 
   const { buffer, usage, model } = await generateDecorationStages(reference, {
     title,
-    // The stages worth drawing are the ones where the SHAPE changes, which is always fewer than the
-    // number of written steps — one panel per step reads as a comic strip and costs detail in each.
-    grid,
-    // The panels must depict THESE steps. Without them the model invents its own progression and
-    // every caption ends up under the wrong picture.
+    // The sheet illustrates THESE steps. Without them the model invents its own sequence — always
+    // empty, then partial, then complete, which is an assembly story rather than this guide.
     steps,
-    size: stageSize(grid),
-    // Flat cut-out or modelled in the round. The picture and the written steps must agree about
-    // which — a sculpted figurine drawn beside "cut the outline from a sheet" reads as a mistake in
-    // whichever one the baker happens to trust less.
     dimension,
   });
 

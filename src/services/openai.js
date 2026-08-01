@@ -648,70 +648,53 @@ Rules:
 // ASSEMBLY story. So a guide whose words said "cut the trunk / cut the leaves / cut the flowers"
 // came back as pictures of a palm being put together, and every caption sat under the wrong image.
 // The panels have to depict the steps, which means being given them.
-// One line per panel, from the guide's own steps. Titles plus the first instruction: enough to say
-// what the picture is OF, without pasting a paragraph the image model will try to render as text.
-// Colour role tokens are stripped — {leaf} means nothing to an image model and would come out as
-// literal braces if it decided to draw them.
-function panelBrief(steps, n) {
+// ── The guide sheet: ONE image, one call, the whole thing ────────────────────────────
+// A complete step-by-step sheet — panels, numbers, captions, all of it — the way a baker would
+// share one. Not a grid we slice, not one image per step. One request, one picture.
+//
+// AN EARLIER VERSION SPLIT THIS UP: pictures from the model, words rendered by us, panels framed
+// out of a derived grid with CSS. It failed, and it was always going to. A generative image model
+// does not return an exact N-panel grid at exact positions, so every cell landed across panel
+// boundaries — and no amount of prompt wording makes that deterministic. The split also existed to
+// dodge a risk (a misspelt hex sending a baker to mix the wrong colour) that was already handled:
+// the colours are rendered separately from our own gel table and never read off this image.
+//
+// The model IS given the guide's own steps, so the sheet illustrates this guide rather than
+// inventing its own sequence. How many panels that needs is its business, not ours.
+export async function generateDecorationStages(referenceBuffer, { title, steps = [], size = '1024x1536', dimension = null } = {}) {
   const readable = (t) => String(t ?? '').replace(/\{(\w+)\}/g, (_, r) => r.replace(/_/g, ' '));
-  return (steps ?? []).slice(0, n).map((st, i) => {
-    const first = (st?.instructions ?? [])[0] ?? '';
-    return `Panel ${i + 1}: ${readable(st?.title ?? '')}${first ? ` — ${readable(first)}` : ''}`;
-  }).join('\n') + '\n';
-}
+  const stepList = (steps ?? []).map((st, i) => {
+    const lines = (st?.instructions ?? []).map(readable).join(' ');
+    const tools = (st?.tools ?? []).join(', ');
+    return `${i + 1}. ${readable(st?.title ?? '')} — ${lines}${tools ? ` [tools: ${tools}]` : ''}`;
+  }).join('\n');
 
-export async function generateDecorationStages(referenceBuffer, { title, grid, steps = [], size = '1024x1024', dimension = null } = {}) {
-  // ONE PANEL PER STEP, in a grid whose shape the reader can derive from the step count — that is
-  // what lets each step show ITS OWN panel beside its own words (services/decorationPolicy.js
-  // stageGrid). Panels must therefore be evenly sized and in reading order, or cell N stops being
-  // step N and every caption is against the wrong picture.
-  const { count: n, cols, rows } = grid ?? { count: 6, cols: 3, rows: 2 };
+  const flat = dimension === '2d';
   const form = new FormData();
   form.append('model', config.openai.imageModel);
   form.append('image', new Blob([referenceBuffer], { type: 'image/png' }), 'reference.png');
-  // The picture must agree with the steps about what is being made. Given no instruction the model
-  // renders a 3D figurine even from a flat reference — so a 2D sticker came back as a sculpted
-  // animal standing on a table, which contradicts a guide that says "cut the outline from a sheet".
-  const flat = dimension === '2d';
   form.append('prompt',
-    `A step-by-step build sequence showing how to make the decoration in the reference image` +
-    `${title ? ` (${title})` : ''}, by hand, in fondant.\n\n` +
+    `Create a complete step-by-step tutorial sheet showing how to make the fondant decoration in ` +
+    `the reference image${title ? ` — "${title}"` : ''}. The kind of illustrated guide a cake ` +
+    `decorator would print and follow at the bench.\n\n` +
     (flat
-      ? `THE DECORATION IS FLAT — cut from a rolled sheet of fondant, like a cookie or a sticker, ` +
-        `NOT modelled in the round. Every panel shows it FLAT ON THE WORK SURFACE, PHOTOGRAPHED ` +
-        `FROM DIRECTLY ABOVE. It must never stand up, never be three-dimensional, never cast the ` +
-        `shadow of a sculpted object.\n\n` +
-        `SHOW THE CUTTING. That is the part a baker cannot work out alone, and a sequence that ` +
-        `jumps from a rolled sheet to a finished shape has skipped everything that mattered. ` +
-        `Panels should show the blade or cutter mid-cut, the outline being followed, the waste ` +
-        `fondant still around the piece — not only the tidy result.\n\n`
+      ? `THE DECORATION IS FLAT — cut from a rolled sheet of fondant like a cookie, NOT modelled in ` +
+        `the round. Every panel shows it lying flat on the work surface, photographed from directly ` +
+        `above. It must never stand up or look three-dimensional.\n\n` +
+        `SHOW THE CUTTING. That is the part a baker cannot work out alone: the blade or cutter ` +
+        `following the outline, the piece still in the sheet, the waste fondant around it. A sheet ` +
+        `that jumps from rolled fondant to finished shapes has skipped everything that mattered.\n\n`
       : '') +
-    // The layout prints a caption beside each cell, so panel N must be step N. An uneven or
-    // reflowed grid silently pairs every instruction with the wrong picture — worse than no
-    // picture, because it looks deliberate.
-    `Draw EXACTLY ${n} panels in a ${cols} x ${rows} grid, read left to right, top to bottom. ` +
-    `Every panel the SAME SIZE and evenly spaced, filling the frame edge to edge with no margin ` +
-    `around the grid.\n\n` +
-    // Each panel illustrates ONE named step. Stated as a numbered list because the captions are
-    // printed against these positions — panel 3 is step 3 or the whole sheet is mislabelled.
-    `EACH PANEL ILLUSTRATES ONE STEP, in this exact order. Draw what the step SAYS, not the ` +
-    `decoration at that stage of completion:\n` +
-    panelBrief(steps, n) +
-    `\nA step about CUTTING shows the cutting happening — the blade or cutter following the ` +
-    `outline, the piece still in the sheet, the waste fondant around it. Not the finished piece ` +
-    `sitting on its own. Only a step that actually says "attach" or "assemble" may show parts ` +
-    `being put together.\n\n` +
-    'CRITICAL RULES:\n' +
-    '- NO TEXT ANYWHERE. No numbers, no labels, no captions, no watermarks, no arrows with words. ' +
-    'Pictures only — every word is added afterwards by the layout.\n' +
-    '- The SAME object in every panel, at the same scale and the same viewing angle, changing only ' +
-    'by what has been added at that stage.\n' +
-    (flat ? '- FLAT in every panel. Viewed from straight above, lying on the surface.\n' : '') +
-    '- Plain white background, soft even studio lighting, photorealistic, shot straight on.\n' +
-    '- Show only the decoration and the hands-free work surface. No cake, no board, no props.');
+    `Follow THESE steps, in this order — one clearly numbered panel each:\n${stepList}\n\n` +
+    `LAYOUT: a clean grid of numbered panels with a short caption under each, a title at the top, ` +
+    `and the finished decoration shown at the end. Use as many panels as the steps need. White ` +
+    `background, soft even lighting, photorealistic, shot straight on. The same object throughout, ` +
+    `at the same scale and angle, changing only by what that step adds.\n\n` +
+    `Spell every word correctly. Keep captions short. Do NOT print any colour codes or hex values ` +
+    `— those are listed separately.`);
   form.append('size', size);
   form.append('quality', config.openai.imageQuality);
-  form.append('output_format', 'webp');       // a grid is photographic and never needs alpha
+  form.append('output_format', 'webp');
   form.append('input_fidelity', 'high');
   form.append('n', '1');
 
