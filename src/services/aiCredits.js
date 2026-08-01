@@ -302,6 +302,23 @@ export async function refundCredits(transactionId, note = null) {
 // On a replayed idempotency key the wrapper does NOT re-run `run` — it resolves to
 // { replay: true } and leaves it to the caller to fetch whatever the first attempt stored.
 export async function withAiCredits(opts, run) {
+  // `free` — run the action WITHOUT metering it. Not a discount and not a bypass: it marks work
+  // whose cost is OURS rather than the baker's, and the only case today is generating a guide for
+  // a Spattoo library element, which should have shipped with one (see routes/craftGuide.js).
+  //
+  // Deliberately explicit at the call site rather than inferred here. A wrapper that decided on its
+  // own when something was free would be one refactor away from silently un-metering a paid action,
+  // which is the failure this whole module exists to prevent.
+  //
+  // Note what is NOT skipped: `run` still executes and still reports its provider calls, so free
+  // work is absent from the ledger but its rupee cost is not invisible — it shows up in the
+  // provider invoice either way, and pretending otherwise would flatter the margin numbers.
+  if (opts?.free) {
+    const out = await run(null);
+    return { replay: false, value: out?.keep === false ? null : out?.value ?? null,
+             discarded: out?.keep === false, discardedValue: out?.value ?? null, reservation: null };
+  }
+
   const reservation = await reserveCredits(opts);
   if (reservation.replay) return { replay: true, value: null, reservation };
 

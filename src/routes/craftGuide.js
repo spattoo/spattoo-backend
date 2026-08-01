@@ -269,11 +269,26 @@ router.post('/elements/:id/xray/decoration-steps', requireAuth, requireCapabilit
       .eq('element_id', el.id).eq('guide_type', 'fondant_figure').maybeSingle();
     if (existing) return res.json({ ok: true, reused: true, guide: withStageUrl(existing) });
 
+    // ── WHO PAYS ────────────────────────────────────────────────────────────────────
+    // A SPATTOO element must already carry its guide by the time a baker meets it — building it
+    // belongs to publishing the element, not to the first baker who happens to open one. Charging
+    // them would mean one bakery funding our catalogue for everyone else, and would make a
+    // library decoration feel metered on first use when it should feel instant.
+    //
+    // Until every catalogue element is backfilled, this generates it FREE rather than refusing:
+    // the cost is ours by the same rule, and it self-heals — each global element is generated at
+    // most once, ever, so the total is bounded by the size of the catalogue and not by traffic.
+    //
+    // Credits are for what we could NOT know in advance: a photo we have never seen, or a
+    // decoration the baker made themselves.
+    const oursToPayFor = !el.baker_id;
+
     const out = await withAiCredits(
       {
         bakerId: req.bakerId,
         action:  AI_ACTION.ELEMENT_BUILD_GUIDE,
         idempotencyKey: `xray-steps:element:${el.id}`,
+        free: oursToPayFor,
       },
       async () => {
         const { guide, usage, model } = await suggestBuildGuide({
@@ -335,15 +350,18 @@ router.post('/elements/:id/xray/decoration-steps', requireAuth, requireCapabilit
     // change and would rot every stored row with it. Read it back through toPublicUrl().
     const row = {
       element_id: el.id, guide_type: 'fondant_figure', guide,
+      // Who this belongs to, not who triggered it. A guide on OUR element is ours — the baker who
+      // happened to open it first did not pay for it and does not own it.
+      // baker_id below follows the same rule.
       source_image_url: imageKey, stages_key: out.value.stagesKey ?? null,
       model: out.value.model ?? null,
       prompt_version: PROMPT_VERSION, status: 'draft',
-      baker_id: req.bakerId, generated_at: new Date().toISOString(),
+      baker_id: oursToPayFor ? null : req.bakerId, generated_at: new Date().toISOString(),
     };
     const { error: upErr } = await supabase.from('element_craft_guide').upsert(row, { onConflict: 'element_id,guide_type' });
     if (upErr) throw upErr;
 
-    res.json({ ok: true, reused: false, guide: withStageUrl(row) });
+    res.json({ ok: true, reused: false, charged: !oursToPayFor, guide: withStageUrl(row) });
   } catch (err) {
     if (err instanceof InsufficientCreditsError) {
       return res.status(err.status).json({ error: err.message, code: err.code, ...err.detail });
