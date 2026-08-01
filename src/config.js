@@ -32,14 +32,19 @@ export const config = {
     // Quality on 1024x1024: low ≈ $0.009, medium ≈ $0.034, high ≈ $0.133 per image.
     imageModel:   process.env.OPENAI_IMAGE_MODEL   || 'gpt-image-1.5',
     imageQuality: process.env.OPENAI_IMAGE_QUALITY || 'medium',
-    // The GUIDE SHEET's quality, separately settable. Shares a default with imageQuality but not a
-    // knob, because the two do different jobs and cost differently: an extracted element becomes a
-    // permanent library asset, while a guide sheet is a tutorial illustration a baker follows once.
+    // The GUIDE SHEET's quality. LOW BY DEFAULT, and deliberately not inheriting OPENAI_IMAGE_QUALITY
+    // — the two do different jobs. An extracted element becomes a permanent library asset; a guide
+    // sheet is a tutorial illustration a baker follows once and throws away.
     //
-    // It is also the single biggest lever on this feature's margin — medium is ~R5.7 a sheet and
-    // low is ~R1.4 — so it needs to be tunable WITHOUT degrading the element pipeline as a side
-    // effect. One shared variable made that experiment impossible to run cleanly.
-    guideImageQuality: process.env.OPENAI_GUIDE_IMAGE_QUALITY || process.env.OPENAI_IMAGE_QUALITY || 'medium',
+    // Low was CHOSEN, not defaulted to. Compared side by side at 1024x1536 (a monstera leaf,
+    // 2026-08-02): the paper template, the Dresden tool, the cut edge and the captions are all
+    // legible, and the information on this sheet is SHAPE rather than surface texture — which is
+    // exactly what survives a lower budget.
+    //
+    // It is the single biggest lever on the feature's margin: ~R1.4 a sheet against ~R5.7 at
+    // medium, which is a decoration guide at ~87% gross instead of ~62%. Raise it only with a
+    // side-by-side comparison in hand, and knowing it quadruples the cost of every guide.
+    guideImageQuality: process.env.OPENAI_GUIDE_IMAGE_QUALITY || 'low',
   },
   removeBg: { apiKey: process.env.REMOVE_BG_API_KEY },
   // Background removal for user uploads ("My Decorations"). `removebg` = the paid vendor (metered per
