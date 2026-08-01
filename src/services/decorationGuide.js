@@ -1,6 +1,7 @@
 import { supabase } from './supabase.js';
 import { suggestBuildGuide } from './openai.js';
 import { renderStageImage, elementStagesKey } from './decorationStages.js';
+import { deleteObject } from './r2.js';
 import { toPublicUrl } from '../routes/elements.js';
 import { visionImageKey, decorationDimension } from './decorationPolicy.js';
 
@@ -84,9 +85,24 @@ export async function buildElementGuide(el, { ownerBakerId = null } = {}) {
     generated_at: new Date().toISOString(),
   };
 
+  // Read the key we are about to replace, so the superseded picture can be removed. Read BEFORE
+  // the upsert: afterwards the row points at the new one and the old key is unrecoverable.
+  const { data: prev } = await supabase
+    .from('element_craft_guide').select('stages_key')
+    .eq('element_id', el.id).eq('guide_type', 'fondant_figure').maybeSingle();
+
   const { error } = await supabase
     .from('element_craft_guide').upsert(row, { onConflict: 'element_id,guide_type' });
   if (error) throw error;
+
+  // Every generation writes a NEW key (the cache is immutable, so a reused key is never refetched),
+  // which means a rebuild would otherwise leave the old picture behind forever. Deleted only after
+  // the row points at the replacement: losing the object while the row still referenced it would
+  // turn a stale picture into no picture.
+  if (prev?.stages_key && prev.stages_key !== row.stages_key) {
+    await deleteObject(prev.stages_key).catch(e =>
+      console.warn(`[decoration-guide] stale stage image ${prev.stages_key} not removed:`, e?.message));
+  }
 
   return { status: 'ok', row, guide, model, calls };
 }

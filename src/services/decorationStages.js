@@ -46,10 +46,25 @@ export async function renderStageImage({ sourceKey, bbox = null, objectKey, titl
 // Where a photo decoration's picture lives. Order-scoped, so it is unreachable from another
 // bakery's sheet and falls inside the account-erasure sweep with the order's own photos.
 export function orderStagesKey(orderId, decorationKey) {
-  return `orders/guides/${orderId}/${encodeURIComponent(decorationKey)}/stages.webp`;
+  return `orders/guides/${orderId}/${encodeURIComponent(decorationKey)}/stages-${stamp()}.webp`;
 }
 
 // Where a library element's picture lives. Shared by every baker who uses that element.
 export function elementStagesKey(elementId) {
-  return `elements/guides/${elementId}/stages.webp`;
+  return `elements/guides/${elementId}/stages-${stamp()}.webp`;
+}
+
+// ── Why every generation gets a NEW key ──────────────────────────────────────────────
+// putObject stores everything as `public, max-age=31536000, immutable` — a year, and browsers and
+// CDNs are entitled to take that literally. That is correct for content-addressed assets and WRONG
+// for a fixed key we overwrite: a rebuilt guide wrote a new picture to the same URL, and nothing
+// ever fetched it again. The words changed on every rebuild (they come back in the API's JSON,
+// which is not cached) and the picture never did — which looked exactly like regeneration being
+// broken, and was really a cache doing its job.
+//
+// So the key carries a stamp and the caching stays honest: a URL that never changes never lies.
+// The previous object is deleted by the caller once the new one is stored, so the bucket does not
+// accumulate a copy per rebuild.
+function stamp() {
+  return Date.now().toString(36);
 }
