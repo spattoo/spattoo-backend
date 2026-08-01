@@ -1,6 +1,7 @@
 import { generateDecorationStages } from './openai.js';
 import { cropRegion, composeReference } from './imageCrop.js';
 import { getObjectBuffer, putObject } from './r2.js';
+import { stageGrid } from './decorationPolicy.js';
 
 // ── The build-sequence image, for either kind of decoration ──────────────────────────
 // One image showing a decoration at each stage of being made (spattoo-docs
@@ -32,7 +33,7 @@ export async function renderStageImage({ sourceKey, bbox = null, objectKey, titl
     title,
     // The stages worth drawing are the ones where the SHAPE changes, which is always fewer than the
     // number of written steps — one panel per step reads as a comic strip and costs detail in each.
-    stages: stagesFor(stepCount),
+    grid: stageGrid(stepCount),
     size,
     // Flat cut-out or modelled in the round. The picture and the written steps must agree about
     // which — a sculpted figurine drawn beside "cut the outline from a sheet" reads as a mistake in
@@ -42,10 +43,6 @@ export async function renderStageImage({ sourceKey, bbox = null, objectKey, titl
 
   await putObject(objectKey, buffer, 'image/webp');
   return { key: objectKey, usage, model };
-}
-
-export function stagesFor(stepCount) {
-  return Math.min(9, Math.max(4, Math.round((Number(stepCount) || 0) * 0.75)));
 }
 
 // Where a photo decoration's picture lives. Order-scoped, so it is unreachable from another

@@ -521,15 +521,25 @@ a different decoration instead.`
 
 ${dimension === '2d'
   ? `THIS IS A FLAT, 2D DECORATION. It is cut from a rolled sheet of fondant and laid on the cake —
-it is NOT modelled in the round. Write it that way:
-- Roll the fondant to an even sheet, 2-3mm thick, on a cornstarch-dusted surface.
-- Cut the OUTLINE of the shape with a small knife, a cutter, or around a paper template.
-- Build any detail as further FLAT pieces cut or rolled thin and laid on top, never as balls,
-  cylinders or sculpted limbs.
-- Tool the surface for detail (a Dresden tool or toothpick for lines, a ball tool for dimples).
-- Let it firm up flat, then attach to the cake with a little water or edible glue.
-NEVER say "roll into a ball", "form a cylinder", "attach the legs", "blend the joints" or anything
-else that belongs to modelling in the round. There are no joints on a flat cut-out.`
+it is NOT modelled in the round.
+
+CUTTING EACH SHAPE IS THE HARD PART AND MOST OF THE GUIDE. A baker does not need to be told how to
+put finished pieces next to each other; they need to know how to GET each piece. So:
+- Give EVERY distinct piece its own step covering how it is CUT: which colour sheet, what thickness,
+  and how the outline is made — freehand with a small knife, with a named cutter, or around a paper
+  template traced from the printed shape.
+- Say how to get the shape RIGHT: cut a paper template first for anything with an outline that is
+  hard to judge by eye, work from the widest part inwards, keep the blade upright so the edge is not
+  bevelled.
+- Only AFTER every piece exists may a step assemble them. Assembly is one or two steps at the end,
+  never the body of the guide.
+- Detail is added as further FLAT pieces cut thin and laid on top, or tooled into the surface with a
+  Dresden tool, veiner or toothpick — never as balls, cylinders or sculpted limbs.
+- Finish with firming up flat, then attaching with water or edible glue.
+
+NEVER say "roll into a ball", "form a cylinder", "attach the legs" or "blend the joints" — there are
+no joints on a flat cut-out. A guide that starts from finished shapes and only assembles them has
+missed the point entirely.`
   : dimension === '3d'
     ? `THIS IS A 3D DECORATION, modelled in the round from shaped pieces of fondant.`
     : ''}
@@ -558,7 +568,10 @@ Rules:
   text would be wrong every other time.
 - Steps in the order a hand actually works: bulk shapes first, fine detail and attachment last.
 - 4 to 12 steps. Fewer, meatier steps beat many trivial ones.
-- Tools must be real and namable (Ball Tool, Dresden Tool, Rolling Pin, Brush (Water), Craft Knife).
+- EVERY step lists the tools it needs in "tools" — the sheet prints them beside that step, and a
+  step with an empty tools array reads as though it needs none. Tools must be real and namable
+  (Rolling Pin, Craft Knife, Ball Tool, Dresden Tool, Veiner, Brush (Water), Fondant Smoother,
+  Round Cutter, Paper Template).
 - "colours" gives ONE hex per role, read off the image. This is the only place a colour may appear:
   the steps stay colour-free so the same guide serves the decoration in any colour, and the sheet
   prints the swatches beside them. Omit a role you cannot see clearly rather than guessing — the
@@ -623,8 +636,12 @@ Rules:
 //
 // Returns { buffer, usage, model } — usage so the ledger can record what the call actually cost,
 // which is what settles whether this fits inside the existing price.
-export async function generateDecorationStages(referenceBuffer, { title, stages = 6, size = '1024x1024', dimension = null } = {}) {
-  const n = Math.min(9, Math.max(4, Number(stages) || 6));
+export async function generateDecorationStages(referenceBuffer, { title, grid, size = '1024x1024', dimension = null } = {}) {
+  // ONE PANEL PER STEP, in a grid whose shape the reader can derive from the step count — that is
+  // what lets each step show ITS OWN panel beside its own words (services/decorationPolicy.js
+  // stageGrid). Panels must therefore be evenly sized and in reading order, or cell N stops being
+  // step N and every caption is against the wrong picture.
+  const { count: n, cols, rows } = grid ?? { count: 6, cols: 3, rows: 2 };
   const form = new FormData();
   form.append('model', config.openai.imageModel);
   form.append('image', new Blob([referenceBuffer], { type: 'image/png' }), 'reference.png');
@@ -640,12 +657,18 @@ export async function generateDecorationStages(referenceBuffer, { title, stages 
         `NOT modelled in the round. Every panel shows it FLAT ON THE WORK SURFACE, PHOTOGRAPHED ` +
         `FROM DIRECTLY ABOVE. It must never stand up, never be three-dimensional, never cast the ` +
         `shadow of a sculpted object.\n\n` +
-        `Draw exactly ${n} panels in a clean grid, in build order: the rolled sheet of fondant, ` +
-        `the outline cut from it, then each flat detail piece laid on top, ending with the ` +
-        `finished decoration exactly matching the reference.\n\n`
-      : `Draw exactly ${n} panels in a clean grid, in build order: the raw material first, then the ` +
-        'bulk shape, then each major part added, ending with the finished decoration exactly ' +
-        'matching the reference.\n\n') +
+        `SHOW THE CUTTING. That is the part a baker cannot work out alone, and a sequence that ` +
+        `jumps from a rolled sheet to a finished shape has skipped everything that mattered. ` +
+        `Panels should show the blade or cutter mid-cut, the outline being followed, the waste ` +
+        `fondant still around the piece — not only the tidy result.\n\n`
+      : '') +
+    // The layout prints a caption beside each cell, so panel N must be step N. An uneven or
+    // reflowed grid silently pairs every instruction with the wrong picture — worse than no
+    // picture, because it looks deliberate.
+    `Draw EXACTLY ${n} panels in a ${cols} x ${rows} grid, read left to right, top to bottom. ` +
+    `Every panel the SAME SIZE and evenly spaced, filling the frame edge to edge with no margin ` +
+    `around the grid. Panel 1 is the first stage and panel ${n} is the finished decoration, ` +
+    `exactly matching the reference.\n\n` +
     'CRITICAL RULES:\n' +
     '- NO TEXT ANYWHERE. No numbers, no labels, no captions, no watermarks, no arrows with words. ' +
     'Pictures only — every word is added afterwards by the layout.\n' +
