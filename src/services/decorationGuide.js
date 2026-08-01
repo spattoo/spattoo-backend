@@ -54,7 +54,7 @@ export async function buildElementGuide(el, { ownerBakerId = null } = {}) {
     sourceKey: imageKey,                 // an element image IS the isolated decoration; no crop
     objectKey: elementStagesKey(el.id),
     title: guide.title || el.name,
-    stepCount: guide.steps.length,
+    steps: guide.steps,
     // The picture must agree with the steps about what is being made — a flat cut-out drawn as a
     // standing figurine contradicts every instruction beside it.
     dimension,

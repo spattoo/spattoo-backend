@@ -308,7 +308,7 @@ router.post('/orders/:id/xray/decoration-steps', requireAuth, requireCapability(
           bbox,                                      // the photo is a whole cake — crop to this one
           objectKey: orderStagesKey(order.id, key),
           title: guide.title || label,
-          stepCount: guide.steps.length,
+          steps: guide.steps,
         }).catch(err => {
           console.warn('[xray] stage image failed, steps kept:', err?.message);
           return null;

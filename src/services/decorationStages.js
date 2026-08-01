@@ -20,7 +20,7 @@ import { stageGrid, stageSize } from './decorationPolicy.js';
 // Throws on any failure. Every caller treats that as "no picture", never as "no guide": the words
 // are the product and the picture is the improvement, so an image failure must not throw away
 // steps the baker is about to be charged for.
-export async function renderStageImage({ sourceKey, bbox = null, objectKey, title, stepCount, dimension = null }) {
+export async function renderStageImage({ sourceKey, bbox = null, objectKey, title, steps = [], dimension = null }) {
   const source = await getObjectBuffer(sourceKey);
 
   // cropRegion pads the box outward before cutting — vision models are imprecise at boundaries, and
@@ -31,13 +31,16 @@ export async function renderStageImage({ sourceKey, bbox = null, objectKey, titl
   // render, wrong here. The output is a GRID, so its shape must follow the grid or the cells come
   // out non-square and every panel frames parts of its neighbours.
   const { buffer: reference } = await composeReference(cropped);
-  const grid = stageGrid(stepCount);
+  const grid = stageGrid(steps.length);
 
   const { buffer, usage, model } = await generateDecorationStages(reference, {
     title,
     // The stages worth drawing are the ones where the SHAPE changes, which is always fewer than the
     // number of written steps — one panel per step reads as a comic strip and costs detail in each.
     grid,
+    // The panels must depict THESE steps. Without them the model invents its own progression and
+    // every caption ends up under the wrong picture.
+    steps,
     size: stageSize(grid),
     // Flat cut-out or modelled in the round. The picture and the written steps must agree about
     // which — a sculpted figurine drawn beside "cut the outline from a sheet" reads as a mistake in

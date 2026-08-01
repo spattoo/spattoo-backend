@@ -523,11 +523,18 @@ ${dimension === '2d'
   ? `THIS IS A FLAT, 2D DECORATION. It is cut from a rolled sheet of fondant and laid on the cake —
 it is NOT modelled in the round.
 
+FIRST, LIST EVERY DISTINCT PIECE. Look at the decoration and break it down completely — a palm tree
+is a trunk, five leaves, five petals and a flower centre, not "a tree and a flower". A piece that is
+repeated counts once but say how many are needed. A compound part (a flower) is broken into ITS
+pieces (petals, centre), because each is cut separately.
+
 CUTTING EACH SHAPE IS THE HARD PART AND MOST OF THE GUIDE. A baker does not need to be told how to
 put finished pieces next to each other; they need to know how to GET each piece. So:
 - Give EVERY distinct piece its own step covering how it is CUT: which colour sheet, what thickness,
-  and how the outline is made — freehand with a small knife, with a named cutter, or around a paper
-  template traced from the printed shape.
+  how many, and how the outline is made — freehand with a small knife, with a named cutter, or
+  around a paper template traced from the printed shape.
+- Do not merge two different shapes into one step to save space. Cutting a leaf and cutting a petal
+  are different cuts and get different steps, even when both are green.
 - Say how to get the shape RIGHT: cut a paper template first for anything with an outline that is
   hard to judge by eye, work from the widest part inwards, keep the blade upright so the edge is not
   bevelled.
@@ -636,7 +643,24 @@ Rules:
 //
 // Returns { buffer, usage, model } — usage so the ledger can record what the call actually cost,
 // which is what settles whether this fits inside the existing price.
-export async function generateDecorationStages(referenceBuffer, { title, grid, size = '1024x1024', dimension = null } = {}) {
+// `steps` — the guide's OWN steps, in order. Without them the model is told only "show this being
+// built" and invents its own progression, which is always empty -> partial -> complete: an
+// ASSEMBLY story. So a guide whose words said "cut the trunk / cut the leaves / cut the flowers"
+// came back as pictures of a palm being put together, and every caption sat under the wrong image.
+// The panels have to depict the steps, which means being given them.
+// One line per panel, from the guide's own steps. Titles plus the first instruction: enough to say
+// what the picture is OF, without pasting a paragraph the image model will try to render as text.
+// Colour role tokens are stripped — {leaf} means nothing to an image model and would come out as
+// literal braces if it decided to draw them.
+function panelBrief(steps, n) {
+  const readable = (t) => String(t ?? '').replace(/\{(\w+)\}/g, (_, r) => r.replace(/_/g, ' '));
+  return (steps ?? []).slice(0, n).map((st, i) => {
+    const first = (st?.instructions ?? [])[0] ?? '';
+    return `Panel ${i + 1}: ${readable(st?.title ?? '')}${first ? ` — ${readable(first)}` : ''}`;
+  }).join('\n') + '\n';
+}
+
+export async function generateDecorationStages(referenceBuffer, { title, grid, steps = [], size = '1024x1024', dimension = null } = {}) {
   // ONE PANEL PER STEP, in a grid whose shape the reader can derive from the step count — that is
   // what lets each step show ITS OWN panel beside its own words (services/decorationPolicy.js
   // stageGrid). Panels must therefore be evenly sized and in reading order, or cell N stops being
@@ -667,8 +691,16 @@ export async function generateDecorationStages(referenceBuffer, { title, grid, s
     // picture, because it looks deliberate.
     `Draw EXACTLY ${n} panels in a ${cols} x ${rows} grid, read left to right, top to bottom. ` +
     `Every panel the SAME SIZE and evenly spaced, filling the frame edge to edge with no margin ` +
-    `around the grid. Panel 1 is the first stage and panel ${n} is the finished decoration, ` +
-    `exactly matching the reference.\n\n` +
+    `around the grid.\n\n` +
+    // Each panel illustrates ONE named step. Stated as a numbered list because the captions are
+    // printed against these positions — panel 3 is step 3 or the whole sheet is mislabelled.
+    `EACH PANEL ILLUSTRATES ONE STEP, in this exact order. Draw what the step SAYS, not the ` +
+    `decoration at that stage of completion:\n` +
+    panelBrief(steps, n) +
+    `\nA step about CUTTING shows the cutting happening — the blade or cutter following the ` +
+    `outline, the piece still in the sheet, the waste fondant around it. Not the finished piece ` +
+    `sitting on its own. Only a step that actually says "attach" or "assemble" may show parts ` +
+    `being put together.\n\n` +
     'CRITICAL RULES:\n' +
     '- NO TEXT ANYWHERE. No numbers, no labels, no captions, no watermarks, no arrows with words. ' +
     'Pictures only — every word is added afterwards by the layout.\n' +
