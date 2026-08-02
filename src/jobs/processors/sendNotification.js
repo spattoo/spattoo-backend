@@ -399,6 +399,32 @@ function buildEmail(typeSlug, recipientEmail, payload) {
         ${billingCta}`) };
   }
 
+  // ── AI credits — purchase receipt ───────────────────────────────────────────
+  // Deliberately NOT "your payment was successful and nothing else". Someone reading this weeks
+  // later is answering one of three questions, so all three are on the page: what did I buy, what
+  // did it cost, and how many do I have now.
+  //
+  // "Never expire" is repeated here even though it is on the buy screen, because this is the
+  // document that outlives the screen — and it is the promise most likely to be doubted later,
+  // when a plan lapses or a month rolls over.
+  //
+  // The CTA goes to the designer rather than to billing: they bought credits to make something,
+  // and billing is the screen we deliberately moved this purchase OUT of.
+  if (typeSlug === 'credits_purchased') {
+    const n       = Number(p.credits) || 0;
+    const bought  = n.toLocaleString('en-IN');
+    const wallet  = p.walletBalance != null ? Number(p.walletBalance).toLocaleString('en-IN') : null;
+    const appUrl  = config.app.url ? config.app.url.replace(/\/+$/, '') : null;
+    return { from: config.smtp.from, to: recipientEmail,
+      subject: `${bought} Spattoo credits added`,
+      html: shell(`<h2 style="margin:0 0 12px;font-size:22px;color:#2C4433;font-weight:800;">Thanks${hi}</h2>
+        <p>We've received your payment${p.amount != null ? ` of <b>${rupees(p.amount)}</b>` : ''} and added <b>${esc(bought)} credits</b> to your account.</p>
+        ${wallet ? `<p>You now have <b>${esc(wallet)} bought credits</b>. They never expire, and they're only used once your monthly credits are gone.</p>`
+                 : `<p>They never expire, and they're only used once your monthly credits are gone.</p>`}
+        ${appUrl ? ctaBtn(escUrl(appUrl), 'Back to the designer') : ''}
+        <p style="color:#6b6b6b;font-size:13px;margin:22px 0 0;">A GST invoice for this payment is sent separately.${p.paymentId ? ` Payment reference <b>${esc(p.paymentId)}</b> — quote it if you ever need to ask us about this charge.` : ''}</p>`) };
+  }
+
   // ── Account erasure — 48h pre-erasure notice (DPDP Rule 8) ──────────────────
   if (typeSlug === 'account_erasure_notice') {
     const when      = formatDateTz(p.eraseAfter, p.timeZone);

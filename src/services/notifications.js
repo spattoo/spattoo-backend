@@ -238,6 +238,31 @@ export async function notifyAccountErasureScheduled(baker, { eraseAfter }) {
   });
 }
 
+// ── A credit top-up receipt ──────────────────────────────────────────────────
+// The one thing a baker keeps after buying credits. Not a sibling of notifySubscription() despite
+// looking like one: that helper is about a PLAN and its payload vocabulary is plan/period/renewal,
+// none of which a pack has.
+//
+// The GST invoice the accounting service emails for the same payment is a legal document, not a
+// receipt — different sender, addressed to the registered business, and it says nothing about the
+// wallet. Both are wanted.
+//
+// `walletBalance` is the balance AFTER this purchase, passed in rather than read here so the
+// number in the email is the one the ledger actually produced, not a second read that a concurrent
+// spend could have moved.
+export async function notifyCreditsPurchased(baker, { credits, amount, walletBalance, paymentId }) {
+  const email = await bakerNotifyEmail(baker);
+  if (!email) return;
+  await insertNotification('credits_purchased', email, {
+    bakerName:     baker?.name ?? null,
+    timeZone:      baker?.timezone ?? null,
+    credits:       credits       ?? null,
+    amount:        amount        ?? null,   // paise, like every other payment payload
+    walletBalance: walletBalance ?? null,
+    paymentId:     paymentId     ?? null,   // the handle support runs on, if they ever need us
+  });
+}
+
 export const notifySubscriptionActivated = (baker, p) => notifySubscription('subscription_activated', baker, p);
 export const notifySubscriptionRenewed   = (baker, p) => notifySubscription('subscription_renewed',   baker, p);
 export const notifyPaymentFailed         = (baker, p) => notifySubscription('payment_failed',          baker, p);

@@ -9,7 +9,7 @@ import { config } from '../config.js';
 import { logSubscriptionEvent, deriveSubscription } from './subscriptions.js';
 import {
   notifySubscriptionActivated, notifySubscriptionRenewed, notifyPaymentFailed,
-  notifySubscriptionCancelled, notifySubscriptionExpired,
+  notifySubscriptionCancelled, notifySubscriptionExpired, notifyCreditsPurchased,
 } from '../services/notifications.js';
 import { getSparkTrialDays } from '../services/entitlements.js';
 import { SUBSCRIPTION_STATUS } from '../constants/subscriptionStatuses.js';
@@ -20,7 +20,7 @@ import { PERIOD }              from '../constants/billingPeriods.js';
 import { CANCELLATION_REASON } from '../constants/cancellationReasons.js';
 import { isValidGstin, normalizeGstin } from '../lib/gstin.js';
 import { emitSaleEvent, emitCreditPackSaleEvent } from '../services/billingEvents.js';
-import { creditPurchase }      from '../services/aiCredits.js';
+import { creditPurchase, getAiCreditBalance } from '../services/aiCredits.js';
 
 const router = Router();
 
@@ -775,7 +775,7 @@ router.post('/billing/webhook', async (req, res) => {
           // columns, and they are snapshotted into the event rather than read back later.
           const { data: packBaker } = await supabase
             .from('bakers')
-            .select('id, name, email, gstin, address_line1, address_line2, city, state, postal_code, country')
+            .select('id, name, email, timezone, gstin, address_line1, address_line2, city, state, postal_code, country')
             .eq('id', packBakerId).maybeSingle();
 
           // Best-effort and idempotent, like the subscription path — event_id is the payment id,
@@ -789,8 +789,34 @@ router.post('/billing/webhook', async (req, res) => {
               ? new Date(payment.created_at * 1000).toISOString()
               : new Date().toISOString(),
           });
+
+          // ── The receipt ──────────────────────────────────────────────────────────────
+          // Every other payment we take emails the baker; a top-up was the only one that did not.
+          // The GST invoice the accounting service sends is a legal document from a different
+          // sender, addressed to the registered business, and says nothing about the wallet.
+          //
+          // Sent only when the credits were ACTUALLY minted (txId non-null) — an unknown or
+          // retired pack key logs above and mints nothing, and a receipt for credits that do not
+          // exist is worse than no receipt.
+          //
+          // The balance is read AFTER the mint so the number in the email is the one the ledger
+          // produced. Queued into the same durable notifications outbox as every other email, so
+          // a mail failure retries there rather than here.
+          if (txId) {
+            const balance = await getAiCreditBalance(packBakerId).catch(() => null);
+            await notifyCreditsPurchased(packBaker, {
+              credits:       pack?.credits ?? null,
+              amount:        payment.amount ?? pack?.price_paise ?? null,
+              walletBalance: balance?.walletBalance ?? null,
+              paymentId:     payment.id,
+            });
+          }
         } catch (e) {
-          console.error('[billing] credit pack payment row failed', payment?.id, e?.message);
+          // Covers the payment row, the accounting event and the receipt — all of which follow a
+          // mint that has already succeeded. Named for the block rather than for any one of them,
+          // because a message saying "payment row failed" when the EMAIL threw sends whoever reads
+          // the log to the wrong table.
+          console.error('[billing] credit pack post-mint step failed', payment?.id, e?.message);
         }
       } else {
         // Stamped as a pack but missing what it needs. Loud, because the alternative is a baker
