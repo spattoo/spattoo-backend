@@ -64,14 +64,14 @@ export function pricesVisibleTo(baker, { verified = false } = {}) {
 export async function resolveFlavours(bakerId) {
   const [{ data: globals }, { data: settings }, { data: custom }] = await Promise.all([
     supabase.from('flavours')
-      .select('id, name, description, sort_order')
+      .select('id, name, description, sort_order, sponge_color, filling_color')
       .eq('is_active', true)
       .order('sort_order').order('name'),
     supabase.from('baker_flavour_settings')
       .select('flavour_id, offered, price_per_kg, display_name')
       .eq('baker_id', bakerId),
     supabase.from('baker_flavours')
-      .select('id, name, description, sort_order, price_per_kg')
+      .select('id, name, description, sort_order, price_per_kg, sponge_color, filling_color')
       .eq('baker_id', bakerId).eq('is_active', true)
       .order('sort_order').order('name'),
   ]);
@@ -90,6 +90,11 @@ export async function resolveFlavours(bakerId) {
       // No row means offered. See "NO ROW IS A STATE" above.
       offered: s ? s.offered !== false : true,
       pricePerKg: s?.price_per_kg ?? null,
+      // Authored globally — Red Velvet is crimson in every kitchen — so there is nothing
+      // to overlay here. null means "not authored yet"; the renderer draws a neutral
+      // sponge rather than guessing a colour from the name.
+      spongeColor:  f.sponge_color  ?? null,
+      fillingColor: f.filling_color ?? null,
     };
   });
 
@@ -103,6 +108,9 @@ export async function resolveFlavours(bakerId) {
     // — removing it is is_active on the row itself, which this query already filters.
     offered: true,
     pricePerKg: f.price_per_kg ?? null,
+    // Their own recipe, so their own colours — there is no global row to inherit from.
+    spongeColor:  f.sponge_color  ?? null,
+    fillingColor: f.filling_color ?? null,
   }));
 
   // One map over both kinds, which is why neither branch above has to know which it is.
