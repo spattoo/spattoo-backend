@@ -18,7 +18,8 @@
     "check:feature-docs": "node ../spattoo-docs/bin/check-feature-docs.mjs --repo spattoo-api",
     "check": "npm run check:boot && npm run check:schema && npm run check:admin-routes && npm run check:xray-spec && npm run check:ai-credit-pricing && npm run check:match-confidence && npm run check:sale-events && npm run check:dup && npm run check:feature-docs",
     "check:match-confidence": "node scripts/check-match-confidence.mjs",
-    "check:sale-events": "node scripts/check-sale-events.mjs"
+    "check:sale-events": "node scripts/check-sale-events.mjs",
+    "verify:ai-credit-buckets": "node scripts/verify-ai-credit-buckets.mjs"
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.1036.0",
