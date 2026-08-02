@@ -285,8 +285,17 @@ router.post('/orders/:id/xray/decoration-steps', requireAuth, requireCapability(
 
     // Already generated → hand it back, charge nothing. Expanded, like every other path that
     // hands a decoration to a client.
+    //
+    // EXCEPT when the steps landed and the picture did not. That combination used to be terminal:
+    // the early return fired forever, so a baker who had already paid was left with words and no
+    // sheet and no way to ask for one again. The stage image is the half most likely to fail —
+    // it redraws a region cropped out of a customer's photo — and a failure there is OURS, not a
+    // reason to charge twice or to give up.
     const existing = order.xray_spec?.decorations?.[key];
-    if (existing) return res.json({ ok: true, reused: true, key, steps: withStageUrl(existing) });
+    const retryPicture = !!existing?.guide && !existing?.stages_key;
+    if (existing && !retryPicture) {
+      return res.json({ ok: true, reused: true, key, steps: withStageUrl(existing) });
+    }
 
     // Where this decoration is in the photo, so the stage grid can be conditioned on the real
     // thing rather than on the whole cake. Absent is fine — the grid falls back to the full photo,
@@ -301,14 +310,29 @@ router.post('/orders/:id/xray/decoration-steps', requireAuth, requireCapability(
         bakerId: req.bakerId,
         action:  AI_ACTION.ELEMENT_BUILD_GUIDE,
         orderId: order.id,
-        idempotencyKey: `xray-steps:${order.id}:${key}`,
+        // A picture-only retry reuses the steps already paid for, so it must not reserve against
+        // the same key — the original reservation still holds it — and must not charge. `free`
+        // marks work whose cost is ours, which is exactly what re-rendering after our own failure
+        // is. The image is not free to US; it is free to THEM, and that is the distinction the
+        // flag exists for.
+        idempotencyKey: retryPicture ? null : `xray-steps:${order.id}:${key}`,
+        free: retryPicture,
       },
       async () => {
-        // `focus` puts the model in whole-cake mode: read this ONE decoration and ignore the rest.
-        // Without it, given a busy cake, it describes whichever object is most prominent.
-        const { guide, usage, model } = await suggestBuildGuide({
-          imageUrl: photo.url, name: label, focus: label,
-        });
+        // On a picture-only retry the words already exist and were paid for — regenerating them
+        // would spend a model call to replace a guide the baker may already have read, and could
+        // return something different from what is on their screen.
+        let guide, usage, model;
+        if (retryPicture) {
+          guide = existing.guide;
+          model = existing.model ?? null;
+        } else {
+          // `focus` puts the model in whole-cake mode: read this ONE decoration and ignore the
+          // rest. Without it, given a busy cake, it describes whichever object is most prominent.
+          ({ guide, usage, model } = await suggestBuildGuide({
+            imageUrl: photo.url, name: label, focus: label,
+          }));
+        }
         // No steps = "this is piped or printed, not modelled by hand". A real answer — the piping
         // section already tells them how — but not one worth a credit.
         if (!guide || !Array.isArray(guide.steps) || guide.steps.length === 0) {
@@ -331,11 +355,17 @@ router.post('/orders/:id/xray/decoration-steps', requireAuth, requireCapability(
         });
 
         return {
-          value: { guide, model, stagesKey: stages?.key ?? null },
+          // `stagesFailed` is PERSISTED, not just returned. Without it a reload cannot tell a
+          // picture that failed from one never attempted, so the card has nothing honest to say
+          // and the retry above has nothing to key on.
+          value: { guide, model, stagesKey: stages?.key ?? null, stagesFailed: !stages },
           provider: 'openai', model, promptVersion: STEPS_PROMPT_VERSION,
           // BOTH calls. The image is the expensive half and the whole question of whether this
           // fits inside the current price is settled by measuring it, not by estimating it.
-          calls: [{ model, usage }, ...(stages ? [{ model: stages.model, usage: stages.usage, image: stages.image }] : [])],
+          calls: [
+            ...(usage ? [{ model, usage }] : []),   // absent on a picture-only retry
+            ...(stages ? [{ model: stages.model, usage: stages.usage, image: stages.image }] : []),
+          ],
         };
       },
     );
@@ -354,6 +384,9 @@ router.post('/orders/:id/xray/decoration-steps', requireAuth, requireCapability(
       guide:          out.value.guide,
       // R2 KEY, never a URL — the public base is deployment config and would rot every stored row.
       stages_key:     out.value.stagesKey ?? null,
+      // True only when a render was attempted and did not produce one. Cleared by a successful
+      // retry, because the merge below replaces the whole decoration value.
+      stages_failed:  out.value.stagesFailed === true,
       label,
       model:          out.value.model ?? null,
       prompt_version: STEPS_PROMPT_VERSION,
