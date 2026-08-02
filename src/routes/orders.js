@@ -6,7 +6,7 @@ import { requireCapability } from '../middleware/rbac.js';
 import { assertBakerOwns } from '../lib/tenantScope.js';
 import { config } from '../config.js';
 import { toPublicUrl } from '../lib/publicUrl.js';
-import { withStageUrls } from '../lib/xrayStageUrls.js';
+import { withOrderStageUrls } from '../lib/xrayStageUrls.js';
 import { notifyOrderPlaced, notifyDesignUpdated, notifyQuoteIssued, notifyQuoteAccepted, notifyQuoteQuestion, notifyOrderConfirmed, notifyOrderReady, notifyOrderCompleted } from '../services/notifications.js';
 import { getOrderStatuses, getValidStatusKeys, isQuotePhase, idForKey } from '../lib/orderStatuses.js';
 import { getDietaryRequirements, validateDietaryKeys, setOrderDietaryRequirements, requirementsForBaker } from '../lib/dietaryRequirements.js';
@@ -856,7 +856,7 @@ router.get('/orders', requireAuth, requireCapability('order:view'), async (req, 
       const { xray_spec, ...rest } = o;
       const row = o.xray_spec_edited ? rest : o;
       return {
-        ...withDietaryKeys(withStatusKey(row)),
+        ...withDietaryKeys(withStatusKey(withOrderStageUrls(row))),
         design_thumbnail_url: toPublicUrl(o.design_thumbnail_url),
         xray_spec_stale: xraySpecStale(o),
         quote_stale: quoteStale(o),
@@ -935,9 +935,7 @@ router.get('/orders/:id', requireAuth, requireCapability('order:view'), async (r
     if (!order) return res.status(404).json({ error: 'Order not found' });
 
     res.json({
-      ...withDietaryKeys(withStatusKey(order)),
-      xray_spec:        withStageUrls(order.xray_spec),
-      xray_spec_edited: withStageUrls(order.xray_spec_edited),
+      ...withDietaryKeys(withStatusKey(withOrderStageUrls(order))),
       xray_spec_stale:  xraySpecStale(order),
       quote_stale:      quoteStale(order),
     });

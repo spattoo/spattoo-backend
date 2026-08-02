@@ -37,3 +37,22 @@ export function withStageUrls(spec) {
 // Same shape as the check:ai-credit-pricing break earlier: a module that a GATE imports must not
 // acquire a dependency that needs the world to exist. Response shaping needs config, so it belongs
 // on this side of that line; the spec MAPPER, which is the part worth gating, stays pure.
+
+// Both spec fields on one order row, expanded together.
+//
+// Use THIS from a route, never withStageUrls directly: an order carries the spec in two columns
+// (`xray_spec`, and `xray_spec_edited` once the baker has corrected it), and a route that expands
+// one and not the other produces a picture that appears or vanishes depending on whether the
+// estimate was ever edited — a difference no one would think to test.
+//
+// The omission this exists to stop was subtler and cost an afternoon: GET /orders/:id expanded,
+// GET /orders did not, and the X-Ray panel reads the LIST. So the stage sheet was generated,
+// stored, and paid for, and the client was handed the R2 key instead of a URL. Nothing failed —
+// no exception, nothing in the logs, nothing in Sentry — the picture was simply never sent.
+export function withOrderStageUrls(order) {
+  if (!order) return order;
+  const out = { ...order };
+  if (out.xray_spec)        out.xray_spec        = withStageUrls(out.xray_spec);
+  if (out.xray_spec_edited) out.xray_spec_edited = withStageUrls(out.xray_spec_edited);
+  return out;
+}
