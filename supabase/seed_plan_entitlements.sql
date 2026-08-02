@@ -24,6 +24,22 @@
 --   * Values are seed data, tuned from the margin dashboard, never a code constant. Numbers stay
 --     generous through beta (failed generations are not charged) and tighten at GA.
 --
+-- 2026-08-02 (X-Ray opens to every tier; CREDITS are the only lever on it):
+--   * xray_reports false → TRUE on spark and flame. X-Ray is now available on every plan, for both
+--     kinds of order, and the difference between tiers is the AI ALLOWANCE alone.
+--   * Why: the split was defensible but unexplainable. A photo X-Ray calls the model and is paid
+--     for with credits on any plan; a designed-cake one costs us nothing and was a Blaze hook. On a
+--     pricing page that reads as "X-Ray: from photos / + your 3D designs", which no baker parses —
+--     and in the product it means a Flame baker can pay credits for the HARDER reading and then be
+--     refused the free one on their own design. That is backwards.
+--   * Cost: none. A designed cake's X-Ray is generated from the design we already hold; no model
+--     call, no marginal rupee. This gives away nothing but a differentiator.
+--   * What it costs us commercially: Blaze loses a named hook (SUBSCRIPTION_TIERS #16 called it
+--     "the strongest hook"). Blaze now differentiates on custom templates, background removal,
+--     unlimited saved templates, top-ups, and 800 vs 300 credits. Watch whether that is enough.
+--   * The `xray_reports` KEY stays, and the gate in OrdersPanel.jsx stays with it — this is a DATA
+--     change, reversible without a deploy, which is the whole reason entitlements are data.
+--
 -- 2026-08-02 (trial = FLAME for 30 days — decided; SUBSCRIPTION_TIERS.md "PENDING SIGN-OFF"):
 --   * Spark's FEATURES now equal Flame's: max_team_members 1 → 2, max_saved_templates 3 → 30.
 --     The trial has to equal ONE tier or the pricing card cannot be written — "everything in Flame
@@ -57,7 +73,7 @@
 -- (never permanent); after it expires the baker sees the upgrade screen and customers can't quote.
 update subscription_plans set features = jsonb_build_object(
   'storefront', true, 'custom_branding', true, 'custom_templates', false,
-  'ai_background_removal', false, 'whatsapp_notifications', false, 'xray_reports', false,
+  'ai_background_removal', false, 'whatsapp_notifications', false, 'xray_reports', true,
   'max_orders_total', null, 'max_team_members', 2, 'max_saved_templates', 30,
   'ai_credits_per_month', 100, 'can_buy_credits', false,
   'trial_days', 30
@@ -65,7 +81,7 @@ update subscription_plans set features = jsonb_build_object(
 
 update subscription_plans set features = jsonb_build_object(
   'storefront', true, 'custom_branding', true, 'custom_templates', false,
-  'ai_background_removal', false, 'whatsapp_notifications', false, 'xray_reports', false,
+  'ai_background_removal', false, 'whatsapp_notifications', false, 'xray_reports', true,
   'max_orders_total', null, 'max_team_members', 2, 'max_saved_templates', 30,
   'ai_credits_per_month', 300, 'can_buy_credits', false
 ) where name = 'flame';
