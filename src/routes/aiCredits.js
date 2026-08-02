@@ -7,6 +7,7 @@ import { razorpay, razorpayEnabled } from './billing.js';
 import {
   getAiCreditBalance, listAiCreditCosts, listCreditPacks, getCreditPack, listAiCreditHistory,
 } from '../services/aiCredits.js';
+import { creditWarningLevel } from '../services/creditAlerts.js';
 
 const router = Router();
 
@@ -53,7 +54,14 @@ router.get('/baker/ai-credits', requireAuth, resolvePrincipal, async (req, res) 
       ? 0
       : Math.min(100, Math.round((balance.allowanceUsed / balance.allowance) * 100));
 
-    res.json({ ...balance, usedPct, actions });
+    // Whether this baker should be WARNED, decided by the same pure function the email path uses
+    // (services/creditAlerts.js). Sent rather than re-derived on the client: the rule includes the
+    // 80% watermark and the "suppress when bought credits cover it" case, and a second copy in the
+    // UI is a second thing to keep in step — the two would disagree the first time either moved.
+    //
+    // 'low' | 'exhausted' | null. The client decides how to SHOW it and when it has been
+    // dismissed; it never decides whether there is something to show.
+    res.json({ ...balance, usedPct, creditWarning: creditWarningLevel(balance), actions });
   } catch (err) {
     serverError(req, res, err);
   }
