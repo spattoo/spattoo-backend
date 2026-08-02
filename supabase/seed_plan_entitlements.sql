@@ -24,6 +24,19 @@
 --   * Values are seed data, tuned from the margin dashboard, never a code constant. Numbers stay
 --     generous through beta (failed generations are not charged) and tighten at GA.
 --
+-- 2026-08-02 (trial = FLAME for 30 days — decided; SUBSCRIPTION_TIERS.md "PENDING SIGN-OFF"):
+--   * Spark's FEATURES now equal Flame's: max_team_members 1 → 2, max_saved_templates 3 → 30.
+--     The trial has to equal ONE tier or the pricing card cannot be written — "everything in Flame
+--     except three things you have not heard of yet" is not a sentence anyone can put on a card.
+--     Both raised values have NO marginal cost, which is why they move and the credits do not.
+--   * ai_credits_per_month STAYS 100. The principle the Blaze option was going to be held to
+--     applies just as well here: the trial grants the tier's FEATURES, not its AI allowance, because
+--     that allowance is the only line in this file with real money behind it and Spark is the only
+--     unpaid segment. A trialist gets a starter allowance, and the marketing copy says exactly that
+--     rather than implying Flame's 300.
+--   * Consequence worth knowing: credits go UP on converting (100 → 300), so the one metered thing
+--     a trialist might run low on gets BETTER when they pay. That is the right direction.
+--
 -- 2026-07-31 (sized against the segments, not guessed):
 --   * Flame 200 → 300. Flame is 10–30 orders/month. At 15 credits a build guide, 200 buys 13 — and
 --     a 30-order baker at a ~60% photo mix needs 18. The wall was landing on the top third of the
@@ -45,7 +58,7 @@
 update subscription_plans set features = jsonb_build_object(
   'storefront', true, 'custom_branding', true, 'custom_templates', false,
   'ai_background_removal', false, 'whatsapp_notifications', false, 'xray_reports', false,
-  'max_orders_total', null, 'max_team_members', 1, 'max_saved_templates', 3,
+  'max_orders_total', null, 'max_team_members', 2, 'max_saved_templates', 30,
   'ai_credits_per_month', 100, 'can_buy_credits', false,
   'trial_days', 30
 ) where name = 'spark';
