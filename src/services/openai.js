@@ -554,6 +554,21 @@ missed the point entirely.`
     ? `THIS IS A 3D DECORATION, modelled in the round from shaped pieces of fondant.`
     : ''}
 
+ANY STEP THAT CHANGES A PIECE'S SHAPE MUST SAY HOW THE SHAPE IS MADE AND HOW IT IS HELD.
+"Shape the loops", "form the petals", "curve the tail" are not instructions — they name the result
+and hide the technique, which is the only part the baker could not have guessed. For every such
+step say:
+- the MOVEMENT: what is folded, over what, in which direction, how far, and where it is pinched or
+  joined;
+- what SUPPORTS it while it sets — a ball of rolled kitchen paper or cotton wool inside a loop, a
+  former, a dowel, the edge of the bench — because a shape made in the hand collapses the moment it
+  is put down;
+- roughly how long it must be left before it holds itself, and whether it is attached before or
+  after it firms.
+A loop is the clearest case: cut the strip, bring the ends to the middle, pinch them together, and
+PAD THE LOOP so it does not flatten while it dries. A guide that says "shape the bow loops" has
+described a photograph, not a method.
+
 Return ONLY valid JSON, no explanation:
 {
   "title": "<short name of the thing being made>",
@@ -706,9 +721,19 @@ export async function generateDecorationStages(referenceBuffer, { title, steps =
     `SHOW THE WHOLE OF EACH STEP. If a step cuts five petals, show five petals being cut and laid ` +
     `out. If it assembles a flower, show the petals going together into the flower. The picture ` +
     `should carry the step on its own, so a baker who reads nothing still knows what to do.\n\n` +
-    `LAYOUT: a clean grid of panels, EACH NUMBERED in a corner with a short caption under it, a ` +
-    `title across the top, and the finished decoration as the last panel. Use as many panels as the ` +
-    `steps need. White background, soft even lighting, photorealistic, shot straight down.\n\n` +
+    `LAYOUT: a clean grid of panels, a title across the top, and the finished decoration as the ` +
+    `last panel. Use as many panels as the steps need. White background, soft even lighting, ` +
+    `photorealistic, shot straight down.\n\n` +
+    // A sheet numbered 1, 2, 2, 3 is worse than an unnumbered one: the baker stops trusting the
+    // order and has to re-derive it from the pictures, which is what the numbers were for.
+    `NUMBER THE PANELS 1, 2, 3 … IN READING ORDER — left to right, then down. Each number appears ` +
+    `EXACTLY ONCE. Never repeat a number, never skip one, and never restart the count partway ` +
+    `down the sheet. The number in panel N must match step N in the list above.\n\n` +
+    // The captions came back as summaries — "Shape the bow loops" for a step that said how to fold,
+    // pinch and pad it. The words are already written; the sheet should carry them, not paraphrase.
+    `CAPTION EACH PANEL WITH THAT STEP'S OWN TITLE from the list above, not a summary of your own. ` +
+    `If a title is too long for the panel, shorten it by dropping words, never by replacing it with ` +
+    `a vaguer phrase.\n\n` +
     `Spell every word correctly. Keep captions short. Do NOT print any colour codes or hex values ` +
     `— those are listed separately.`);
   form.append('size', size);

@@ -37,7 +37,7 @@ const MODEL = 'gpt-4o';   // what services/openai.js analyzeCake calls today
 // v2 (2026-08-01) tracks the same prompt rewrite as GUIDE_PROMPT_VERSION — flat-vs-3D, cutting as
 // the body of the guide, full decomposition, tools per step, a hex per role — since both paths call
 // suggestBuildGuide and get the identical instructions.
-const STEPS_PROMPT_VERSION = 'xray-decoration-steps-v2';
+const STEPS_PROMPT_VERSION = 'xray-decoration-steps-v3';
 
 // ── Shared by both order-level X-Ray routes ───────────────────────────────────
 // Load the order, scoped to the caller's bakery, and refuse a DESIGNED one. Both routes exist

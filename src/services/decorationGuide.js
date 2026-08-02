@@ -27,12 +27,19 @@ import { visionImageKey, decorationDimension } from './decorationPolicy.js';
 //   * tools are required on every step
 //   * one hex per role, so the sheet can print swatches
 //
+// v3 (2026-08-02) adds the rule that was missing for anything neither flat nor a figure — a bow,
+// a ruffle, a folded ribbon. The 2D branch demanded technique for CUTTING and the 3D branch for
+// modelling, and a photo decoration gets NEITHER branch (dimension is unknowable from a photo), so
+// a shaping step came back as "shape the bow loops": the result named, the method hidden. v3 asks
+// every shape-changing step, in every mode, for the movement, what SUPPORTS the shape while it
+// sets, and how long — because a loop made in the hand flattens the moment it is put down.
+//
 // A v1 row and a v2 row are not comparable, which is the point of stamping it: without a bump every
 // guide claims the same provenance and there is no way to tell which came from which prompt or to
 // requeue only the stale ones. The name keeps 'build-guide' rather than following the rename to
 // decoration steps, because this string identifies a PROMPT LINEAGE and renaming it would split one
 // history into two that were never different.
-export const GUIDE_PROMPT_VERSION = 'build-guide-v2';
+export const GUIDE_PROMPT_VERSION = 'build-guide-v3';
 
 // Generate and store the guide for ONE element.
 //
