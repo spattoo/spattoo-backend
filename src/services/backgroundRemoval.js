@@ -15,11 +15,15 @@ import { removeBackground as removeBgVendor } from './removebg.js';
 // 42 MB, 320²) matches the masks we need on real decorations and costs nothing per image. Break-even
 // against remove.bg is roughly 100-150 images/month, which this feature will pass immediately.
 //
-// It is NOT self-hosted yet, deliberately: silueta needs >300 MB RSS natively, and loading it inside
-// this API took the dev service down with an OOM. It belongs in its OWN Render service — inference has
-// a spiky, unbounded memory profile and must never be able to kill request handling. Until that
-// service exists, we ship on the vendor so the FLOW can be built and tested end-to-end, and flip the
-// env var when the service is up.
+// The service EXISTS (spattoo-bgremover, 2026-07-12). What has not happened is deploying it and
+// setting three env vars — BG_REMOVAL_PROVIDER=self, BG_REMOVAL_SERVICE_URL, BG_REMOVAL_SERVICE_TOKEN.
+// Until that flip, every cut-out costs ~₹15, which is why the baker-facing route is metered at 15
+// credits (migration 036). The flip is what makes that price wrong: our own model costs nothing per
+// image, so the credit price should fall to 1-2 — or the action stop being metered at all.
+//
+// It is a separate service and not an import because silueta needs >300 MB RSS, and loading it inside
+// this API OOM-killed the dev box. Inference has a spiky, unbounded memory profile; request handling
+// has a tight one. Sharing a process means one upload can take the storefront down.
 //
 // See features/my-decorations.md for the measurements.
 
@@ -27,9 +31,9 @@ const PROVIDERS = {
   // Paid vendor. Metered per image — the thing we intend to stop paying.
   removebg: async (buffer) => removeBgVendor(buffer),
 
-  // Our own model, on its own service. Not built yet; the shape is here so the swap is a one-liner
-  // and so nobody is tempted to sprinkle a second remove.bg call somewhere else in the meantime.
-  // Our own model (silueta), on its OWN Render service — repo: spattoo-bgremover. It is separate
+  // Our own model (silueta), on its OWN Render service — repo: spattoo-bgremover, built 2026-07-12
+  // (features/my-decorations.md). This comment said "not built yet" for three weeks after it was;
+  // the swap is env-only and has been all along. It is separate
   // because we measured it: >300 MB resident, and loading it in THIS process OOM-killed the API. A
   // private service, so it has no public hostname; the shared token is defence in depth on top.
   self: async (buffer) => {
