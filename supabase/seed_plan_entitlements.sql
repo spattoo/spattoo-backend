@@ -24,6 +24,14 @@
 --   * Values are seed data, tuned from the margin dashboard, never a code constant. Numbers stay
 --     generous through beta (failed generations are not charged) and tighten at GA.
 --
+-- 2026-08-02 (custom templates open to every tier):
+--   * custom_templates false → TRUE on spark and flame. The key gates NOTHING — the registry marks
+--     it deprecated and inert, superseded by max_saved_templates, which is itself read by no route
+--     and no component. So Flame bakers already had custom templates; the pricing page just said
+--     they did not, which under-sells the plan and is indefensible the moment one of them notices.
+--   * Made the DECLARATION match reality rather than deleting the key: a false value here reads as
+--     a decision, and the next person to wire up gating would have implemented the wrong one.
+--
 -- 2026-08-02 (X-Ray opens to every tier; CREDITS are the only lever on it):
 --   * xray_reports false → TRUE on spark and flame. X-Ray is now available on every plan, for both
 --     kinds of order, and the difference between tiers is the AI ALLOWANCE alone.
@@ -72,7 +80,7 @@
 -- Read by both Spark-grant paths (provisioning + activate-spark). Spark is ONE-TIME + time-boxed
 -- (never permanent); after it expires the baker sees the upgrade screen and customers can't quote.
 update subscription_plans set features = jsonb_build_object(
-  'storefront', true, 'custom_branding', true, 'custom_templates', false,
+  'storefront', true, 'custom_branding', true, 'custom_templates', true,
   'ai_background_removal', false, 'whatsapp_notifications', false, 'xray_reports', true,
   'max_orders_total', null, 'max_team_members', 2, 'max_saved_templates', 30,
   'ai_credits_per_month', 100, 'can_buy_credits', false,
@@ -80,7 +88,7 @@ update subscription_plans set features = jsonb_build_object(
 ) where name = 'spark';
 
 update subscription_plans set features = jsonb_build_object(
-  'storefront', true, 'custom_branding', true, 'custom_templates', false,
+  'storefront', true, 'custom_branding', true, 'custom_templates', true,
   'ai_background_removal', false, 'whatsapp_notifications', false, 'xray_reports', true,
   'max_orders_total', null, 'max_team_members', 2, 'max_saved_templates', 30,
   'ai_credits_per_month', 300, 'can_buy_credits', false
