@@ -5,7 +5,7 @@ import { resolvePrincipal, requireCapability } from '../middleware/rbac.js';
 import { config } from '../config.js';
 import { razorpay, razorpayEnabled } from './billing.js';
 import {
-  getAiCreditBalance, listAiCreditCosts, listCreditPacks, getCreditPack,
+  getAiCreditBalance, listAiCreditCosts, listCreditPacks, getCreditPack, listAiCreditHistory,
 } from '../services/aiCredits.js';
 
 const router = Router();
@@ -54,6 +54,36 @@ router.get('/baker/ai-credits', requireAuth, resolvePrincipal, async (req, res) 
       : Math.min(100, Math.round((balance.allowanceUsed / balance.allowance) * 100));
 
     res.json({ ...balance, usedPct, actions });
+  } catch (err) {
+    serverError(req, res, err);
+  }
+});
+
+// ── GET /api/baker/ai-credits/history ─────────────────────────────────────────
+// Where the credits went — a dated list of every spend, and which bucket paid for it.
+//
+// This exists because a metered resource a baker cannot audit is one they have to TRUST, and the
+// balance alone gives them no way to check it. "I had 300 and now I have 240" is answerable only
+// if something can say what the 60 went on.
+//
+// It matters more here than it would for a plain counter, because there are TWO buckets with
+// different rules — the monthly allowance resets, purchased credits never expire — and the terms
+// (ToS B8.2) promise a specific spend ORDER. This is the surface where a baker can see that
+// promise being kept rather than being asked to believe it.
+//
+// Same guard as the balance route, for the same reason: a tenant's own ledger is not privileged
+// information inside that tenant.
+router.get('/baker/ai-credits/history', requireAuth, resolvePrincipal, async (req, res) => {
+  try {
+    if (!req.bakerId) return res.status(403).json({ error: 'Not a baker account' });
+    const { limit, before } = req.query;
+    const items = await listAiCreditHistory(req.bakerId, { limit, before });
+    // The cursor is the last row's timestamp, handed back rather than reconstructed by the client
+    // — the client should not have to know that this list is keyed on created_at.
+    res.json({
+      items,
+      nextBefore: items.length ? items[items.length - 1].at : null,
+    });
   } catch (err) {
     serverError(req, res, err);
   }

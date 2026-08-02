@@ -438,3 +438,61 @@ export function sumOpenAiCostInr(calls) {
   }
   return total == null ? null : Math.round(total * 10000) / 10000;
 }
+
+// ── Where the credits went ───────────────────────────────────────────────────────────
+// The baker's own spend history, for the transparency surface: a dated list of what each action
+// cost and WHICH BUCKET it came from.
+//
+// The split is not derived here and never could be — allowance_credits and wallet_credits are
+// written onto each row by reserve_ai_credits at the moment it decides, with a DB constraint that
+// they sum to the total. A row that took 10 from the monthly allowance and 5 from the wallet says
+// exactly that, which is the whole point: "which credits did that use" is a question with a
+// recorded answer, not an inference from balances.
+//
+// EXCLUDES 'released' rows. A released reservation is an attempt that failed on our side and
+// charged nothing (see withAiCredits) — showing it would tell a baker they were billed for
+// something they were not, which is worse than showing nothing. They remain in the table as the
+// retry_rate signal that loads the margin numbers; they are just not a spend.
+//
+// Signs are flipped on the way out. In the ledger a debit is negative because it is an accounting
+// entry; to a baker "15" is what it cost. The sign convention is ours, not theirs.
+export async function listAiCreditHistory(bakerId, { limit = 50, before = null } = {}) {
+  let q = supabase
+    .from('credit_transactions')
+    .select('id, kind, credits, allowance_credits, wallet_credits, created_at, note, credit_costs (label)')
+    .eq('baker_id', bakerId)
+    .neq('state', 'released')
+    .order('created_at', { ascending: false })
+    .order('id', { ascending: false })          // a tiebreak, so a page boundary is stable
+    .limit(Math.min(Number(limit) || 50, 100));
+  // Keyset rather than offset: this list only ever grows at the head, and an offset page shifts
+  // under the reader every time a credit is spent mid-scroll.
+  if (before) q = q.lt('created_at', before);
+
+  const { data, error } = await q;
+  if (error) throw error;
+
+  return (data ?? []).map(t => ({
+    id:        t.id,
+    at:        t.created_at,
+    kind:      t.kind,                                    // debit | purchase | grant | refund | adjustment
+    // What it was for. A debit has an action; a purchase does not, so it names itself.
+    label:     t.credit_costs?.label ?? labelForKind(t.kind, t.note),
+    credits:   Math.abs(t.credits),
+    // The bucket split, per row. Both can be non-zero on one spend — that is a straddle, and the
+    // UI should show it as one, not round it to whichever was larger.
+    allowance: Math.abs(t.allowance_credits),
+    wallet:    Math.abs(t.wallet_credits),
+    spent:     t.kind === 'debit',                        // false = it ADDED credits
+  }));
+}
+
+// A purchase, grant or adjustment has no action to name it. Kept deliberately plain: this text is
+// read months later by someone reconciling, so it should say what happened, not be clever.
+function labelForKind(kind, note) {
+  if (kind === 'purchase')   return 'Credits purchased';
+  if (kind === 'grant')      return 'Monthly credits';
+  if (kind === 'refund')     return 'Refunded';
+  if (kind === 'adjustment') return note || 'Adjustment';
+  return note || 'Credits';
+}
