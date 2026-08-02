@@ -721,21 +721,30 @@ export async function generateDecorationStages(referenceBuffer, { title, steps =
     `SHOW THE WHOLE OF EACH STEP. If a step cuts five petals, show five petals being cut and laid ` +
     `out. If it assembles a flower, show the petals going together into the flower. The picture ` +
     `should carry the step on its own, so a baker who reads nothing still knows what to do.\n\n` +
-    `LAYOUT: a clean grid of panels, a title across the top, and the finished decoration as the ` +
-    `last panel. Use as many panels as the steps need. White background, soft even lighting, ` +
-    `photorealistic, shot straight down.\n\n` +
-    // A sheet numbered 1, 2, 2, 3 is worse than an unnumbered one: the baker stops trusting the
-    // order and has to re-derive it from the pictures, which is what the numbers were for.
-    `NUMBER THE PANELS 1, 2, 3 … IN READING ORDER — left to right, then down. Each number appears ` +
-    `EXACTLY ONCE. Never repeat a number, never skip one, and never restart the count partway ` +
-    `down the sheet. The number in panel N must match step N in the list above.\n\n` +
-    // The captions came back as summaries — "Shape the bow loops" for a step that said how to fold,
-    // pinch and pad it. The words are already written; the sheet should carry them, not paraphrase.
-    `CAPTION EACH PANEL WITH THAT STEP'S OWN TITLE from the list above, not a summary of your own. ` +
-    `If a title is too long for the panel, shorten it by dropping words, never by replacing it with ` +
-    `a vaguer phrase.\n\n` +
-    `Spell every word correctly. Keep captions short. Do NOT print any colour codes or hex values ` +
-    `— those are listed separately.`);
+    `LAYOUT: a clean grid of panels, one per step, in reading order — left to right, then down. ` +
+    `The finished decoration is the last panel. Use as many panels as the steps need. White ` +
+    `background, soft even lighting, photorealistic, shot straight down.\n\n` +
+    // ── NO WORDS, NO NUMBERS ─────────────────────────────────────────────────────────
+    // Asked twice for numbered panels with captions; got 1, 2, 2, 3 both times, and captions that
+    // degraded into "Fold a strip into out to / loop side by gbe pure with pinck we" the harder we
+    // pushed for the step's exact wording. Image models garble text — that is the medium, not a
+    // phrasing problem, and a third rewording would have been the third attempt at the same wrong
+    // premise.
+    //
+    // So we ask for what the model is genuinely good at and take back what it is not. Every word a
+    // baker reads — the step titles, the instructions, the order — is rendered by us from the same
+    // `steps` array used above, correctly spelled, correctly numbered, translatable and readable
+    // aloud. On screen and in the PDF the two sit together, so nothing is lost by the sheet being
+    // silent.
+    //
+    // A misnumbered sheet is worse than an unnumbered one: the baker stops trusting the order and
+    // re-derives it from the pictures, which is what the numbers were supposed to save them.
+    `NO TEXT ANYWHERE IN THE IMAGE. No numbers, no captions, no labels, no title, no arrows with ` +
+    `words, no writing on the work surface or in the background. The panels tell the story through ` +
+    `the pictures alone, in order. Text is printed beside this sheet, not on it.\n\n` +
+    `Because there are no captions, EACH PANEL MUST BE SELF-EXPLANATORY: the hands, the tool and ` +
+    `the piece must make the action unmistakable on their own — mid-fold, mid-cut, mid-pinch, ` +
+    `rather than the tidy result of a step already finished.`);
   form.append('size', size);
   form.append('quality', imageQuality);
   form.append('output_format', 'webp');
