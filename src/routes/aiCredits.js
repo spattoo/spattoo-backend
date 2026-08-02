@@ -77,12 +77,17 @@ router.get('/baker/ai-credits/history', requireAuth, resolvePrincipal, async (re
   try {
     if (!req.bakerId) return res.status(403).json({ error: 'Not a baker account' });
     const { limit, before } = req.query;
-    const items = await listAiCreditHistory(req.bakerId, { limit, before });
+    const size  = Math.min(Number(limit) || 50, 100);
+    const items = await listAiCreditHistory(req.bakerId, { limit: size, before });
     // The cursor is the last row's timestamp, handed back rather than reconstructed by the client
     // — the client should not have to know that this list is keyed on created_at.
+    //
+    // NULL on a short page, which is what tells the client it has reached the end. Returning a
+    // cursor unconditionally would leave a "load more" button that fetches an empty page and then
+    // disappears — the baker clicks, waits, and nothing happens, which reads as broken.
     res.json({
       items,
-      nextBefore: items.length ? items[items.length - 1].at : null,
+      nextBefore: items.length === size ? items[items.length - 1].at : null,
     });
   } catch (err) {
     serverError(req, res, err);
