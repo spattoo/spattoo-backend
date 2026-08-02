@@ -43,7 +43,12 @@ export function creditPackSalePayload({ payment, pack, chargedAt, recipient }) {
     // Gross actually charged, read from the PAYMENT rather than the pack — if a price changed
     // between checkout and capture, the invoice must state what was taken, not what the shelf says
     // today.
-    gross_amount_paise:  payment?.amount ?? pack?.price_paise ?? 0,
+    //
+    // GROSS means tax-inclusive: the accounting service derives the taxable value and the GST split
+    // by dividing OUT of this number. credit_packs.price_paise is the base and is deliberately NOT
+    // a fallback here — passing it would tell accounting that ₹149 was collected when ₹175.82 was,
+    // and it would issue an invoice for a sale 15.25% smaller than the payment beside it.
+    gross_amount_paise:  payment?.amount ?? 0,
     currency:            payment?.currency ?? 'INR',
     charged_at:          chargedAt,
     service_period_start: null,

@@ -21,6 +21,7 @@ import { CANCELLATION_REASON } from '../constants/cancellationReasons.js';
 import { isValidGstin, normalizeGstin } from '../lib/gstin.js';
 import { emitSaleEvent, emitCreditPackSaleEvent } from '../services/billingEvents.js';
 import { creditPurchase, getAiCreditBalance } from '../services/aiCredits.js';
+import { withGst } from '../lib/gst.js';
 
 const router = Router();
 
@@ -755,7 +756,10 @@ router.post('/billing/webhook', async (req, res) => {
           const { error: payErr } = await supabase.from('payments').upsert({
             baker_id:            packBakerId,
             razorpay_payment_id: payment.id,
-            amount:              payment.amount ?? pack?.price_paise ?? 0,
+            // Fallback is base+GST, not the base: price_paise is GST-exclusive and nobody is ever
+            // charged it. Recording the base here would under-report the payment and, downstream,
+            // the invoice.
+            amount:              payment.amount ?? withGst(pack?.price_paise ?? 0),
             currency:            payment.currency ?? 'INR',
             status_id:           PAYMENT_STATUS.CAPTURED,
             credit_pack_id:      pack?.id ?? null,
@@ -806,7 +810,7 @@ router.post('/billing/webhook', async (req, res) => {
             const balance = await getAiCreditBalance(packBakerId).catch(() => null);
             await notifyCreditsPurchased(packBaker, {
               credits:       pack?.credits ?? null,
-              amount:        payment.amount ?? pack?.price_paise ?? null,
+              amount:        payment.amount ?? withGst(pack?.price_paise ?? 0),
               walletBalance: balance?.walletBalance ?? null,
               paymentId:     payment.id,
             });

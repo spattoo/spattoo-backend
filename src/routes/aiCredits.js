@@ -8,6 +8,7 @@ import {
   getAiCreditBalance, listAiCreditCosts, listCreditPacks, getCreditPack, listAiCreditHistory,
 } from '../services/aiCredits.js';
 import { creditWarningLevel } from '../services/creditAlerts.js';
+import { gstBreakup, withGst } from '../lib/gst.js';
 
 const router = Router();
 
@@ -108,8 +109,10 @@ router.get('/baker/ai-credits/history', requireAuth, resolvePrincipal, async (re
 // guides · ₹299", not "300 credits · ₹299". Same reasoning as `actions` on the balance route:
 // the price is data, so the division belongs on the server.
 //
-// Prices are GST-EXCLUSIVE, matching how subscription_plans stores them. The checkout screen
-// shows the breakup (see billing's gstBreakup in spattoo-core).
+// Prices are GST-EXCLUSIVE in the TABLE, matching how subscription_plans stores them — so every
+// pack also reports basePaise / gstPaise / totalPaise, and `totalPaise` is what gets charged.
+// Publishing only the base is what let the buy screen say "prices exclude GST" beside a button
+// that then billed the base and nothing more.
 router.get('/baker/ai-credits/packs', requireAuth, resolvePrincipal, async (req, res) => {
   try {
     if (!req.bakerId) return res.status(403).json({ error: 'Not a baker account' });
@@ -131,7 +134,10 @@ router.get('/baker/ai-credits/packs', requireAuth, resolvePrincipal, async (req,
       packKey:    p.pack_key,
       label:      p.label,
       credits:    p.credits,
-      pricePaise: p.price_paise,
+      pricePaise: p.price_paise,                 // the BASE — kept for anything that reports net
+      // What the card will actually be debited. Sent rather than computed client-side so the
+      // number on the button and the number Razorpay is told to charge come from ONE function.
+      ...gstBreakup(p.price_paise),
       blocked:    ceiling != null && (wallet + p.credits) > ceiling,
       buys: costs.map(c => ({
         actionKey: c.action_key,
@@ -199,8 +205,14 @@ router.post('/baker/ai-credits/purchase', requireAuth, requireCapability('billin
       });
     }
 
+    // ── GST is ADDED here, and this is the line that decides what leaves a bank account ──
+    // credit_packs.price_paise is the BASE (GST-exclusive), exactly like subscription_plans.
+    // Charging it directly under-collected by 18% on every pack and, because the accounting
+    // service treats whatever was charged as GROSS, reported a sale 15.25% below the sticker
+    // price with the difference silently owed as tax. Fixed 2026-08-02.
+    const charge = withGst(pack.price_paise);
     const order = await razorpay().orders.create({
-      amount:   pack.price_paise,          // from the DB, never the request
+      amount:   charge,                    // base + GST, from the DB — never the request
       currency: 'INR',
       // RAZORPAY CAPS `receipt` AT 40 CHARACTERS and rejects the whole order if it is longer.
       // 'credits:' + a uuid + ':' + a pack key is 54, so every purchase failed with a 500 that
@@ -218,10 +230,11 @@ router.post('/baker/ai-credits/purchase', requireAuth, requireCapability('billin
     res.json({
       key_id:     config.razorpay.keyId,
       order_id:   order.id,
-      amount:     pack.price_paise,
+      amount:     charge,                  // what Checkout will collect
       currency:   'INR',
       packKey:    pack.pack_key,
       credits:    pack.credits,
+      ...gstBreakup(pack.price_paise),     // so a receipt/confirmation can show the split
     });
   } catch (err) {
     serverError(req, res, err);
