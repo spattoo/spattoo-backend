@@ -1,6 +1,11 @@
 import sharp from 'sharp';
 import { getObjectBuffer, putObject } from '../../services/r2.js';
 import { removeBackground } from '../../services/removebg.js';
+// NOT metered, deliberately (see migration 036, which meters the baker-facing cut-out route). This
+// fires ONCE, on the logo a baker uploads while setting up their bakery — before they have used the
+// product, and quite possibly before they understand what a credit is. Charging for onboarding is
+// the wrong first impression for a few rupees of vendor cost, and the volume is bounded by
+// definition: one logo per baker.
 import { supabase } from '../../services/supabase.js';
 import { jobQueue } from '../queue.js';
 

@@ -23,6 +23,7 @@ export const AI_ACTION = {
   ENQUIRY_TO_DRAFT_ORDER: 'enquiry_to_draft_order',
   STICKER_GENERATE:       'sticker_generate',
   ELEMENT_BUILD_GUIDE:    'element_build_guide',
+  BACKGROUND_REMOVAL:     'background_removal',
 };
 
 // 402 rather than 403: the baker is authenticated and entitled to the FEATURE, they have just

@@ -231,7 +231,11 @@ router.get('/elements', requireAuth, requireCapability('design:create'), async (
   }
 });
 
-// Accepts raw image bytes, strips background, returns PNG bytes
+// Accepts raw image bytes, strips background, returns PNG bytes.
+//
+// NOT metered, unlike the baker-facing /api/elements/remove-bg (migration 036). This is
+// catalog:admin — us building the Spattoo catalogue — and a baker's credits must never pay for our
+// own authoring. Same rule as the decoration guides that ship with a library element.
 router.post(
   '/admin/remove-bg',
   requireAuth,

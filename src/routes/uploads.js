@@ -12,6 +12,8 @@ import { requireCapability } from '../middleware/rbac.js';
 import { reindexElement } from '../services/elementIndex.js';
 import { ensureThumbKey, toPublicUrl } from './elements.js';   // reuse the SAME post-create + URL helpers
 import { UPLOADED_BY, promotable } from '../constants/uploads.js';
+import { withAiCredits, AI_ACTION, InsufficientCreditsError } from '../services/aiCredits.js';
+import { config } from '../config.js';
 
 const router = Router();
 
@@ -465,6 +467,14 @@ router.post('/uploads/:id/cutout', requireAuth, requireCapability('element:manag
 // The baker-facing sibling of the admin-only /api/admin/remove-bg. Same job, different principal, and
 // gated by element:manage so it can't be used as a free background-removal API by anyone with a login.
 // (Kept on its existing path: it is a pure image operation, unrelated to where the row lands.)
+//
+// METERED (migration 036). The only user-triggered action we paid a per-image fee for and did not
+// charge for — and the upload button sits in front of every baker, so the volume is theirs to set
+// and ours to pay. The monthly allowance is the free tier: a baker reaches real money only after
+// spending credits their subscription already gave them.
+//
+// NOT metered by a daily cap, deliberately: a cap's only escape is tomorrow, and it lands hardest on
+// the baker with an urgent order. Credits run out too, but topping up is an action they control.
 router.post(
   '/elements/remove-bg',
   requireAuth,
@@ -473,9 +483,28 @@ router.post(
   async (req, res) => {
     try {
       if (!req.body?.length) return res.status(400).json({ error: 'Send the image bytes as the body' });
-      const png = await cutOutSubject(req.body);
-      res.set('Content-Type', 'image/png').send(png);
+      // Metering needs a baker to charge. Same guard the other baker-scoped routes here use.
+      if (!req.bakerId) return res.status(403).json({ error: 'No baker context' });
+
+      const out = await withAiCredits(
+        { bakerId: req.bakerId, action: AI_ACTION.BACKGROUND_REMOVAL },
+        async () => {
+          const png = await cutOutSubject(req.body);
+          // A cut-out that came back empty is a failed call, not a result. Discarding releases the
+          // hold, so the baker is not charged for an image we cannot give them.
+          if (!png?.length) return { keep: false, note: 'empty cutout' };
+          // provider/model are the vendor, so the margin dashboard can tell a remove.bg image from
+          // a self-hosted one once spattoo-bgremover is live and the per-image fee disappears.
+          return { value: png, provider: config.bgRemoval.provider };
+        },
+      );
+      if (!out.value) return res.status(422).json({ error: 'Could not cut out that image.', code: 'CUTOUT_FAILED' });
+
+      res.set('Content-Type', 'image/png').send(out.value);
     } catch (err) {
+      if (err instanceof InsufficientCreditsError) {
+        return res.status(err.status).json({ error: err.message, code: err.code, ...err.detail });
+      }
       serverError(req, res, err);
     }
   },
