@@ -125,7 +125,8 @@ export async function requirementsForBaker(bakerId) {
 }
 
 // Replace-set of the requirements a baker does NOT offer. Mirrors
-// PUT /api/baker/flavours/exclusions exactly.
+// PUT /api/baker/dietary-requirements/exclusions exactly. (It once cited the flavour
+// exclusions endpoint, which no longer replaces — see migration 037.)
 export async function setBakerDietaryExclusions(bakerId, keys) {
   const ids = await idsForKeys(keys);
 

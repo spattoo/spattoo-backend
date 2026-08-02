@@ -10,7 +10,8 @@ import { withOrderStageUrls } from '../lib/xrayStageUrls.js';
 import { notifyOrderPlaced, notifyDesignUpdated, notifyQuoteIssued, notifyQuoteAccepted, notifyQuoteQuestion, notifyOrderConfirmed, notifyOrderReady, notifyOrderCompleted } from '../services/notifications.js';
 import { getOrderStatuses, getValidStatusKeys, isQuotePhase, idForKey } from '../lib/orderStatuses.js';
 import { getDietaryRequirements, validateDietaryKeys, setOrderDietaryRequirements, requirementsForBaker } from '../lib/dietaryRequirements.js';
-import { conflictsForBaker, baselineConflictKeys, setBaselineConflicts } from '../lib/flavourDietary.js';
+import { baselineConflictKeys, setBaselineConflicts } from '../lib/flavourDietary.js';
+import { flavoursForCustomer } from '../lib/flavourList.js';
 import { getOrderAcceptance } from '../services/entitlements.js';
 import { deleteObject } from '../services/r2.js';
 import { logError } from '../lib/telemetry.js';
@@ -360,43 +361,22 @@ router.get('/flavours', async (req, res) => {
     if (!bakerSlug) return res.status(400).json({ error: 'bakerSlug is required' });
 
     const { data: baker } = await supabase
-      .from('bakers').select('id').eq('slug', bakerSlug).eq('is_active', true).maybeSingle();
+      .from('bakers')
+      .select('id, show_flavours, price_visibility')
+      .eq('slug', bakerSlug).eq('is_active', true).maybeSingle();
     if (!baker) return res.status(404).json({ error: 'Baker not found' });
 
-    // Excluded global flavour IDs for this baker
-    const { data: exclusions } = await supabase
-      .from('baker_flavour_exclusions')
-      .select('flavour_id')
-      .eq('baker_id', baker.id);
-    const excludedIds = (exclusions ?? []).map(e => e.flavour_id);
+    // The union, the exclusion resolution and the dietary map all moved to
+    // lib/flavourList.js, because the baker's own settings screen has to resolve the same
+    // list and two copies of "what does this baker offer" would drift the first time one
+    // of them learned about prices — which is exactly what happened here.
+    //
+    // `verified` is where a customer who has proved a phone/email will be recognised, so
+    // a baker on price_visibility:'verified' shows them rates. Wired to false until that
+    // storefront login lands; a baker on 'public' works today either way.
+    const flavours = await flavoursForCustomer(baker, { verified: false });
 
-    // Active global flavours minus exclusions
-    let globalQuery = supabase
-      .from('flavours')
-      .select('id, name, description, sort_order')
-      .eq('is_active', true)
-      .order('sort_order').order('name');
-    if (excludedIds.length) globalQuery = globalQuery.not('id', 'in', `(${excludedIds.join(',')})`);
-    const { data: globals } = await globalQuery;
-
-    // Baker's custom flavours
-    const { data: custom } = await supabase
-      .from('baker_flavours')
-      .select('id, name, description, sort_order')
-      .eq('baker_id', baker.id).eq('is_active', true)
-      .order('sort_order').order('name');
-
-    // Resolved once for the whole list — the map covers global and custom flavours alike,
-    // so neither branch below needs to know which kind it is holding.
-    const conflicts = await conflictsForBaker(baker.id);
-    const withConflicts = f => ({ ...f, conflicts_with: conflicts[f.id] ?? [] });
-
-    const result = [
-      ...(globals ?? []).map(f => withConflicts({ ...f, source: 'global' })),
-      ...(custom  ?? []).map(f => withConflicts({ ...f, source: 'baker'  })),
-    ];
-
-    res.json(result);
+    res.json(flavours);
   } catch (err) {
     serverError(req, res, err);
   }

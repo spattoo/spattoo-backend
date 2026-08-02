@@ -15,6 +15,7 @@ import { config } from '../config.js';
 import { logSubscriptionEvent, deriveSubscription } from './subscriptions.js';
 import { validateDietaryKeys, requirementsForBaker, setBakerDietaryExclusions } from '../lib/dietaryRequirements.js';
 import { baselineConflictKeys, conflictsForBaker, setBakerFlavourConflicts } from '../lib/flavourDietary.js';
+import { resolveFlavours, PRICE_VISIBILITY } from '../lib/flavourList.js';
 import { PLAN }                from '../constants/subscriptionPlans.js';
 import { PERIOD }              from '../constants/billingPeriods.js';
 import { SUBSCRIPTION_STATUS } from '../constants/subscriptionStatuses.js';
@@ -816,11 +817,22 @@ router.put('/baker/settings', requireAuth, requireCapability('store:manage'), as
 });
 
 // ── GET /api/baker/flavours ───────────────────────────────────────────────────
-// Auth. The global flavour master list, flagged with this baker's on/off state:
-//   [{ id, name, description, excluded }]
+// Auth. Everything the Flavours settings screen needs, in one response:
+//   { flavours: [{ id, source, name, description, excluded, price_per_kg, display_name,
+//                  conflicts_with, baseline_conflicts }],
+//     visibility: { show_flavours, price_visibility } }
+//
 // `excluded: true` means the baker has switched it off and it's hidden from their
-// customers (mirrors the resolution in the public GET /api/flavours). Custom baker
-// flavours are managed separately, not here.
+// customers. Kept as `excluded` rather than flipped to `offered` because that is the
+// word the panel and its PUT already speak; the STORAGE inverted in migration 037, the
+// baker-facing contract did not.
+//
+// The list itself now comes from lib/flavourList.js, shared with the public
+// GET /api/flavours. Two copies of "what does this baker offer" drifted the moment one
+// of them learned about prices, which is the whole reason that module exists.
+//
+// The baker sees their own prices unconditionally — price_visibility governs what
+// CUSTOMERS see, never what the owner sees on their own settings screen.
 router.get('/baker/flavours', requireAuth, async (req, res) => {
   try {
     const { data: contact } = await supabase
@@ -830,42 +842,65 @@ router.get('/baker/flavours', requireAuth, async (req, res) => {
       .maybeSingle();
     if (!contact) return res.status(404).json({ error: 'No baker account found' });
 
-    const [{ data: globals }, { data: exclusions }] = await Promise.all([
-      supabase.from('flavours')
-        .select('id, name, description, sort_order')
-        .eq('is_active', true)
-        .order('sort_order').order('name'),
-      supabase.from('baker_flavour_exclusions')
-        .select('flavour_id')
-        .eq('baker_id', contact.baker_id),
-    ]);
-
-    // Dietary conflicts, both layers. The panel needs BOTH: `conflicts` is what is in
+    // Dietary conflicts, both layers. The panel needs BOTH: `conflicts_with` is what is in
     // force for this baker, `baseline_conflicts` is what Spattoo declared globally. A
     // toggle whose default the baker cannot see is a toggle they cannot reason about —
     // and since clearing one of our rows is their right of reply ("our hazelnut sponge
     // IS nut-free"), they have to be able to tell which rows are ours.
-    const [baseline, effective] = await Promise.all([
+    const [flavours, baseline, { data: baker }] = await Promise.all([
+      resolveFlavours(contact.baker_id),
       baselineConflictKeys(),
-      conflictsForBaker(contact.baker_id),
+      supabase.from('bakers')
+        .select('show_flavours, price_visibility')
+        .eq('id', contact.baker_id).maybeSingle(),
     ]);
 
-    const excluded = new Set((exclusions ?? []).map(e => e.flavour_id));
-    res.json((globals ?? []).map(f => ({
-      id: f.id, name: f.name, description: f.description, excluded: excluded.has(f.id),
-      conflicts_with:     effective[f.id] ?? [],
-      baseline_conflicts: baseline[f.id]  ?? [],
-    })));
+    res.json({
+      flavours: flavours.map(f => ({
+        id: f.id,
+        source: f.source,
+        name: f.name,
+        description: f.description,
+        excluded: !f.offered,
+        price_per_kg: f.pricePerKg,
+        conflicts_with:     f.conflicts_with,
+        // Only global flavours have a Spattoo-authored baseline — a baker's own recipe is
+        // theirs, and we have no basis for an opinion on it (supabase/flavour_dietary.sql).
+        baseline_conflicts: f.source === 'global' ? (baseline[f.id] ?? []) : [],
+      })),
+      visibility: {
+        show_flavours:    baker?.show_flavours ?? true,
+        price_visibility: baker?.price_visibility ?? 'private',
+      },
+    });
   } catch (err) {
     serverError(req, res, err);
   }
 });
 
-// ── PUT /api/baker/flavours/exclusions ────────────────────────────────────────
-// Auth + store:manage. Body: { excluded_flavour_ids: [uuid, ...] }
-// Replaces this baker's exclusion set (clear, then insert the new set). Only ids that
-// are real active global flavours are written, so the table can't accumulate junk.
-router.put('/baker/flavours/exclusions', requireAuth, requireCapability('store:manage'), async (req, res) => {
+// ── PUT /api/baker/flavours ───────────────────────────────────────────────────
+// Auth + store:manage. Body:
+//   { flavours: [{ flavour_id, excluded?, price_per_kg?, display_name? }, ...],
+//     visibility?: { show_flavours?, price_visibility? } }
+//
+// Replaces PUT /api/baker/flavours/exclusions, which is GONE rather than deprecated —
+// see below, because leaving it running is the single most expensive thing that could
+// happen to this feature.
+//
+// ── WHY THIS UPSERTS AND THE OLD ONE COULD NOT ────────────────────────────────
+// The old endpoint replaced the set: DELETE every row for this baker, then INSERT the
+// new exclusions. That was harmless when a row carried nothing but its own existence.
+// Now a row carries a PRICE, and the same code would delete every price a baker had
+// entered the next time they toggled any flavour — silently, with the client having sent
+// only flags. So this upserts on (baker_id, flavour_id), which the table's existing
+// unique constraint already supports, and touches only the fields it was given.
+//
+// ── WHY UNTICKING DOES NOT DELETE ─────────────────────────────────────────────
+// The instinct is to mirror the old logic — untick inserts a row, re-tick deletes it —
+// and it is now wrong in both directions. Untick writes `offered = false` and KEEPS the
+// row, so a baker who turns mango off for the winter still has their rate in April.
+// Deleting would lose it, and they would not find out until they turned it back on.
+router.put('/baker/flavours', requireAuth, requireCapability('store:manage'), async (req, res) => {
   try {
     const { data: contact } = await supabase
       .from('baker_appusers')
@@ -874,26 +909,62 @@ router.put('/baker/flavours/exclusions', requireAuth, requireCapability('store:m
       .maybeSingle();
     if (!contact) return res.status(404).json({ error: 'No baker account found' });
 
-    const requested = Array.isArray(req.body?.excluded_flavour_ids) ? req.body.excluded_flavour_ids : null;
-    if (!requested) return res.status(400).json({ error: 'excluded_flavour_ids must be an array' });
-
-    // Keep only ids that are real active global flavours.
-    const { data: globals } = await supabase.from('flavours').select('id').eq('is_active', true);
-    const valid = new Set((globals ?? []).map(f => f.id));
-    const ids = [...new Set(requested)].filter(id => valid.has(id));
-
-    // Replace the set: clear this baker's exclusions, then insert the new ones.
-    const { error: delErr } = await supabase
-      .from('baker_flavour_exclusions').delete().eq('baker_id', contact.baker_id);
-    if (delErr) return serverError(req, res, delErr);
-
-    if (ids.length) {
-      const rows = ids.map(flavour_id => ({ baker_id: contact.baker_id, flavour_id }));
-      const { error: insErr } = await supabase.from('baker_flavour_exclusions').insert(rows);
-      if (insErr) return serverError(req, res, insErr);
+    const entries = Array.isArray(req.body?.flavours) ? req.body.flavours : null;
+    const visibility = req.body?.visibility ?? null;
+    if (!entries && !visibility) {
+      return res.status(400).json({ error: 'flavours must be an array, or visibility must be given' });
     }
 
-    res.json({ ok: true, excluded_count: ids.length });
+    if (visibility) {
+      const patch = {};
+      if (typeof visibility.show_flavours === 'boolean') patch.show_flavours = visibility.show_flavours;
+      if (visibility.price_visibility !== undefined) {
+        if (!PRICE_VISIBILITY.includes(visibility.price_visibility)) {
+          return res.status(400).json({ error: `price_visibility must be one of ${PRICE_VISIBILITY.join(', ')}` });
+        }
+        patch.price_visibility = visibility.price_visibility;
+      }
+      if (Object.keys(patch).length) {
+        const { error } = await supabase.from('bakers').update(patch).eq('id', contact.baker_id);
+        if (error) return serverError(req, res, error);
+      }
+    }
+
+    if (entries?.length) {
+      // Only real active global flavours, so the table cannot accumulate junk — the same
+      // guard the old endpoint had, for the same reason.
+      const { data: globals } = await supabase.from('flavours').select('id').eq('is_active', true);
+      const valid = new Set((globals ?? []).map(f => f.id));
+
+      const rows = [];
+      for (const e of entries) {
+        if (!valid.has(e?.flavour_id)) continue;
+        const price = e.price_per_kg;
+        // '' from an emptied input means "unprice this", which is null — not 0, which
+        // would be a baker advertising a free cake.
+        const parsed = price === '' || price === null || price === undefined ? null : Number(price);
+        if (parsed !== null && (!Number.isFinite(parsed) || parsed < 0)) {
+          return res.status(400).json({ error: `price_per_kg for ${e.flavour_id} must be a non-negative number` });
+        }
+        rows.push({
+          baker_id:     contact.baker_id,
+          flavour_id:   e.flavour_id,
+          offered:      e.excluded === true ? false : true,
+          price_per_kg: parsed,
+          display_name: e.display_name?.trim() || null,
+          updated_at:   new Date().toISOString(),
+        });
+      }
+
+      if (rows.length) {
+        const { error } = await supabase
+          .from('baker_flavour_settings')
+          .upsert(rows, { onConflict: 'baker_id,flavour_id' });
+        if (error) return serverError(req, res, error);
+      }
+    }
+
+    res.json({ ok: true, updated: entries?.length ?? 0 });
   } catch (err) {
     serverError(req, res, err);
   }
@@ -916,7 +987,9 @@ router.get('/baker/dietary-requirements', requireAuth, async (req, res) => {
 
 // ── PUT /api/baker/dietary-requirements/exclusions ────────────────────────────
 // Auth + store:manage. Body: { excluded_keys: ['vegan', ...] }
-// Replace-set, mirroring PUT /api/baker/flavours/exclusions.
+// Replace-set. A key is all a row carries, so there is nothing a replace can destroy —
+// unlike the flavour settings, which stopped being a replace in migration 037 precisely
+// because their rows gained a price.
 //
 // Switching one OFF never removes a customer's ability to be recorded as needing it when
 // it is an ALLERGEN — that is enforced on the surfaces, not here, because the row means
@@ -1019,7 +1092,8 @@ router.get('/baker/templates', requireAuth, async (req, res) => {
 // Auth + store:manage. Body: { excluded_template_ids: [uuid, ...] }
 // Replaces this baker's exclusion set (clear, then insert the new set). Only ids that are real active
 // GLOBAL templates are written, so a baker can never hide another tenant's private template and the
-// table can't accumulate junk. Mirrors PUT /api/baker/flavours/exclusions.
+// table can't accumulate junk. Same shape the flavour exclusions had before migration 037
+// widened those rows into priced settings and made replace unsafe for them.
 router.put('/baker/templates/exclusions', requireAuth, requireCapability('store:manage'), async (req, res) => {
   try {
     const { data: contact } = await supabase

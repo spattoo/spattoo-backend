@@ -184,8 +184,12 @@ export async function conflictsForBaker(bakerId) {
 // knowing what a baseline is or how to diff against one.
 //
 // `entries`: [{ flavourId, source: 'global'|'baker', requirementKeys: [...] }]
-// Replace-set semantics, matching PUT /api/baker/flavours/exclusions: whatever is sent
-// becomes the whole truth for the flavours named. A set has no natural partial update.
+// Replace-set semantics: whatever is sent becomes the whole truth for the flavours named.
+// A set has no natural partial update.
+//
+// Note this is NOT what PUT /api/baker/flavours does any more — that one upserts, because
+// its rows carry a price a replace would destroy (migration 037). A conflict set has no
+// such payload, so replace stays correct here.
 export async function setBakerFlavourConflicts(bakerId, entries) {
   const [baseline, kById] = await Promise.all([baselineConflictKeys(), idByKey()]);
 
