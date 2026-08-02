@@ -9,6 +9,7 @@ import { analyzeCake, suggestBuildGuide } from '../services/openai.js';
 import { renderStageImage, orderStagesKey } from '../services/decorationStages.js';
 import { matchAnalysis } from '../services/inspirationMatch.js';
 import { buildXraySpec } from '../services/xraySpec.js';
+import { withStageUrl } from '../lib/xrayStageUrls.js';
 import { withAiCredits, AI_ACTION, InsufficientCreditsError } from '../services/aiCredits.js';
 
 const router = Router();
@@ -282,9 +283,10 @@ router.post('/orders/:id/xray/decoration-steps', requireAuth, requireCapability(
     if (!key || !label) return res.status(400).json({ error: 'key and label are required' });
     if (key.length > 120 || label.length > 200) return res.status(400).json({ error: 'key or label too long' });
 
-    // Already generated → hand it back, charge nothing.
+    // Already generated → hand it back, charge nothing. Expanded, like every other path that
+    // hands a decoration to a client.
     const existing = order.xray_spec?.decorations?.[key];
-    if (existing) return res.json({ ok: true, reused: true, key, steps: existing });
+    if (existing) return res.json({ ok: true, reused: true, key, steps: withStageUrl(existing) });
 
     // Where this decoration is in the photo, so the stage grid can be conditioned on the real
     // thing rather than on the whole cake. Absent is fine — the grid falls back to the full photo,
@@ -366,7 +368,12 @@ router.post('/orders/:id/xray/decoration-steps', requireAuth, requireCapability(
     });
     if (mergeErr) throw mergeErr;
 
-    res.json({ ok: true, reused: false, key, steps: value });
+    // EXPANDED on the way out. `value` holds the R2 key, which is right for storage and useless
+    // to a browser — and this response is what the panel renders, since it opens the result
+    // directly rather than refetching the order. Returning the bare key here is why a freshly
+    // generated guide came back as words with no picture: the steps rendered, the stage sheet did
+    // not, and it only appeared later when GET /orders expanded it through the other path.
+    res.json({ ok: true, reused: false, key, steps: withStageUrl(value) });
   } catch (err) {
     if (err instanceof InsufficientCreditsError) {
       return res.status(err.status).json({ error: err.message, code: err.code, ...err.detail });

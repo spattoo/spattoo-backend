@@ -15,13 +15,12 @@ import { decorationPolicy } from '../services/decorationPolicy.js';
 
 const router = Router();
 
-// EXPORTED so the baker-facing routes (routes/uploads.js) expand keys the SAME way — one place
-// decides how a stored key becomes a loadable URL.
-export function toPublicUrl(key) {
-  if (!key) return null;
-  if (/^https?:\/\//i.test(key)) return key;   // already a full URL — don't double-prefix
-  return `${config.r2.publicUrl}/${key}`;
-}
+// Re-exported from lib/publicUrl.js, which is now the one definition. Kept here because several
+// modules already import it from this route and moving those imports is churn without benefit —
+// what mattered was that there stop being two BODIES of it.
+// `export ... from` would re-export without binding it locally, and this file uses it below.
+import { toPublicUrl } from '../lib/publicUrl.js';
+export { toPublicUrl };
 
 // Every element response resolves the same three R2 keys to public URLs. One helper, so a fourth
 // asset column (or a change to how keys resolve) lands in ONE place instead of four call sites.

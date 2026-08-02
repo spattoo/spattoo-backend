@@ -5,6 +5,8 @@ import { requireAuth } from '../middleware/auth.js';
 import { requireCapability } from '../middleware/rbac.js';
 import { assertBakerOwns } from '../lib/tenantScope.js';
 import { config } from '../config.js';
+import { toPublicUrl } from '../lib/publicUrl.js';
+import { withStageUrls } from '../lib/xrayStageUrls.js';
 import { notifyOrderPlaced, notifyDesignUpdated, notifyQuoteIssued, notifyQuoteAccepted, notifyQuoteQuestion, notifyOrderConfirmed, notifyOrderReady, notifyOrderCompleted } from '../services/notifications.js';
 import { getOrderStatuses, getValidStatusKeys, isQuotePhase, idForKey } from '../lib/orderStatuses.js';
 import { getDietaryRequirements, validateDietaryKeys, setOrderDietaryRequirements, requirementsForBaker } from '../lib/dietaryRequirements.js';
@@ -27,11 +29,6 @@ async function orderIntakeBlock(bakerId) {
   const { accepting, code } = await getOrderAcceptance(bakerId);
   if (accepting) return null;
   return { error: "This bakery isn't accepting new orders right now.", code };
-}
-
-function toPublicUrl(key) {
-  if (!key) return null;
-  return `${config.r2.publicUrl}/${key}`;
 }
 
 // ── Calendar month view: per-day counts ───────────────────────────────────────
@@ -806,15 +803,6 @@ router.post('/customer/orders/:id/message', requireAuth, async (req, res) => {
 // Returns a COPY. Mutating the row in place would write the expanded URL back into whatever the
 // caller does with it next, and an expanded URL round-tripping into storage is exactly the rot the
 // key was chosen to avoid.
-function withStageUrls(spec) {
-  const decorations = spec?.decorations;
-  if (!decorations) return spec;
-  const out = {};
-  for (const [k, v] of Object.entries(decorations)) {
-    out[k] = v?.stages_key ? { ...v, stages_url: toPublicUrl(v.stages_key) } : v;
-  }
-  return { ...spec, decorations: out };
-}
 
 function xraySpecStale(o) {
   const readKey = o?.xray_spec_meta?.source_photo_key;
