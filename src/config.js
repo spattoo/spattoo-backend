@@ -55,6 +55,16 @@ export const config = {
     provider:     process.env.BG_REMOVAL_PROVIDER || 'removebg',
     serviceUrl:   process.env.BG_REMOVAL_SERVICE_URL || '',      // Render internal host, e.g. http://spattoo-bgremover:3000
     serviceToken: process.env.BG_REMOVAL_SERVICE_TOKEN || '',    // must match the service's BG_SERVICE_TOKEN
+    // Inference measured ~3s on Render. 20s is generous for a slow image and still well short of a
+    // baker deciding the page is broken — the point is that SOME deadline exists, because a hung
+    // service never fails and so never falls back.
+    timeoutMs:    parseInt(process.env.BG_REMOVAL_TIMEOUT_MS || '20000', 10),
+    // When our own service is down, let the paid vendor answer (see services/bgFallbackPolicy.js).
+    // On by default: an outage otherwise means every upload fails. `off` to disable.
+    fallbackToVendor: process.env.BG_REMOVAL_FALLBACK !== 'off',
+    // Ceiling on vendor calls per IST day, so our downtime cannot become an unbounded invoice at
+    // ~₹15 an image. 0 disables the fallback entirely.
+    fallbackDailyCap: parseInt(process.env.BG_REMOVAL_FALLBACK_DAILY_CAP || '200', 10),
   },
   // Meshy.ai image-to-3D. Not in `required[]` (like razorpay/smtp) so local boot
   // doesn't fail without a key — services/meshy.js throws a clear error at call time.

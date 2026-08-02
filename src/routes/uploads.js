@@ -95,7 +95,7 @@ function shape(u, promotedIds = new Set()) {
 async function ensureCutout(upload) {
   if (upload.cutout_key) return upload.cutout_key;
 
-  const cut    = await cutOutSubject(await getObjectBuffer(upload.storage_key));
+  const { png: cut } = await cutOutSubject(await getObjectBuffer(upload.storage_key));
   const cutKey = `elements/files/2D/${randomUUID()}.png`;
   await putObject(cutKey, cut, 'image/png');
 
@@ -489,18 +489,34 @@ router.post(
       const out = await withAiCredits(
         { bakerId: req.bakerId, action: AI_ACTION.BACKGROUND_REMOVAL },
         async () => {
-          const png = await cutOutSubject(req.body);
+          const { png, provider, fellBack, reason, confidence, doubts } = await cutOutSubject(req.body);
+          // PHASE 1 — record what our own model thought of its mask, act on nothing. The point is
+          // the distribution: what share of REAL uploads look doubtful is the number that decides
+          // whether a paid retry is a ₹500/month feature or a ₹15,000 one, and it cannot be guessed
+          // from test images. Once that is known, a doubtful result can offer the baker a retry.
+          if (confidence === 'low') {
+            console.warn(`[bg-removal] low confidence (${doubts}) | baker ${req.bakerId} | ${req.body.length}B`);
+          }
           // A cut-out that came back empty is a failed call, not a result. Discarding releases the
           // hold, so the baker is not charged for an image we cannot give them.
           if (!png?.length) return { keep: false, note: 'empty cutout' };
+          // OUR SERVICE WAS DOWN, so the vendor answered. The baker asked for the cheap path and we
+          // could not serve it — charging them ~₹15 of credits for our outage would bill them for
+          // our reliability. `keep: false` releases the hold; the image still comes back below as
+          // discardedValue, because a discarded result is not the same thing as a failed one.
+          if (fellBack) return { keep: false, value: png, note: `availability fallback (${reason})` };
           // provider/model are the vendor, so the margin dashboard can tell a remove.bg image from
-          // a self-hosted one once spattoo-bgremover is live and the per-image fee disappears.
-          return { value: png, provider: config.bgRemoval.provider };
+          // a self-hosted one once spattoo-bgremover is live and the per-image fee disappears. This
+          // is the provider that ACTUALLY served, not the configured one.
+          return { value: png, provider };
         },
       );
-      if (!out.value) return res.status(422).json({ error: 'Could not cut out that image.', code: 'CUTOUT_FAILED' });
+      // `value` is what the baker was charged for; `discardedValue` is a real result we chose not to
+      // bill. Either is a usable PNG — only having neither is a failure.
+      const png = out.value ?? out.discardedValue;
+      if (!png?.length) return res.status(422).json({ error: 'Could not cut out that image.', code: 'CUTOUT_FAILED' });
 
-      res.set('Content-Type', 'image/png').send(out.value);
+      res.set('Content-Type', 'image/png').send(png);
     } catch (err) {
       if (err instanceof InsufficientCreditsError) {
         return res.status(err.status).json({ error: err.message, code: err.code, ...err.detail });
