@@ -637,15 +637,22 @@ router.get('/billing/payments', requireAuth, requireCapability('billing:manage')
 
     const { data, error, count } = await supabase
       .from('payments')
-      .select('id, razorpay_payment_id, amount, currency, status_id, charged_at', { count: 'exact' })
+      // credit_packs joined rather than a label stored on the payment: a pack's name lives in one
+      // place, so renaming it does not leave old rows describing something that no longer exists.
+      .select('id, razorpay_payment_id, amount, currency, status_id, charged_at, credit_packs (credits, label)', { count: 'exact' })
       .eq('baker_id', baker.id)
       .order('charged_at', { ascending: false })
       .limit(limit);
     if (error) return serverError(req, res, error);
 
-    const payments = (data ?? []).map(({ status_id, ...p }) => ({
+    const payments = (data ?? []).map(({ status_id, credit_packs, ...p }) => ({
       ...p,
       status: PAYMENT_STATUS.NAME_BY_ID[status_id] ?? 'unknown',
+      // What this payment BOUGHT, when it was a top-up. Absent on a subscription charge, which is
+      // the overwhelming majority — so the client renders a plan charge exactly as it does today
+      // and only a top-up gains a line. Credits rather than the pack's label: "+150 credits" is
+      // what the baker recognises, where "Small top-up" is our word for it.
+      credits: credit_packs?.credits ?? null,
     }));
     res.json({ payments, total: count ?? payments.length });
   } catch (err) {
@@ -721,6 +728,45 @@ router.post('/billing/webhook', async (req, res) => {
           note:              `razorpay order ${payment.order_id ?? '?'}`,
         });
         if (!txId) console.error('[billing] credit pack purchase not recorded — unknown pack', packKey, payment.id);
+
+        // Also record it as a PAYMENT, so it appears in the baker's payment history beside their
+        // plan charges. Without this a top-up is money that left their account and shows up
+        // nowhere — and "did I pay for that?" is the question a payment history exists to answer.
+        //
+        // credit_pack_id both marks the row as a top-up and names which one (migration 033), so
+        // the label is read from credit_packs rather than copied here and left to rot.
+        //
+        // Subscription columns stay NULL: a pack is a one-time order and belongs to no
+        // subscription. Idempotent on razorpay_payment_id, like the subscription path, so a
+        // redelivered webhook cannot list the same payment twice.
+        //
+        // Best-effort AFTER the credits: if this write fails the baker still has what they paid
+        // for, and a missing history row is a reporting gap rather than a lost purchase. Failing
+        // the webhook here would have Razorpay retry an event whose credits are already minted.
+        try {
+          // Looked up WITHOUT the is_active filter that getCreditPack applies. That filter is
+          // right when deciding whether a pack may be SOLD, and wrong here: a pack retired between
+          // checkout and this webhook was still legitimately bought, and the payment record must
+          // name it. Filtering would silently drop the label on exactly the historical rows that
+          // most need explaining.
+          const { data: pack } = await supabase
+            .from('credit_packs').select('id, price_paise')
+            .eq('pack_key', packKey).maybeSingle();
+          const { error: payErr } = await supabase.from('payments').upsert({
+            baker_id:            packBakerId,
+            razorpay_payment_id: payment.id,
+            amount:              payment.amount ?? pack?.price_paise ?? 0,
+            currency:            payment.currency ?? 'INR',
+            status_id:           PAYMENT_STATUS.CAPTURED,
+            credit_pack_id:      pack?.id ?? null,
+            charged_at:          payment.created_at
+              ? new Date(payment.created_at * 1000).toISOString()
+              : new Date().toISOString(),
+          }, { onConflict: 'razorpay_payment_id', ignoreDuplicates: true });
+          if (payErr) console.error('[billing] credit pack payment row failed', payment.id, payErr.message);
+        } catch (e) {
+          console.error('[billing] credit pack payment row failed', payment?.id, e?.message);
+        }
       } else {
         // Stamped as a pack but missing what it needs. Loud, because the alternative is a baker
         // who paid and got nothing while the webhook reported success.
