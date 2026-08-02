@@ -268,3 +268,28 @@ export const notifySubscriptionRenewed   = (baker, p) => notifySubscription('sub
 export const notifyPaymentFailed         = (baker, p) => notifySubscription('payment_failed',          baker, p);
 export const notifySubscriptionCancelled = (baker, p) => notifySubscription('subscription_cancelled',  baker, p);
 export const notifySubscriptionExpired   = (baker, p) => notifySubscription('subscription_expired',    baker, p);
+
+// ── Running out of credits ───────────────────────────────────────────────────
+// Two thresholds of the MONTHLY allowance, and they are not the same message: at 80% nothing has
+// stopped and the baker may not need to do anything; at 100% something has.
+//
+// `resetsOn` rides along because the single most useful fact in both emails is the date the
+// allowance comes back — it is what turns "you are running out" into a decision someone can
+// actually make ("that's Tuesday, I'll wait").
+export async function notifyCreditsLow(baker, { threshold, left, allowance, walletBalance, resetsOn, canBuy }) {
+  const slug = threshold === 'exhausted' ? 'credits_exhausted' : 'credits_low';
+  const email = await bakerNotifyEmail(baker);
+  if (!email) return;
+  await insertNotification(slug, email, {
+    bakerName:     baker?.name ?? null,
+    timeZone:      baker?.timezone ?? null,
+    left:          left          ?? 0,
+    allowance:     allowance     ?? null,
+    walletBalance: walletBalance ?? 0,
+    resetsOn:      resetsOn      ?? null,
+    // Whether topping up is even an option on this plan. Without it the email would offer a door
+    // that is not there, and "buy more credits" that leads to "your plan cannot" is worse than
+    // saying only what is true: the credits come back on the 1st.
+    canBuy:        canBuy === true,
+  });
+}

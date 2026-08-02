@@ -425,6 +425,49 @@ function buildEmail(typeSlug, recipientEmail, payload) {
         <p style="color:#6b6b6b;font-size:13px;margin:22px 0 0;">A GST invoice for this payment is sent separately.${p.paymentId ? ` Payment reference <b>${esc(p.paymentId)}</b> — quote it if you ever need to ask us about this charge.` : ''}</p>`) };
   }
 
+  // ── AI credits — running low / used up ──────────────────────────────────────
+  // The pill and the billing card already go amber at 70% and red at 100%, but those are PASSIVE:
+  // they work only if the baker is looking at the screen they are on. Someone who spends a month's
+  // credits across a busy week finds out on Saturday, by being refused. This is the one channel
+  // that reaches them first.
+  //
+  // The reset date leads in both. It is the fact that turns "you are running out" into a decision
+  // someone can actually make — "that's Tuesday, I'll wait" is a perfectly good answer, and an
+  // email that hides it in order to sell a top-up would deserve to be ignored.
+  if (typeSlug === 'credits_low' || typeSlug === 'credits_exhausted') {
+    const gone    = typeSlug === 'credits_exhausted';
+    const back    = formatDateTz(p.resetsOn, p.timeZone);
+    const left    = Number(p.left) || 0;
+    const wallet  = Number(p.walletBalance) || 0;
+    const creditsUrl = config.app.url ? config.app.url.replace(/\/+$/, '') : null;
+
+    // Bought credits change the situation completely: the monthly ones being gone is a
+    // bookkeeping event, not a wall. Saying so is the difference between an accurate email and
+    // one that reads as a scare.
+    const wallLine = wallet > 0
+      ? `You still have <b>${wallet} bought credits</b>, which don't expire — smart tools keep working.`
+      : gone
+        ? `Smart tools will pause until then.`
+        : '';
+
+    return { from: config.smtp.from, to: recipientEmail,
+      subject: gone ? 'Your monthly Spattoo credits are used up'
+                    : 'Your Spattoo credits are running low',
+      html: shell(`<h2 style="margin:0 0 12px;font-size:22px;color:#2C4433;font-weight:800;">${
+          gone ? `Your monthly credits are used up${hi}` : `You're running low${hi}`
+        }</h2>
+        <p>${gone
+          ? `You've used all ${p.allowance ?? ''} credits included with your plan this month.`
+          : `You have <b>${left} of ${p.allowance ?? ''} monthly credits</b> left.`}${
+          back !== '—' ? ` They refresh on <b>${back}</b>.` : ''}</p>
+        ${wallLine ? `<p>${wallLine}</p>` : ''}
+        ${/* Offered only where it exists. A "buy more" button that leads to "your plan can't"
+              is worse than not offering it — see notifyCreditsLow's canBuy. */''}
+        ${p.canBuy && creditsUrl ? ctaBtn(escUrl(creditsUrl), 'Top up your credits')
+                                 : creditsUrl ? ctaBtn(escUrl(creditsUrl), 'Open Spattoo') : ''}
+        <p style="color:#6b6b6b;font-size:13px;margin:22px 0 0;">Everything else — your storefront, orders, and the designer — works as usual. Credits only apply to the smart tools.</p>`) };
+  }
+
   // ── Account erasure — 48h pre-erasure notice (DPDP Rule 8) ──────────────────
   if (typeSlug === 'account_erasure_notice') {
     const when      = formatDateTz(p.eraseAfter, p.timeZone);

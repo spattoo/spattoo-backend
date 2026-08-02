@@ -1,4 +1,5 @@
 import { supabase } from './supabase.js';
+import { creditWarningLevel, istMonthStart } from './creditAlerts.js';
 import { getEntitlements } from './entitlements.js';
 import { config } from '../config.js';
 
@@ -342,7 +343,62 @@ export async function withAiCredits(opts, run) {
   }
 
   await commitCredits(reservation.transactionId, out);
+  // Warn AFTER the charge lands and never before it. Fire-and-forget, and errors are swallowed:
+  // a baker whose X-Ray failed because our warning email threw would be strictly worse off than
+  // one who got no warning.
+  maybeWarnLowCredits(opts.bakerId).catch(() => {});
   return { replay: false, value: out.value, reservation };
+}
+
+// ── Telling a baker before they hit the wall ─────────────────────────────────────────
+// The pill and the billing card already escalate at 70/90/100%, and every one of those signals is
+// PASSIVE — it works only if the baker happens to be looking at that screen. Someone who spends a
+// month's credits across a busy week finds out on Saturday, by being refused.
+// SUBSCRIPTION_TIERS.md is explicit that this is the failure worth avoiding: "silently failing at
+// the limit wastes the whole mechanism."
+//
+// ON CROSSING, NOT ON A SCHEDULE. Called from the commit path, so it fires at the moment a spend
+// takes a baker over the line. A daily sweep would spend most of its time re-examining bakers who
+// are not spending — and a baker who is not spending does not need warning.
+//
+// The thresholds and every suppression rule live in creditAlerts.js, pure and gated.
+async function maybeWarnLowCredits(bakerId) {
+  if (!bakerId) return;
+  const b = await getAiCreditBalance(bakerId);
+  const threshold = creditWarningLevel(b ?? {});
+  if (!threshold) return;
+
+  // ── One per baker, per threshold, per calendar month ──────────────────────────────
+  // Without this a heavy baker gets both emails every month — 24 a year saying the product is
+  // working as designed, which is how an alert becomes something people filter.
+  //
+  // THE UPDATE IS THE LOCK. Read-then-send would let two AI actions finishing together both see
+  // "not sent yet" and both send. Claiming the month with a conditional UPDATE and sending only
+  // if this call is the one that changed the row makes that impossible — Postgres decides, not us.
+  const column = threshold === 'exhausted' ? 'credits_exhausted_alert_month' : 'credits_low_alert_month';
+  const monthStart = istMonthStart();
+
+  const { data: claimed, error } = await supabase
+    .from('bakers')
+    .update({ [column]: monthStart })
+    .eq('id', bakerId)
+    .or(`${column}.is.null,${column}.lt.${monthStart}`)
+    .select('id, name, email, timezone');
+  if (error || !claimed?.length) return;   // already claimed this month, or migration 035 not run
+
+  // Imported HERE rather than at the top of the file, deliberately. notifications.js pulls in the
+  // BullMQ queue, which opens a Redis connection at import time; a top-level import put that into
+  // the graph of every offline gate that imports this module, and check:ai-credit-pricing went
+  // from exiting cleanly to hanging forever against a stub host.
+  const { notifyCreditsLow } = await import('./notifications.js');
+  await notifyCreditsLow(claimed[0], {
+    threshold,
+    left:          b.allowanceLeft,
+    allowance:     b.allowance,
+    walletBalance: b.walletBalance,
+    resetsOn:      b.resetsOn,
+    canBuy:        b.canBuy,
+  });
 }
 
 // ── Provider cost, for the guardrail only ───────────────────────────────────────────
