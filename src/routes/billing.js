@@ -19,7 +19,7 @@ import { planChangeDirection, PLAN_CHANGE } from '../lib/subscriptionChange.js';
 import { PERIOD }              from '../constants/billingPeriods.js';
 import { CANCELLATION_REASON } from '../constants/cancellationReasons.js';
 import { isValidGstin, normalizeGstin } from '../lib/gstin.js';
-import { emitSaleEvent }       from '../services/billingEvents.js';
+import { emitSaleEvent, emitCreditPackSaleEvent } from '../services/billingEvents.js';
 import { creditPurchase }      from '../services/aiCredits.js';
 
 const router = Router();
@@ -750,7 +750,7 @@ router.post('/billing/webhook', async (req, res) => {
           // name it. Filtering would silently drop the label on exactly the historical rows that
           // most need explaining.
           const { data: pack } = await supabase
-            .from('credit_packs').select('id, price_paise')
+            .from('credit_packs').select('id, pack_key, label, credits, price_paise')
             .eq('pack_key', packKey).maybeSingle();
           const { error: payErr } = await supabase.from('payments').upsert({
             baker_id:            packBakerId,
@@ -764,6 +764,31 @@ router.post('/billing/webhook', async (req, res) => {
               : new Date().toISOString(),
           }, { onConflict: 'razorpay_payment_id', ignoreDuplicates: true });
           if (payErr) console.error('[billing] credit pack payment row failed', payment.id, payErr.message);
+
+          // ── The GST invoice ──────────────────────────────────────────────────────────
+          // A pack sale is a taxable supply at ISSUE, exactly like a subscription charge, so it
+          // raises the same kind of accounting event. Until now it raised none: money was taken
+          // and the accounting feed never heard about it.
+          //
+          // The baker is looked up HERE and not earlier because nothing else on this path needs
+          // it — the credits are minted from the notes alone. These are the invoice's recipient
+          // columns, and they are snapshotted into the event rather than read back later.
+          const { data: packBaker } = await supabase
+            .from('bakers')
+            .select('id, name, email, gstin, address_line1, address_line2, city, state, postal_code, country')
+            .eq('id', packBakerId).maybeSingle();
+
+          // Best-effort and idempotent, like the subscription path — event_id is the payment id,
+          // so a redelivery cannot raise a second invoice. Never thrown: failing the webhook here
+          // would have Razorpay retry an event whose credits are already minted.
+          await emitCreditPackSaleEvent({
+            payment,
+            baker: packBaker,
+            pack,
+            chargedAt: payment.created_at
+              ? new Date(payment.created_at * 1000).toISOString()
+              : new Date().toISOString(),
+          });
         } catch (e) {
           console.error('[billing] credit pack payment row failed', payment?.id, e?.message);
         }
@@ -771,10 +796,6 @@ router.post('/billing/webhook', async (req, res) => {
         // Stamped as a pack but missing what it needs. Loud, because the alternative is a baker
         // who paid and got nothing while the webhook reported success.
         console.error('[billing] ai_credit_pack notes incomplete', payment?.id, paymentNotes);
-        // TODO(GST): a pack sale is a taxable supply at ISSUE (AI_CREDITS_PLAN.md §2.4) and needs an
-        // invoice, exactly like a subscription charge. emitSaleEvent() is subscription-shaped
-        // (plan_id / billing_period_id / period_months), so forcing a pack through it would put a
-        // false line in the accounting feed. Needs a sibling emitter before packs are sold for real.
       }
       return res.json({ ok: true });
     }
