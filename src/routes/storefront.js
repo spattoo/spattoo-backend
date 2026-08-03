@@ -122,7 +122,7 @@ router.get('/storefront/:slug/settings', async (req, res) => {
   try {
     const { data: baker, error } = await supabase
       .from('bakers')
-      .select('id, settings, storefront_published')
+      .select('id, settings, storefront_published, lead_time_days')
       .eq('slug', req.params.slug)
       .eq('is_active', true)
       .maybeSingle();
@@ -137,6 +137,11 @@ router.get('/storefront/:slug/settings', async (req, res) => {
     res.json({
       delivery:    { home_delivery: !!s.delivery?.home_delivery },
       store_hours: s.store_hours ?? null,
+      // Minimum notice, so the storefront's date picker can refuse dates inside the window
+      // while the customer is still on the page. 0 = same-day is fine, which is the default
+      // and today's behaviour. Nothing captures this yet; the column is read before it is
+      // written so that switching it on later is a form field, not a deploy.
+      lead_time_days: baker.lead_time_days ?? 0,
     });
   } catch (err) {
     serverError(req, res, err);
