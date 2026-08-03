@@ -6,6 +6,7 @@ import { requireCapability } from '../middleware/rbac.js';
 import { scopeCatalogRead } from '../lib/tenantScope.js';
 import { config } from '../config.js';
 import { jobQueue } from '../jobs/queue.js';
+import { templatesForBaker, allTemplates } from '../lib/templateList.js';
 
 const router = Router();
 
@@ -31,43 +32,18 @@ router.get('/templates', requireAuth, requireCapability('design:create'), attach
   try {
     const { type } = req.query;
 
-    let query = supabase
-      .from('cake_templates')
-      .select(`${TEMPLATE_FIELDS}, ${TEMPLATE_FILTER_JOIN}`)
-      .eq('is_active', true)
-      .order('sort_order');
-
-    if (type) query = query.eq('type', type);
-
     if (req.bakerId) {
-      // Baker: global templates + their own
-      query = query.or(`baker_id.is.null,baker_id.eq.${req.bakerId}`);
-
-      // …minus any GLOBAL templates this baker has switched off (baker_template_exclusions).
-      // Only globals are ever stored there, so filtering by id can never drop the baker's own
-      // templates. Managed via GET/PUT /api/baker/templates(/exclusions). Hidden tenant-wide:
-      // the baker's own browse AND their customers read through this one route.
-      const { data: exclusions } = await supabase
-        .from('baker_template_exclusions')
-        .select('template_id')
-        .eq('baker_id', req.bakerId);
-      const excludedIds = (exclusions ?? []).map(e => e.template_id);
-      if (excludedIds.length) query = query.not('id', 'in', `(${excludedIds.join(',')})`);
-    } else {
-      // Admin: optionally scope to a baker's view via ?baker_id=X.
-      // SEC-10: coerce to an integer before interpolating into the filter — a raw string param
-      // would inject PostgREST `.or()` syntax. Invalid/absent → unfiltered (admin sees all).
-      const scopedId = Number.parseInt(req.query.baker_id, 10);
-      if (Number.isInteger(scopedId)) {
-        query = query.or(`baker_id.is.null,baker_id.eq.${scopedId}`);
-      }
-      // No valid baker_id param → admin sees all templates unfiltered
+      // Global + their own, minus the globals they have switched off. The rule lives in
+      // lib/templateList.js because the public storefront needs the same answer for an anonymous
+      // visitor, and a second copy of it would drift the first time either learned something.
+      return res.json(await templatesForBaker(req.bakerId, { type }));
     }
 
-    const { data, error } = await query;
-    if (error) return serverError(req, res, error);
-
-    res.json(data.map(t => withTagsAndAttrs({ ...t, thumbnail_url: toPublicUrl(t.thumbnail_url) })));
+    // Admin: optionally scope to a baker's view via ?baker_id=X.
+    // SEC-10: coerce to an integer before it reaches a PostgREST filter — a raw string param would
+    // inject `.or()` syntax. Invalid or absent → unfiltered, and admin sees everything.
+    const scopedId = Number.parseInt(req.query.baker_id, 10);
+    res.json(await allTemplates({ type, bakerId: Number.isInteger(scopedId) ? scopedId : null }));
   } catch (err) {
     serverError(req, res, err);
   }

@@ -3,6 +3,7 @@ import { serverError } from '../lib/httpError.js';
 import { supabase, supabaseAuth } from '../services/supabase.js';
 import { config } from '../config.js';
 import { getOrderAcceptance } from '../services/entitlements.js';
+import { templatesForStorefront } from '../lib/templateList.js';
 import { rateLimit } from '../middleware/rateLimit.js';
 
 const router = Router();
@@ -137,6 +138,41 @@ router.get('/storefront/:slug/settings', async (req, res) => {
       delivery:    { home_delivery: !!s.delivery?.home_delivery },
       store_hours: s.store_hours ?? null,
     });
+  } catch (err) {
+    serverError(req, res, err);
+  }
+});
+
+// ── GET /api/storefront/:slug/templates ───────────────────────────────────────
+// Public. The designs a customer can order from this baker: Spattoo's global library plus the
+// baker's own, minus the globals they have switched off. Resolution lives in lib/templateList.js,
+// shared with the authenticated GET /api/templates, so a baker's own browse and their storefront
+// can never disagree about what they offer.
+//
+// Exists because the storefront's design facet is met by an ANONYMOUS visitor — GET /api/templates
+// is behind requireAuth + design:create, and asking someone to log in before they may look at cakes
+// is the friction that empties the funnel.
+//
+// Gated exactly like GET /storefront/:slug and /settings: active, published, and accepting orders.
+// Kept in lock-step deliberately — a lapsed baker's catalogue must not stay readable through a
+// route nobody remembered to gate.
+//
+// The full `design` snapshot is NOT served here; see templatesForStorefront.
+router.get('/storefront/:slug/templates', async (req, res) => {
+  try {
+    const { data: baker, error } = await supabase
+      .from('bakers')
+      .select('id, storefront_published')
+      .eq('slug', req.params.slug)
+      .eq('is_active', true)
+      .maybeSingle();
+    if (error) return serverError(req, res, error);
+    if (!baker || !baker.storefront_published) return res.status(404).json({ error: 'Storefront not found' });
+
+    const { accepting } = await getOrderAcceptance(baker.id);
+    if (!accepting) return res.status(404).json({ error: 'Storefront not found' });
+
+    res.json({ templates: await templatesForStorefront(baker.id) });
   } catch (err) {
     serverError(req, res, err);
   }
