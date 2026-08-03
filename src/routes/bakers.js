@@ -820,7 +820,7 @@ router.put('/baker/settings', requireAuth, requireCapability('store:manage'), as
 // Auth. Everything the Flavours settings screen needs, in one response:
 //   { flavours: [{ id, source, name, description, excluded, price_per_kg, display_name,
 //                  conflicts_with, baseline_conflicts }],
-//     visibility: { show_flavours, price_visibility } }
+//     visibility: { price_visibility } }
 //
 // `excluded: true` means the baker has switched it off and it's hidden from their
 // customers. Kept as `excluded` rather than flipped to `offered` because that is the
@@ -851,7 +851,7 @@ router.get('/baker/flavours', requireAuth, async (req, res) => {
       resolveFlavours(contact.baker_id),
       baselineConflictKeys(),
       supabase.from('bakers')
-        .select('show_flavours, price_visibility')
+        .select('price_visibility')
         .eq('id', contact.baker_id).maybeSingle(),
     ]);
 
@@ -869,7 +869,6 @@ router.get('/baker/flavours', requireAuth, async (req, res) => {
         baseline_conflicts: f.source === 'global' ? (baseline[f.id] ?? []) : [],
       })),
       visibility: {
-        show_flavours:    baker?.show_flavours ?? true,
         price_visibility: baker?.price_visibility ?? 'private',
       },
     });
@@ -881,7 +880,7 @@ router.get('/baker/flavours', requireAuth, async (req, res) => {
 // ── PUT /api/baker/flavours ───────────────────────────────────────────────────
 // Auth + store:manage. Body:
 //   { flavours: [{ flavour_id, excluded?, price_per_kg?, display_name? }, ...],
-//     visibility?: { show_flavours?, price_visibility? } }
+//     visibility?: { price_visibility? } }
 //
 // Replaces PUT /api/baker/flavours/exclusions, which is GONE rather than deprecated —
 // see below, because leaving it running is the single most expensive thing that could
@@ -917,7 +916,9 @@ router.put('/baker/flavours', requireAuth, requireCapability('store:manage'), as
 
     if (visibility) {
       const patch = {};
-      if (typeof visibility.show_flavours === 'boolean') patch.show_flavours = visibility.show_flavours;
+      // `show_flavours` is deliberately NOT read, even though a core older than this
+      // still sends it. Ignoring an unknown key is what lets the column be dropped
+      // without every save from an un-upgraded client failing on a missing column.
       if (visibility.price_visibility !== undefined) {
         if (!PRICE_VISIBILITY.includes(visibility.price_visibility)) {
           return res.status(400).json({ error: `price_visibility must be one of ${PRICE_VISIBILITY.join(', ')}` });

@@ -362,7 +362,7 @@ router.get('/flavours', async (req, res) => {
 
     const { data: baker } = await supabase
       .from('bakers')
-      .select('id, show_flavours, price_visibility')
+      .select('id, price_visibility')
       .eq('slug', bakerSlug).eq('is_active', true).maybeSingle();
     if (!baker) return res.status(404).json({ error: 'Baker not found' });
 

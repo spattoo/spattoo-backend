@@ -122,13 +122,18 @@ export async function resolveFlavours(bakerId) {
  * The same list as a CUSTOMER may see it: offered flavours only, and prices only where
  * this baker has said so.
  *
+ * This ALWAYS returns the flavours a baker offers. It briefly did not — a `show_flavours`
+ * flag could empty it — and that broke the order form, because the picker a customer uses
+ * to choose a flavour reads this same route. Hiding a menu is a marketing decision;
+ * emptying the order form is a different thing entirely, and one nobody asked for.
+ * Whether a storefront DISPLAYS the list is the menu section's `enabled` flag, decided
+ * where the section is, not here.
+ *
  * `pricePerKg` is absent — not null — when prices are not visible. The distinction is
  * deliberate: null means "offered, ask for a price", and a storefront should say so;
  * absent means the field was never sent, and there is nothing on the client to leak.
  */
 export async function flavoursForCustomer(baker, { verified = false } = {}) {
-  if (baker?.show_flavours === false) return [];
-
   const all = await resolveFlavours(baker.id);
   const withPrices = pricesVisibleTo(baker, { verified });
 
