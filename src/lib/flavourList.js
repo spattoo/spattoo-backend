@@ -64,14 +64,14 @@ export function pricesVisibleTo(baker, { verified = false } = {}) {
 export async function resolveFlavours(bakerId) {
   const [{ data: globals }, { data: settings }, { data: custom }] = await Promise.all([
     supabase.from('flavours')
-      .select('id, name, description, sort_order, sponge_color, filling_color')
+      .select('id, name, description, sort_order, sponge_color, filling_color, taste_family, crowd_pleaser')
       .eq('is_active', true)
       .order('sort_order').order('name'),
     supabase.from('baker_flavour_settings')
       .select('flavour_id, offered, price_per_kg, display_name')
       .eq('baker_id', bakerId),
     supabase.from('baker_flavours')
-      .select('id, name, description, sort_order, price_per_kg, sponge_color, filling_color')
+      .select('id, name, description, sort_order, price_per_kg, sponge_color, filling_color, taste_family, crowd_pleaser')
       .eq('baker_id', bakerId).eq('is_active', true)
       .order('sort_order').order('name'),
   ]);
@@ -95,6 +95,10 @@ export async function resolveFlavours(bakerId) {
       // sponge rather than guessing a colour from the name.
       spongeColor:  f.sponge_color  ?? null,
       fillingColor: f.filling_color ?? null,
+      // What the suggester scores on. null means "not authored", and the suggester simply
+      // cannot rank that flavour — which is honest. Never inferred from the name.
+      tasteFamily:  f.taste_family  ?? null,
+      crowdPleaser: f.crowd_pleaser ?? null,
     };
   });
 
@@ -111,6 +115,8 @@ export async function resolveFlavours(bakerId) {
     // Their own recipe, so their own colours — there is no global row to inherit from.
     spongeColor:  f.sponge_color  ?? null,
     fillingColor: f.filling_color ?? null,
+    tasteFamily:  f.taste_family  ?? null,
+    crowdPleaser: f.crowd_pleaser ?? null,
   }));
 
   // One map over both kinds, which is why neither branch above has to know which it is.
