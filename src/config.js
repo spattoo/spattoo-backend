@@ -174,6 +174,23 @@ export const config = {
     // GET /storefront/:slug/settings rather than carrying its own flag, so the two can never
     // disagree about whether an enquiry needs proving.
     otpRequired: process.env.STOREFRONT_OTP_REQUIRED !== 'false',
+    // Which channels a storefront visitor may verify on. Comma-separated: sms | email.
+    //
+    // DEFAULTS TO EMAIL ONLY, and that is deliberate rather than timid. Sending an SMS to an Indian
+    // number requires DLT registration — entity, header, and per-template approval — and telcos
+    // scrub unregistered traffic at the network level. A channel offered but undeliverable is the
+    // worst of both: the customer picks it, waits for a code that was blocked upstream, and
+    // abandons. Better to offer only what is known to arrive.
+    //
+    // Add `sms` the day the provider is live and DLT has cleared:  STOREFRONT_OTP_CHANNELS=sms,email
+    //
+    // ORDER MATTERS — the first entry is what the client offers first, so this is also how you say
+    // "prefer phone" once phone works. Served on /storefront/:slug/settings so the client offers
+    // exactly what the server will accept; enforced in the handlers too, because a UI that only
+    // shows one option is not a restriction.
+    otpChannels: (process.env.STOREFRONT_OTP_CHANNELS || 'email')
+      .split(',').map(c => c.trim().toLowerCase())
+      .filter(c => ['sms', 'email'].includes(c)),
   },
   // Baker-facing app base URL, for deep links in lifecycle emails (billing/settings). Optional —
   // the email CTA is omitted when unset, so no broken links. e.g. https://app.spattoo.com

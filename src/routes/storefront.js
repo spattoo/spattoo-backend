@@ -40,7 +40,13 @@ const verifyOtpPerInvite = rateLimit({
 const otpContactKey = (req) => {
   const to = String(req.body?.to ?? '').trim();
   if (!to) return null;                                   // nothing to key on → handler 400s anyway
-  if ((req.body?.channel || 'sms') === 'email') return `${req.params.slug}:${to.toLowerCase()}`;
+  // Through the SAME resolver the handlers use. It briefly defaulted to 'sms' here, which meant a
+  // request with no channel on an email-only deployment ran an address through normalizePhone,
+  // failed, returned null — and a null key SKIPS the limiter. A rate limit that a missing field
+  // turns off is not a rate limit.
+  const channel = resolveChannel(req.body?.channel);
+  if (!channel) return null;                              // handler 400s; nothing to meter
+  if (channel === 'email') return `${req.params.slug}:${to.toLowerCase()}`;
   const p = normalizePhone(to);
   return p.ok ? `${req.params.slug}:${p.e164}` : null;
 };
@@ -196,6 +202,11 @@ router.get('/storefront/:slug/settings', async (req, res) => {
       // while the server still demanded a token would fail at the last moment, after the customer
       // had done all the work.
       otp_required: config.storefront.otpRequired,
+      // Which channels the server will actually accept a code on. The client offers exactly these,
+      // in this order — so a channel we cannot deliver on is never presented as an option. A
+      // customer picking SMS and waiting for a code that a telco scrubbed is worse than never
+      // having been offered it.
+      otp_channels: config.storefront.otpChannels,
     });
   } catch (err) {
     serverError(req, res, err);
@@ -247,6 +258,22 @@ router.get('/storefront/:slug/templates', async (req, res) => {
 //
 // Registration, not authentication — so the captcha matters MORE here than on the invite path.
 
+/**
+ * The channel to use, or null if the caller asked for one this deployment does not offer.
+ *
+ * Enforced server-side as well as in the UI, because a client that only renders one button is not a
+ * restriction — anyone can post the other value. Falls back to the first CONFIGURED channel rather
+ * than a hardcoded 'sms', so a deployment with email only never has a request default into a channel
+ * it cannot send on.
+ */
+function resolveChannel(requested) {
+  const allowed = config.storefront.otpChannels;
+  if (!allowed.length) return null;
+  if (!requested) return allowed[0];
+  const c = String(requested).toLowerCase();
+  return allowed.includes(c) ? c : null;
+}
+
 // Resolve the raw contact a storefront visitor typed into what Supabase needs, or an error string.
 // Phone goes through lib/phone.js (E.164 + real per-country validation), because signInWithOtp will
 // not accept "98765 43210" and a wrong-shaped number fails as a confusing 502 rather than a 400.
@@ -272,7 +299,8 @@ router.post('/storefront/:slug/send-otp', sfSendOtpPerContact, sfSendOtpPerIp, a
 
     // Shape first, then the storefront — a malformed number is free to reject and should not cost a
     // database round trip, which is exactly what spam is made of.
-    const channel = req.body?.channel === 'email' ? 'email' : 'sms';
+    const channel = resolveChannel(req.body?.channel);
+    if (!channel) return res.status(400).json({ error: 'That way of getting a code is not available.' });
     const { otp, to, error: contactErr } = storefrontContact(channel, req.body?.to);
     if (contactErr) return res.status(400).json({ error: contactErr });
 
@@ -302,7 +330,8 @@ router.post('/storefront/:slug/verify-otp', sfVerifyOtpPerContact, async (req, r
   try {
     if (!supabaseAuth) return res.status(503).json({ error: 'Auth not configured' });
 
-    const channel = req.body?.channel === 'email' ? 'email' : 'sms';
+    const channel = resolveChannel(req.body?.channel);
+    if (!channel) return res.status(400).json({ error: 'That way of getting a code is not available.' });
     const code = String(req.body?.code || '').trim();
     if (!code) return res.status(400).json({ error: 'code is required' });
     const { otp, to, error: contactErr } = storefrontContact(channel, req.body?.to);
