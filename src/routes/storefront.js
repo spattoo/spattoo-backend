@@ -6,6 +6,8 @@ import { getOrderAcceptance } from '../services/entitlements.js';
 import { templatesForStorefront } from '../lib/templateList.js';
 import { rateLimit } from '../middleware/rateLimit.js';
 import { normalizePhone } from '../lib/phone.js';
+import { signUpload } from '../lib/signUpload.js';
+import { requireAuth } from '../middleware/auth.js';
 
 const router = Router();
 
@@ -329,6 +331,57 @@ router.post('/storefront/:slug/verify-otp', sfVerifyOtpPerContact, async (req, r
       },
       verified: { channel, to },
     });
+  } catch (err) {
+    serverError(req, res, err);
+  }
+});
+
+// ── POST /api/storefront/:slug/sign-reference-upload ──────────────────────────
+// A VERIFIED customer attaching a reference photo to their enquiry.
+//
+// ── WHY NOT /api/storage/sign-upload ────────────────────────────────────────────────────────────
+// That route is requireAuth + requireCapability('design:create'). A storefront customer who has just
+// proved a phone by OTP is neither an admin nor a baker app-user, so loadPrincipal grants them no
+// role and therefore NO capabilities — authorization here is a positive grant and absence is never
+// read as permission. They would get a 403, correctly.
+//
+// Relaxing that capability would have opened every managed folder — logos, templates, another
+// baker's gallery — to anyone who can receive an SMS. So this is a second door with a much smaller
+// frame: one folder, hardcoded, never read from the request.
+//
+// ── WHY IT STILL REQUIRES A TOKEN ───────────────────────────────────────────────────────────────
+// The bucket is served publicly, so an anonymous signed-upload endpoint is free file hosting on a
+// Spattoo domain — and the exposure is not the storage bill, it is somebody parking illegal imagery
+// somewhere publicly reachable and ours to explain. The type allowlist stops scripts; it cannot stop
+// a JPEG being something awful.
+//
+// So the storefront holds the file in the browser and uploads it HERE, after the OTP step, on the
+// session that step produces. By the time a byte reaches R2 there is a proved phone number attached
+// to it — a better position than any rate limit, because an abuse report has someone to point at.
+// The limiter below is the second line, not the first.
+const referenceUploadPerUser = rateLimit({
+  name: 'sf-reference-upload', limit: 12, windowSec: 600, key: req => req.user?.id,
+  message: 'Too many photo uploads. Please wait a few minutes and try again.',
+});
+
+router.post('/storefront/:slug/sign-reference-upload', requireAuth, referenceUploadPerUser, async (req, res) => {
+  try {
+    if (!await loadOpenStorefront(req.params.slug)) return res.status(404).json({ error: 'Storefront not found' });
+
+    // The folder is OURS, not the caller's. Taking it from the body is the whole vulnerability this
+    // route exists to avoid — see above.
+    const { error, status, key, url } = await signUpload({
+      folder: 'orders/reference',
+      filename: req.body?.filename,
+      contentType: req.body?.contentType,
+      contentLength: req.body?.contentLength,
+    });
+    if (error) return res.status(status).json({ error });
+
+    // No publicUrl: a reference photo is shown to the BAKER, from the order, and the storefront
+    // renders its own copy from the local blob it still holds. Handing back a public URL would
+    // invite a client to keep one, and these are somebody's private photographs.
+    res.json({ key, url });
   } catch (err) {
     serverError(req, res, err);
   }
