@@ -189,6 +189,11 @@ router.get('/storefront/:slug/settings', async (req, res) => {
       // and today's behaviour. Nothing captures this yet; the column is read before it is
       // written so that switching it on later is a form field, not a deploy.
       lead_time_days: baker.lead_time_days ?? 0,
+      // Whether the enquiry flow must prove a phone number before it sends. Served rather than
+      // hard-coded in the client so ONE switch governs both halves — a client that skipped the step
+      // while the server still demanded a token would fail at the last moment, after the customer
+      // had done all the work.
+      otp_required: config.storefront.otpRequired,
     });
   } catch (err) {
     serverError(req, res, err);

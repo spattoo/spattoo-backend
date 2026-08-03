@@ -447,7 +447,20 @@ router.put('/admin/flavours/:flavourId/dietary-conflicts', requireAuth, requireC
 //
 // The verification itself is POST /api/storefront/:slug/send-otp + /verify-otp, asked at SUBMIT
 // rather than on the way in; see the comment there for why that placement is deliberate.
-router.post('/orders', requireAuth, async (req, res) => {
+//
+// ── THE SUPPRESSION SWITCH ───────────────────────────────────────────────────────────────────────
+// STOREFRONT_OTP_REQUIRED=false reopens the anonymous path, for the window where SMS delivery is not
+// available. It is a real weakening and it is why the flag is loud: with it set, this route is again
+// a public order-creating endpoint with nothing standing behind it. See config.js.
+async function requireVerifiedContact(req, res, next) {
+  // A token is honoured whenever one is presented, suppressed or not — the baker app always sends
+  // one, and there is no reason to stop trusting it just because storefront OTP is off.
+  if (req.headers.authorization) return requireAuth(req, res, next);
+  if (!config.storefront.otpRequired) return next();
+  return res.status(401).json({ error: 'Unauthorized' });
+}
+
+router.post('/orders', requireVerifiedContact, async (req, res) => {
   try {
     const { bakerSlug } = req.body;
 
@@ -472,17 +485,21 @@ router.post('/orders', requireAuth, async (req, res) => {
     const bakerId = baker.id;
 
     // ── Whose contact do we believe? ────────────────────────────────────────
-    const { data: appUser } = await supabase
-      .from('baker_appusers').select('baker_id')
-      .eq('auth_user_id', req.user.id).maybeSingle();
+    const { data: appUser } = req.user
+      ? await supabase.from('baker_appusers').select('baker_id')
+          .eq('auth_user_id', req.user.id).maybeSingle()
+      : { data: null };
 
     let customer;
-    if (appUser) {
-      // A baker app-user, and only for THEIR OWN slug — otherwise any signed-in baker could inject
-      // orders into a competitor's list by posting a different slug. The route resolved the baker
-      // from the body long before it knew who was calling, so this is the first point it can be
-      // checked at all.
-      if (appUser.baker_id !== bakerId) return res.status(403).json({ error: 'Not your bakery' });
+    if (!req.user || appUser) {
+      // The body is the source in two cases, and they are the same case in the end: a baker typing
+      // their customer's number (the point of the baker app), or — only with
+      // STOREFRONT_OTP_REQUIRED=false — an anonymous visitor whose number nothing has proved.
+      //
+      // A baker may post only to THEIR OWN slug. Otherwise any signed-in baker could inject orders
+      // into a competitor's list by naming a different one; the route resolved the baker from the
+      // body long before it knew who was calling, so this is the first point it can be checked.
+      if (appUser && appUser.baker_id !== bakerId) return res.status(403).json({ error: 'Not your bakery' });
       customer = req.body.customer;
       if (!customer?.firstName)                 return res.status(400).json({ error: 'customer.firstName is required' });
       if (!customer?.phone && !customer?.email) return res.status(400).json({ error: 'customer.phone or customer.email is required' });

@@ -157,7 +157,24 @@ export const config = {
   // (subdomain model). Invite link = `${template-with-slug}/?invite=<id>`.
   //   dev:  http://{slug}.localhost:5173
   //   prod: https://{slug}.spattoo.com
-  storefront: { urlTemplate: process.env.STOREFRONT_URL_TEMPLATE || 'https://{slug}.spattoo.com' },
+  storefront: {
+    urlTemplate: process.env.STOREFRONT_URL_TEMPLATE || 'https://{slug}.spattoo.com',
+    // Must a storefront visitor prove their phone by OTP before an enquiry sends?
+    //
+    // DEFAULTS TO TRUE, and the opt-out is deliberately noisy (an explicit env var, never a silent
+    // default), because switching it off does two things at once:
+    //
+    //   1. the storefront collects a phone number nobody has checked, so a typo'd digit produces an
+    //      enquiry the baker cannot answer — and they lose the attempt as well as the order
+    //   2. POST /api/orders accepts ANONYMOUS requests again, which is what the OTP replaced. There
+    //      is no rate limit standing behind it; the verified contact WAS the protection.
+    //
+    // Set STOREFRONT_OTP_REQUIRED=false only while SMS delivery is unavailable, and treat it as a
+    // temporary state. One switch rather than two: the client reads this back from
+    // GET /storefront/:slug/settings rather than carrying its own flag, so the two can never
+    // disagree about whether an enquiry needs proving.
+    otpRequired: process.env.STOREFRONT_OTP_REQUIRED !== 'false',
+  },
   // Baker-facing app base URL, for deep links in lifecycle emails (billing/settings). Optional —
   // the email CTA is omitted when unset, so no broken links. e.g. https://app.spattoo.com
   app: { url: process.env.APP_URL || '' },
