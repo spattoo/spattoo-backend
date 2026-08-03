@@ -6,4 +6,12 @@
 DOCS_DIR="${SPATTOO_DOCS_DIR:-$(git rev-parse --show-toplevel)/../spattoo-docs}"
 BIN="$DOCS_DIR/bin/check-feature-docs.mjs"
 [ -f "$BIN" ] || { echo "ℹ spattoo-docs not found next to repo — skipping feature-doc gate"; exit 0; }
-COMMIT_MSG_FILE="$1" node "$BIN" --repo spattoo-api
+COMMIT_MSG_FILE="$1" node "$BIN" --repo spattoo-api || exit 1
+
+# Rollout-config liveness gate — every process.env the code reads must appear in
+# deployment/production-rollout.md. A key can be correct in code AND described in its
+# feature doc and still be undeployable, because nobody provisioning a fresh
+# environment reads feature docs. Honors [skip-rollout-config].
+ROLLOUT_BIN="$DOCS_DIR/bin/check-rollout-config.mjs"
+[ -f "$ROLLOUT_BIN" ] || exit 0
+COMMIT_MSG_FILE="$1" node "$ROLLOUT_BIN" --repo spattoo-api
