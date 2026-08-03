@@ -426,14 +426,33 @@ router.put('/admin/flavours/:flavourId/dietary-conflicts', requireAuth, requireC
   }
 });
 
-router.post('/orders', async (req, res) => {
+// ── POST /api/orders ──────────────────────────────────────────────────────────
+// An order placed AGAINST a baker's slug. Two callers, and the difference decides whose word is
+// taken for the customer's contact details:
+//
+//   a baker's own app   — placing an order for a customer they are talking to. The body's contact
+//                         is trusted, because a baker typing their customer's number is the point.
+//   a storefront visitor — an anonymous stranger. The contact is taken FROM THE TOKEN, which means
+//                         from the number they just proved they can receive on.
+//
+// ── WHY THIS NOW REQUIRES A TOKEN ────────────────────────────────────────────────────────────────
+// This route was public. That was survivable while it was hard to reach, but the storefront's
+// enquiry facets point anonymous traffic straight at it, and a public order-creating endpoint with
+// no proof of contact is two problems at once: anyone can fill a baker's order list with junk, and
+// every enquiry that DOES arrive may carry a number that was never real. The baker's next action on
+// an enquiry is always to phone the customer, so an unverifiable number makes the record worthless.
+//
+// A code the customer must actually receive answers both, and it answers them better than a rate
+// limit could — a limit slows a spammer down, a verified contact stops them.
+//
+// The verification itself is POST /api/storefront/:slug/send-otp + /verify-otp, asked at SUBMIT
+// rather than on the way in; see the comment there for why that placement is deliberate.
+router.post('/orders', requireAuth, async (req, res) => {
   try {
-    const { bakerSlug, customer } = req.body;
+    const { bakerSlug } = req.body;
 
     // ── Validate required fields ────────────────────────────────────────────
-    if (!bakerSlug)                         return res.status(400).json({ error: 'bakerSlug is required' });
-    if (!customer?.firstName)               return res.status(400).json({ error: 'customer.firstName is required' });
-    if (!customer?.phone && !customer?.email) return res.status(400).json({ error: 'customer.phone or customer.email is required' });
+    if (!bakerSlug) return res.status(400).json({ error: 'bakerSlug is required' });
     const bodyErr = validateOrderBody(req.body);
     if (bodyErr) return res.status(400).json({ error: bodyErr });
     const dietErr = await validateDietaryKeys(req.body.dietaryRequirementKeys);
@@ -451,6 +470,40 @@ router.post('/orders', async (req, res) => {
     if (!baker)     return res.status(404).json({ error: 'Baker not found' });
 
     const bakerId = baker.id;
+
+    // ── Whose contact do we believe? ────────────────────────────────────────
+    const { data: appUser } = await supabase
+      .from('baker_appusers').select('baker_id')
+      .eq('auth_user_id', req.user.id).maybeSingle();
+
+    let customer;
+    if (appUser) {
+      // A baker app-user, and only for THEIR OWN slug — otherwise any signed-in baker could inject
+      // orders into a competitor's list by posting a different slug. The route resolved the baker
+      // from the body long before it knew who was calling, so this is the first point it can be
+      // checked at all.
+      if (appUser.baker_id !== bakerId) return res.status(403).json({ error: 'Not your bakery' });
+      customer = req.body.customer;
+      if (!customer?.firstName)                 return res.status(400).json({ error: 'customer.firstName is required' });
+      if (!customer?.phone && !customer?.email) return res.status(400).json({ error: 'customer.phone or customer.email is required' });
+    } else {
+      // A verified storefront visitor. The name is read from the body — it is not a security claim,
+      // and nothing but the customer can supply it — but the CONTACT comes from the token, so an
+      // enquiry can never carry a number its sender did not prove they can receive on.
+      //
+      // Supabase stores the phone without a leading '+'; restored here so what lands in customers
+      // matches the E.164 every other write path produces.
+      const verifiedPhone = req.user.phone ? (req.user.phone.startsWith('+') ? req.user.phone : `+${req.user.phone}`) : null;
+      const verifiedEmail = req.user.email ?? null;
+      if (!verifiedPhone && !verifiedEmail) return res.status(403).json({ error: 'Verify a phone number or email before ordering' });
+      customer = {
+        firstName: req.body.customer?.firstName,
+        lastName:  req.body.customer?.lastName,
+        phone:     verifiedPhone,
+        email:     verifiedEmail,
+      };
+      if (!customer.firstName) return res.status(400).json({ error: 'customer.firstName is required' });
+    }
 
     // ── Trial / order-cap gate (block before creating anything) ─────────────
     const intakeBlock = await orderIntakeBlock(bakerId);
