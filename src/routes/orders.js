@@ -618,6 +618,12 @@ router.post('/orders/manual', requireAuth, requireCapability('order:manage'), as
     if (deliveryMode === 'home_delivery' && !deliveryAddress) return res.status(400).json({ error: 'deliveryAddress is required for home_delivery' });
     const dietErr = await validateDietaryKeys(req.body?.dietaryRequirementKeys);
     if (dietErr) return res.status(400).json({ error: dietErr });
+    // A baker's own order carries the same signals as an enquiry, and needs the same check — this
+    // route has its own validation rather than validateOrderBody (a manual order has no design and
+    // never did), so the signals had to be added here explicitly. Without it a bad value reaches the
+    // CHECK constraint from 043 and surfaces as an unreadable 500.
+    const signalErr = validateOrderSignals(req.body ?? {});
+    if (signalErr) return res.status(400).json({ error: signalErr });
 
     // Reference photos: optional, ≤3, must be under the reference folder (they were
     // signed-uploaded there). An order with zero reference photos is allowed.
