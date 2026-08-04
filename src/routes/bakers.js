@@ -784,12 +784,15 @@ router.get('/baker/settings', requireAuth, async (req, res) => {
 
     const { data: baker } = await supabase
       .from('bakers')
-      .select('settings')
+      .select('settings, lead_time_days')
       .eq('id', contact.baker_id)
       .single();
     if (!baker) return res.status(404).json({ error: 'Baker not found' });
 
-    res.json(baker.settings ?? {});
+    // lead_time_days is a COLUMN, not part of the settings blob (migration 042 — it is queried and
+    // constrained, which a jsonb key cannot be). Served alongside so the settings screen has one
+    // response to read, exactly as GET /storefront/:slug/settings already does for the customer.
+    res.json({ ...(baker.settings ?? {}), lead_time_days: baker.lead_time_days ?? 0 });
   } catch (err) {
     serverError(req, res, err);
   }
@@ -804,9 +807,26 @@ router.put('/baker/settings', requireAuth, requireCapability('store:manage'), as
       .maybeSingle();
     if (!contact) return res.status(404).json({ error: 'No baker account found' });
 
+    // Pulled OUT of the blob before it is written. The body is the settings object verbatim, so
+    // without this the column's value would also be buried as a jsonb key — two copies, one of them
+    // the one nothing reads.
+    const { lead_time_days, ...settings } = req.body ?? {};
+
+    const patch = { settings };
+    if (lead_time_days !== undefined) {
+      // Matches 042's CHECK, so a bad value is a message rather than a constraint violation. The
+      // ceiling is not fussiness: a typo'd 300 would make a baker unbookable for most of a year and
+      // nobody would think to look at this field to find out why.
+      const days = Number(lead_time_days);
+      if (!Number.isInteger(days) || days < 0 || days > 90) {
+        return res.status(400).json({ error: 'lead_time_days must be a whole number between 0 and 90' });
+      }
+      patch.lead_time_days = days;
+    }
+
     const { error } = await supabase
       .from('bakers')
-      .update({ settings: req.body })
+      .update(patch)
       .eq('id', contact.baker_id);
     if (error) return serverError(req, res, error);
 
