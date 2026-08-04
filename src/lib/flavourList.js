@@ -68,10 +68,10 @@ export async function resolveFlavours(bakerId) {
       .eq('is_active', true)
       .order('sort_order').order('name'),
     supabase.from('baker_flavour_settings')
-      .select('flavour_id, offered, price_per_kg, display_name')
+      .select('flavour_id, offered, price_per_kg, display_name, is_signature')
       .eq('baker_id', bakerId),
     supabase.from('baker_flavours')
-      .select('id, name, description, sort_order, price_per_kg, sponge_color, filling_color, taste_family, crowd_pleaser')
+      .select('id, name, description, sort_order, price_per_kg, sponge_color, filling_color, taste_family, crowd_pleaser, is_signature')
       .eq('baker_id', bakerId).eq('is_active', true)
       .order('sort_order').order('name'),
   ]);
@@ -99,6 +99,10 @@ export async function resolveFlavours(bakerId) {
       // cannot rank that flavour — which is honest. Never inferred from the name.
       tasteFamily:  f.taste_family  ?? null,
       crowdPleaser: f.crowd_pleaser ?? null,
+      // The baker's own thumb on the scale, and the ONLY per-baker taste knowledge here — the
+      // rules are global by design. A tiebreak in the suggester, never an argument: a signature
+      // tea still loses to chocolate on a child's birthday.
+      isSignature:  s?.is_signature === true,
     };
   });
 
@@ -117,6 +121,7 @@ export async function resolveFlavours(bakerId) {
     fillingColor: f.filling_color ?? null,
     tasteFamily:  f.taste_family  ?? null,
     crowdPleaser: f.crowd_pleaser ?? null,
+    isSignature:  f.is_signature === true,
   }));
 
   // One map over both kinds, which is why neither branch above has to know which it is.

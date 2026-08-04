@@ -863,6 +863,7 @@ router.get('/baker/flavours', requireAuth, async (req, res) => {
         description: f.description,
         excluded: !f.offered,
         price_per_kg: f.pricePerKg,
+        is_signature: f.isSignature === true,
         conflicts_with:     f.conflicts_with,
         // Only global flavours have a Spattoo-authored baseline — a baker's own recipe is
         // theirs, and we have no basis for an opinion on it (supabase/flavour_dietary.sql).
@@ -937,6 +938,23 @@ router.put('/baker/flavours', requireAuth, requireCapability('store:manage'), as
       const { data: globals } = await supabase.from('flavours').select('id').eq('is_active', true);
       const valid = new Set((globals ?? []).map(f => f.id));
 
+      // ── The signature cap ───────────────────────────────────────────────────────────────────
+      // "What this kitchen is known for" means nothing if it is everything — a baker who marks all
+      // twenty-six has said the same as one who marked none, except the suggester now quietly
+      // prefers their whole catalogue over the rules. Counted across BOTH tables, because a baker
+      // has one set of signatures, not one per storage location.
+      const MAX_SIGNATURES = 3;
+      const markedHere = entries.filter(e => e?.is_signature === true).length;
+      const { count: ownSignatures } = await supabase
+        .from('baker_flavours')
+        .select('id', { count: 'exact', head: true })
+        .eq('baker_id', contact.baker_id).eq('is_active', true).eq('is_signature', true);
+      if (markedHere + (ownSignatures ?? 0) > MAX_SIGNATURES) {
+        return res.status(400).json({
+          error: `Pick at most ${MAX_SIGNATURES} signature flavours — they mean less the more there are.`,
+        });
+      }
+
       const rows = [];
       for (const e of entries) {
         if (!valid.has(e?.flavour_id)) continue;
@@ -953,6 +971,7 @@ router.put('/baker/flavours', requireAuth, requireCapability('store:manage'), as
           offered:      e.excluded === true ? false : true,
           price_per_kg: parsed,
           display_name: e.display_name?.trim() || null,
+          is_signature: e.is_signature === true,
           updated_at:   new Date().toISOString(),
         });
       }
