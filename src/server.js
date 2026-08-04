@@ -49,6 +49,8 @@ app.use(requestId);   // correlation id on every request — must run first
 // mount before express.json() so the body isn't consumed as JSON first.
 app.post('/api/billing/webhook', express.raw({ type: 'application/json' }));
 app.post('/api/webhooks/meshy',  express.raw({ type: 'application/json' }));
+// Supabase Send SMS hook — signed over the EXACT bytes, so it must not be JSON-parsed first.
+app.post('/api/webhooks/supabase-sms', express.raw({ type: 'application/json' }));
 
 app.use(express.json({ limit: '5mb' }));
 

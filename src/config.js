@@ -142,6 +142,26 @@ export const config = {
     pass: process.env.SMTP_PASS,
     from: process.env.SMTP_FROM || process.env.SMTP_USER,
   },
+  // Outbound SMS — today MSG91, and ONLY ever a delivery pipe. The OTP itself is minted and
+  // checked by Supabase, because verify-otp has to hand back a Supabase SESSION (storefront.js)
+  // and POST /api/orders reads the verified contact off that token. A provider's own
+  // generate-and-verify OTP product cannot produce that session, so adopting one would mean
+  // rebuilding the whole trust chain to save a webhook. The provider lives behind
+  // services/msg91.js, same as the mailer hides nodemailer.
+  //
+  // All optional (like razorpay/smtp) so local boot never fails without them; smsConfigured()
+  // is what callers check. Nothing here is read unless Supabase's Send SMS hook fires, which
+  // in turn only happens once STOREFRONT_OTP_CHANNELS includes `sms`.
+  sms: {
+    authKey:    process.env.MSG91_AUTH_KEY,
+    // MSG91 OTP template. WITHOUT DLT clearance this is the default template from the panel's
+    // channel settings — it delivers, but carries no branding and logs nothing in the OTP
+    // section. See the STOREFRONT_OTP_CHANNELS note below for why `sms` stays off until DLT.
+    templateId: process.env.MSG91_TEMPLATE_ID,
+    // Shared secret from the Supabase dashboard (Authentication → Hooks), issued in the form
+    // `v1,whsec_<base64>`. Stored verbatim; the `v1,whsec_` prefix is stripped at verify time.
+    hookSecret: process.env.SEND_SMS_HOOK_SECRET,
+  },
   // Error telemetry. DSN is optional (like meshy/razorpay) so local boot never
   // fails without it — telemetry falls back to structured console logging.
   // The vendor lives behind src/lib/telemetry.js; swapping Sentry for GlitchTip
