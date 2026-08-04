@@ -198,13 +198,18 @@ const OCCASIONS  = ['birthday', 'anniversary', 'wedding', 'baby_shower', 'engage
 const RECIPIENTS = ['child', 'adult', 'couple', 'family', 'friends', 'colleagues'];
 const AGE_BANDS  = ['first_birthday', 'toddler', 'child', 'teen', 'adult', 'senior'];
 
-function validateOrderSignals({ occasion, recipient, ageBand, cakeNumber }) {
+function validateOrderSignals({ occasion, recipient, ageBand, cakeNumber, tierCount }) {
   if (occasion  != null && !OCCASIONS.includes(occasion))   return `occasion must be one of: ${OCCASIONS.join(', ')}`;
   if (recipient != null && !RECIPIENTS.includes(recipient)) return `recipient must be one of: ${RECIPIENTS.join(', ')}`;
   if (ageBand   != null && !AGE_BANDS.includes(ageBand))    return `ageBand must be one of: ${AGE_BANDS.join(', ')}`;
   // Not an age — see 043. Bounded so a decoration nobody can pipe is refused early.
   if (cakeNumber != null && (!Number.isInteger(cakeNumber) || cakeNumber < 0 || cakeNumber > 9999)) {
     return 'cakeNumber must be a whole number between 0 and 9999';
+  }
+  // Matches 045's CHECK. Six tiers is already a wedding centrepiece; beyond that it is a typo, and
+  // an unbounded value would imply a weight floor nobody could satisfy.
+  if (tierCount != null && (!Number.isInteger(tierCount) || tierCount < 1 || tierCount > 6)) {
+    return 'tierCount must be a whole number between 1 and 6';
   }
   return null;
 }
@@ -255,6 +260,9 @@ async function insertOrderAndNotify({ baker, customerId, customerContact, body, 
     // future question — "what do first birthdays order here?" — can actually be asked of.
     // See migration 043 and plans/order-signals.md.
     occasion, recipient, ageBand, cakeNumber,
+    // The cake's FORM (migration 045). tier_count is asked or comes from a template; shape is only
+    // ever derived from one, so it is usually null on a flavour-only enquiry.
+    tierCount, shape,
   } = body;
 
   // A manual order has no design — its picture is the primary reference photo. The
@@ -282,6 +290,8 @@ async function insertOrderAndNotify({ baker, customerId, customerContact, body, 
       age_band:             ageBand     ?? null,
       // NOT an age. 25 on an anniversary cake is years married — see 043.
       cake_number:          Number.isInteger(cakeNumber) ? cakeNumber : null,
+      tier_count:           Number.isInteger(tierCount) ? tierCount : null,
+      shape:                shape ?? null,
       // Both the customer request and the baker walk-in start at 'requested'; the
       // baker advances from there. (status_id is a surrogate FK — set it explicitly,
       // there's no literal DB default for it.)
