@@ -168,11 +168,44 @@ async function loadCustomerOrder(authUserId, orderId) {
 // Shared validation for the design + delivery part of an order body. Customer
 // identity is validated separately because the trust boundary differs per entry
 // point (public form vs. authenticated session). Returns an error string or null.
-function validateOrderBody(body) {
+/**
+ * `requireDesign` exists because an ENQUIRY legitimately has no design.
+ *
+ * This required a designSnapshot unconditionally, which silently made every storefront enquiry a
+ * 400: a flavour-only enquiry has no design, a reference-photo one has referenceKeys instead, and
+ * even a template pick carries `snapshot: null` until somebody opens the designer. The whole premise
+ * of the facets is that a customer may send a real enquiry from whichever end they care about — see
+ * plans/storefront-facets.md, "What fills the design slot", which lists 'neither' as a valid shape.
+ *
+ * Left ON by default so the designer paths keep the guard; only the enquiry route turns it off.
+ */
+function validateOrderBody(body, { requireDesign = true } = {}) {
   const { designSnapshot, deliveryMode = 'pickup', deliveryAddress } = body;
-  if (!designSnapshot) return 'designSnapshot is required';
+  if (requireDesign && !designSnapshot) return 'designSnapshot is required';
   if (!['pickup', 'home_delivery'].includes(deliveryMode)) return 'deliveryMode must be pickup or home_delivery';
   if (deliveryMode === 'home_delivery' && !deliveryAddress) return 'deliveryAddress is required for home_delivery';
+  return validateOrderSignals(body);
+}
+
+// ── The order signals (migration 043) ───────────────────────────────────────────────────────────
+// Checked HERE as well as by the CHECK constraints, so a bad value is a 400 that names the field
+// rather than a 500 from a constraint violation the client cannot read. The lists are duplicated
+// from 043 on purpose: a DB constraint is the guarantee, this is the error message, and they are
+// allowed to be verified against each other rather than derived — a typo here is a bad message, a
+// typo there is bad data.
+const OCCASIONS  = ['birthday', 'anniversary', 'wedding', 'baby_shower', 'engagement',
+                    'farewell', 'corporate', 'festival', 'other'];
+const RECIPIENTS = ['child', 'adult', 'couple', 'family', 'friends', 'colleagues'];
+const AGE_BANDS  = ['first_birthday', 'toddler', 'child', 'teen', 'adult', 'senior'];
+
+function validateOrderSignals({ occasion, recipient, ageBand, cakeNumber }) {
+  if (occasion  != null && !OCCASIONS.includes(occasion))   return `occasion must be one of: ${OCCASIONS.join(', ')}`;
+  if (recipient != null && !RECIPIENTS.includes(recipient)) return `recipient must be one of: ${RECIPIENTS.join(', ')}`;
+  if (ageBand   != null && !AGE_BANDS.includes(ageBand))    return `ageBand must be one of: ${AGE_BANDS.join(', ')}`;
+  // Not an age — see 043. Bounded so a decoration nobody can pipe is refused early.
+  if (cakeNumber != null && (!Number.isInteger(cakeNumber) || cakeNumber < 0 || cakeNumber > 9999)) {
+    return 'cakeNumber must be a whole number between 0 and 9999';
+  }
   return null;
 }
 
@@ -216,6 +249,12 @@ async function insertOrderAndNotify({ baker, customerId, customerContact, body, 
     designSnapshot = null, designThumbnailKey, referenceKeys, weightKg, flavours,
     specialInstructions, deliveryDate, deliveryTime,
     deliveryMode = 'pickup', deliveryAddress, dietaryRequirementKeys,
+    // ── What the cake was FOR ──────────────────────────────────────────────────────────────────
+    // Structured alongside the prose, not instead of it: specialInstructions still carries all of
+    // this in English because the baker needs one place to read, while these columns are what any
+    // future question — "what do first birthdays order here?" — can actually be asked of.
+    // See migration 043 and plans/order-signals.md.
+    occasion, recipient, ageBand, cakeNumber,
   } = body;
 
   // A manual order has no design — its picture is the primary reference photo. The
@@ -238,6 +277,11 @@ async function insertOrderAndNotify({ baker, customerId, customerContact, body, 
       delivery_time:        deliveryTime ?? null,
       delivery_mode:        deliveryMode,
       delivery_address:     deliveryAddress ?? null,
+      occasion:             occasion    ?? null,
+      recipient:            recipient   ?? null,
+      age_band:             ageBand     ?? null,
+      // NOT an age. 25 on an anniversary cake is years married — see 043.
+      cake_number:          Number.isInteger(cakeNumber) ? cakeNumber : null,
       // Both the customer request and the baker walk-in start at 'requested'; the
       // baker advances from there. (status_id is a surrogate FK — set it explicitly,
       // there's no literal DB default for it.)
@@ -466,7 +510,8 @@ router.post('/orders', requireVerifiedContact, async (req, res) => {
 
     // ── Validate required fields ────────────────────────────────────────────
     if (!bakerSlug) return res.status(400).json({ error: 'bakerSlug is required' });
-    const bodyErr = validateOrderBody(req.body);
+    // An enquiry may carry a design, reference photos, or neither — see validateOrderBody.
+    const bodyErr = validateOrderBody(req.body, { requireDesign: false });
     if (bodyErr) return res.status(400).json({ error: bodyErr });
     const dietErr = await validateDietaryKeys(req.body.dietaryRequirementKeys);
     if (dietErr) return res.status(400).json({ error: dietErr });
