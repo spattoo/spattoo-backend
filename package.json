@@ -23,6 +23,7 @@
     "check:bg-fallback": "node scripts/check-bg-fallback.mjs",
     "check:gst": "node scripts/check-gst.mjs",
     "check:print-sheets": "node scripts/check-print-sheets.mjs",
+    "check:plan-copy": "node ../spattoo-docs/bin/check-plan-copy.mjs",
     "verify:ai-credit-buckets": "node scripts/verify-ai-credit-buckets.mjs"
   },
   "dependencies": {

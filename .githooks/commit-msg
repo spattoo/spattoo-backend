@@ -14,4 +14,15 @@ COMMIT_MSG_FILE="$1" node "$BIN" --repo spattoo-api || exit 1
 # environment reads feature docs. Honors [skip-rollout-config].
 ROLLOUT_BIN="$DOCS_DIR/bin/check-rollout-config.mjs"
 [ -f "$ROLLOUT_BIN" ] || exit 0
-COMMIT_MSG_FILE="$1" node "$ROLLOUT_BIN" --repo spattoo-api
+# `|| exit 1` is load-bearing now that a gate follows this one: it was the last line, so
+# its status WAS the hook's status. Appending below it would silently turn a failing
+# rollout check into a passing commit.
+COMMIT_MSG_FILE="$1" node "$ROLLOUT_BIN" --repo spattoo-api || exit 1
+
+# Plan-copy drift gate — the marketing pricing table and the in-app plan picker
+# (subscription_plans.feature_bullets) sell the same plans and share no source. Compares
+# both surfaces directly rather than enforcing a habit, because unlike the gates above it
+# can see both: the repos are siblings and the script lives in spattoo-docs.
+COPY_BIN="$DOCS_DIR/bin/check-plan-copy.mjs"
+[ -f "$COPY_BIN" ] || exit 0
+node "$COPY_BIN"
