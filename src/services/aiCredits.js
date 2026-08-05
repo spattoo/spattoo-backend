@@ -60,46 +60,83 @@ async function resolveAllowance(bakerId) {
     allowance: raw === null ? null : Number(raw) || 0,
     active: e.active,
     canBuy: e.ent?.can_buy_credits === true,
+    // Resolved HERE so the gate and the balance UI cannot meter different windows — the same
+    // reason they already share their SQL.
+    anchor: e.anchor ?? null,
   };
 }
 
-// When the monthly allowance next refreshes: the start of the next calendar month, IST — the same
-// boundary the ledger meters on (migrations/022). Returned to the client because the copy that
-// matters says a DATE ("they refresh on 1 September"), not "next cycle", which makes someone go
-// and check a calendar.
+// ── The allowance window ────────────────────────────────────────────────────────────────────────
+// One month long, starting on the baker's BILLING DATE — the 20th of every month for a baker who
+// joined on the 20th. Identical for monthly and annual plans: the window is always a month, only
+// its start moves.
 //
-// ── ⚠️ THE ALLOWANCE IS NOT ALIGNED TO THE BILLING DATE, AND THAT IS UNEVEN ──────────────────────
-// Everyone refreshes on the 1st, whenever they subscribed. So the first paid month is not equal:
+// It was the calendar month (022), which meant everyone refreshed on the 1st whatever day they
+// subscribed — so a baker joining on the 28th got two allowances before their second month and one
+// joining on the 2nd got one, for the same money. 022 defended that by arguing metering "per
+// billing period" would hand an annual subscriber 12x, which is true and is not this: a period is
+// twelve months long, an anniversary window is one.
 //
-//     subscribes on the 2nd   → one allowance before month two
-//     subscribes on the 28th  → TWO, four days apart
+// The anchor is the subscription's start_date, resolved by the ONE entitlement resolver and passed
+// into the SQL the way p_allowance already is — never re-derived in SQL, for the reason 022 gives
+// above reserve_ai_credits: a second source of truth would silently disagree with the middleware
+// and the client.
 //
-// Same money. There is no proration either — the allowance is not scaled to the days remaining.
-//
-// This is a CHOICE, not a necessity, and the reason recorded in migrations/022 is weaker than it
-// looks. It says metering "per billing period" would hand an annual subscriber 12x — true, but that
-// is not the alternative anyone would build. The alternative is the monthly ANNIVERSARY of the
-// billing date (the 20th of every month, for a baker who joined on the 20th), which behaves
-// identically for monthly and annual plans and removes the unevenness entirely.
-//
-// Why it has not been changed yet, honestly:
-//   * the exposure is bounded and one-off — one extra allowance, once, at signup. Fully burned on
-//     the thinnest-margin action that is ~₹70 on Flame, i.e. 7% of one month, once ever.
-//   * it errs GENEROUS in a baker's first weeks, which is when they are deciding whether to stay.
-//   * the meter is DERIVED (`used = sum of debits in the window`) with no grant rows and no expiry
-//     job. Anniversary windows keep that property, but the window start has to be threaded in the
-//     way p_allowance already is — see the note above reserve_ai_credits, which explains why the
-//     resolver owns that and SQL must not re-derive it.
-//
-// If it is changed: the anchor for a TRIAL is the trial start, and a 30-day trial then gets exactly
-// ONE allowance instead of the two the calendar currently hands it. Spark's 100 was chosen knowing
-// it is really ~200 in practice (seed_plan_entitlements.sql), so moving to anniversaries means
-// raising Spark to 200 in the same change, or the trial silently halves.
-export function nextAllowanceReset() {
-  const IST = 5.5 * 3600 * 1000;
-  const nowIst = new Date(Date.now() + IST);
-  const firstOfNextIst = Date.UTC(nowIst.getUTCFullYear(), nowIst.getUTCMonth() + 1, 1);
-  return new Date(firstOfNextIst - IST).toISOString();
+// A trial anchors on its own start, so a 30-day trial now falls inside ONE window rather than
+// straddling two calendar months. That is why Spark moved 100 → 200 in the same change — and why
+// the trial is now EVEN, worth 200 whatever day someone signs up, instead of somewhere between 100
+// and 200 by accident of the calendar.
+
+const IST_MS = 5.5 * 3600 * 1000;
+
+/**
+ * The most recent monthly anniversary of `anchor` at or before now, and the next one — both as
+ * absolute instants, with IST month boundaries.
+ *
+ * Day-of-month is CLAMPED to the length of the target month, so a baker who joined on the 31st gets
+ * 28 February (or 29), not 3 March. Clamping down rather than overflowing keeps every window inside
+ * the month a baker would name, and keeps them contiguous — no day belongs to two windows or none.
+ *
+ * With no anchor, falls back to the calendar month: that baker has no subscription row, so they are
+ * blocked and their allowance is 0 regardless. The fallback exists so a bug upstream cannot take the
+ * meter down.
+ */
+export function allowanceWindow(anchor, now = new Date()) {
+  const nowIst = new Date(now.getTime() + IST_MS);
+  const y = nowIst.getUTCFullYear();
+  const m = nowIst.getUTCMonth();
+
+  if (!anchor) {
+    const start = Date.UTC(y, m, 1) - IST_MS;
+    const next  = Date.UTC(y, m + 1, 1) - IST_MS;
+    return { start: new Date(start), next: new Date(next) };
+  }
+
+  const anchorIst = new Date(new Date(anchor).getTime() + IST_MS);
+  const day = anchorIst.getUTCDate();
+  // Hours/minutes come from the anchor too, so a window starts at the instant the subscription did
+  // rather than at midnight — otherwise the first hours of a subscription fall in the PREVIOUS
+  // window, which is the same off-by-one this change exists to remove.
+  const at = (yy, mm) => {
+    const lastDay = new Date(Date.UTC(yy, mm + 1, 0)).getUTCDate();
+    return Date.UTC(yy, mm, Math.min(day, lastDay),
+                    anchorIst.getUTCHours(), anchorIst.getUTCMinutes(),
+                    anchorIst.getUTCSeconds(), anchorIst.getUTCMilliseconds()) - IST_MS;
+  };
+
+  const thisMonth = at(y, m);
+  const start = thisMonth <= now.getTime() ? thisMonth : at(y, m - 1);
+  const next  = thisMonth <= now.getTime() ? at(y, m + 1) : thisMonth;
+  return { start: new Date(start), next: new Date(next) };
+}
+
+/**
+ * When the allowance next refreshes. Returned to the client because the copy that matters says a
+ * DATE ("they refresh on 20 September"), not "next cycle", which makes someone go and check a
+ * calendar.
+ */
+export function nextAllowanceReset(anchor) {
+  return allowanceWindow(anchor).next.toISOString();
 }
 
 // ── The stock ceiling ────────────────────────────────────────────────────────────────────────────
@@ -126,17 +163,18 @@ export function creditCeiling(allowance) {
 // reserve path uses, so the figure shown to the baker and the figure the gate enforces cannot
 // drift apart.
 export async function getAiCreditBalance(bakerId) {
-  const { allowance, active, canBuy } = await resolveAllowance(bakerId);
+  const { allowance, active, canBuy, anchor } = await resolveAllowance(bakerId);
   const { data, error } = await supabase.rpc('ai_credit_balance', {
-    p_baker_id:  bakerId,
-    p_allowance: allowance,
+    p_baker_id:     bakerId,
+    p_allowance:    allowance,
+    p_window_start: allowanceWindow(anchor).start.toISOString(),
   });
   if (error) throw error;
   const row = one(data) ?? { allowance_used: 0, allowance_left: 0, wallet_balance: 0 };
   return {
     active,
     canBuy,
-    resetsOn:      nextAllowanceReset(),
+    resetsOn:      nextAllowanceReset(anchor),
     ceiling:       creditCeiling(allowance),
     unlimited:     allowance === null,
     allowance,
@@ -217,7 +255,7 @@ export async function creditPurchase({ bakerId, packKey, razorpayPaymentId, note
 // replay:true and charges nothing further. The caller MUST short-circuit on replay — this
 // service cannot return the previous result, only the previous accounting.
 export async function reserveCredits({ bakerId, action, orderId = null, idempotencyKey = null, note = null }) {
-  const { allowance, canBuy } = await resolveAllowance(bakerId);
+  const { allowance, canBuy, anchor } = await resolveAllowance(bakerId);
 
   const { data, error } = await supabase.rpc('reserve_ai_credits', {
     p_baker_id:        bakerId,
@@ -226,6 +264,7 @@ export async function reserveCredits({ bakerId, action, orderId = null, idempote
     p_order_id:        orderId,
     p_idempotency_key: idempotencyKey,
     p_note:            note,
+    p_window_start:    allowanceWindow(anchor).start.toISOString(),
   });
   if (error) throw error;
 
@@ -250,7 +289,7 @@ export async function reserveCredits({ bakerId, action, orderId = null, idempote
       allowanceLeft: row.from_allowance,
       walletBalance: row.from_wallet,
       canTopUp:      canBuy,
-      resetsOn:      nextAllowanceReset(),
+      resetsOn:      nextAllowanceReset(anchor),
     });
   }
 

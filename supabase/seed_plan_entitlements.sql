@@ -71,6 +71,20 @@
 --   * Spark 200 → 100. A trial is <10 orders; ~6 guides is plenty to feel the feature. It is also
 --     the only unpaid segment, and the calendar-month meter already hands every 30-day trial two
 --     allowances (a trial always straddles a month boundary), so 100 is really ~200 in practice.
+--     ⚠️ REVERSED 2026-08-05 (100 → 200) — see below.
+--
+-- 2026-08-05 (allowance windows follow the BILLING DATE, migration 047):
+--   * Spark 100 → 200, and this is NOT a change of generosity. The allowance window is now anchored
+--     to the subscription's start date rather than the calendar month, so a 30-day trial falls
+--     inside ONE window instead of straddling two. The 100 above was chosen knowing the calendar
+--     handed every trial a second allowance; take that away and 100 means 100. 200 reproduces what
+--     a trial was already worth.
+--   * It also makes the trial EVEN. Under the calendar it was worth between 100 and 200 depending
+--     on the signup date — a trial starting on the 1st never reached the second allowance, and one
+--     starting on the 2nd reached it for a single day. 200 now means 200 for everybody.
+--   * The paid tiers are UNCHANGED. Their numbers were sized per calendar month and a window is
+--     still one month long; only its start moved. What changes for them is that the first month is
+--     no longer a lottery — a baker joining on the 28th used to get two allowances in four days.
 --   * Blaze 800 / Forge 2000 unchanged — 45 orders at a 60% photo mix is ~405 credits, so Blaze
 --     sits near 50% utilisation with real headroom for the actions still to be built.
 --   * The photo-mix fraction driving all of this is an ESTIMATE. It is directly measurable once
@@ -83,7 +97,7 @@ update subscription_plans set features = jsonb_build_object(
   'storefront', true, 'custom_branding', true, 'custom_templates', true,
   'ai_background_removal', false, 'whatsapp_notifications', false, 'xray_reports', true,
   'max_orders_total', null, 'max_team_members', 2, 'max_saved_templates', 30,
-  'ai_credits_per_month', 100, 'can_buy_credits', false,
+  'ai_credits_per_month', 200, 'can_buy_credits', false,
   'trial_days', 30
 ) where name = 'spark';
 

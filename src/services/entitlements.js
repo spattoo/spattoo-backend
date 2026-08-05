@@ -45,6 +45,10 @@ export async function getEntitlements(bakerId) {
     status,
     active: !blocked,
     ent,
+    // The day the subscription began — the anchor the AI-credit allowance window is measured
+    // from (services/aiCredits.js). start_date, NOT current_period_start: the latter moves
+    // yearly on an annual plan, which would hand that baker one allowance a year.
+    anchor: sub?.start_date ?? null,
   };
 }
 
