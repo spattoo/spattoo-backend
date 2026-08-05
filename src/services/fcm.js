@@ -38,25 +38,55 @@ function messaging() {
 }
 
 /**
- * Every device belonging to the person at this email address.
+ * Every device that should hear about a notification addressed to this email.
  *
- * Email → baker_appusers → auth_user_id → device_tokens. Two hops, and deliberately so: the
- * notifications table addresses a PERSON by email and that stays true. Denormalising the email onto
- * device_tokens would be one query, and wrong the first time somebody changes their address.
+ * TWO ways an address resolves, and both are needed:
+ *
+ *   1. A PERSON — `baker_appusers.email` → their own devices.
+ *   2. A BAKERY — `bakers.email` → every device in that shop.
+ *
+ * The second is not a nicety. `bakerNotifyEmail()` PREFERS `bakers.email` (the bakery's contact
+ * address) and only falls back to an app user's, so a baker-targeted notification usually carries an
+ * address that exists nowhere in `baker_appusers`. Resolving by person alone found nothing, sent
+ * nothing, and said nothing — the enquiry email arrived and the phone stayed dark.
+ *
+ * Sending to the whole shop is also the behaviour you want on its own terms: two staff on shift
+ * should both hear that an enquiry came in, and a device is only in `device_tokens` because somebody
+ * signed in on it and asked to be told.
+ *
+ * A Set, because the two paths overlap whenever the bakery's contact address is also a staff
+ * member's — which is the common case for a one-person bakery, and would otherwise buzz twice.
  */
-async function tokensForEmail(email) {
+async function tokensForRecipient(email) {
+  const tokens = new Set();
+
   const { data: user } = await supabase
     .from('baker_appusers')
     .select('auth_user_id')
     .eq('email', email)
     .maybeSingle();
-  if (!user?.auth_user_id) return [];
+  if (user?.auth_user_id) {
+    const { data } = await supabase
+      .from('device_tokens')
+      .select('token')
+      .eq('auth_user_id', user.auth_user_id);
+    for (const r of data ?? []) tokens.add(r.token);
+  }
 
-  const { data } = await supabase
-    .from('device_tokens')
-    .select('token')
-    .eq('auth_user_id', user.auth_user_id);
-  return (data ?? []).map(r => r.token);
+  const { data: baker } = await supabase
+    .from('bakers')
+    .select('id')
+    .eq('email', email)
+    .maybeSingle();
+  if (baker?.id) {
+    const { data } = await supabase
+      .from('device_tokens')
+      .select('token')
+      .eq('baker_id', baker.id);
+    for (const r of data ?? []) tokens.add(r.token);
+  }
+
+  return [...tokens];
 }
 
 /** Drop tokens FCM has told us are dead. A device that uninstalled is not a delivery failure to retry. */
@@ -73,11 +103,16 @@ async function prune(tokens) {
  * @returns {Promise<{ sent: number, failed: number, pruned: number }>}
  */
 export async function sendPush({ email, title, body, url, tag }) {
-  const result = { sent: 0, failed: 0, pruned: 0 };
-  if (!pushConfigured() || !email) return result;
+  const result = { sent: 0, failed: 0, pruned: 0, tokens: 0 };
+  if (!pushConfigured()) { result.reason = 'not_configured'; return result; }
+  if (!email) { result.reason = 'no_recipient'; return result; }
 
-  const tokens = await tokensForEmail(email);
-  if (!tokens.length) return result;
+  const tokens = await tokensForRecipient(email);
+  result.tokens = tokens.length;
+  // The commonest silent outcome, and it used to log nothing at all: the notification was produced,
+  // the email was sent, and nobody had a device registered under that address. Indistinguishable
+  // from "push was never attempted" unless it says so.
+  if (!tokens.length) { result.reason = 'no_devices'; return result; }
 
   // DATA-ONLY, no `notification` block. With one, the browser and Android both render the payload
   // themselves and our service worker's onBackgroundMessage never runs — so the click-through and

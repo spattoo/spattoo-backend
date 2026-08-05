@@ -614,9 +614,12 @@ export async function sendNotification({ notificationId }) {
     if (push && pushConfigured()) {
       try {
         const r = await sendPush({ email: notification.recipient_email, ...push });
-        if (r.sent || r.failed) {
-          console.log('[notifications] pushed', JSON.stringify({ notificationId, type: typeSlug, ...r }));
-        }
+        // ALWAYS logged, including the do-nothing outcomes. Logging only successes made the two
+        // failures that actually happen — nothing configured, and nobody with a registered device —
+        // look identical to push never having been attempted, which is a bad evening.
+        console.log('[notifications] push', JSON.stringify({
+          notificationId, type: typeSlug, to: notification.recipient_email, ...r,
+        }));
       } catch (err) {
         console.error('[notifications] push failed (email already sent)', JSON.stringify({
           notificationId, type: typeSlug, error: err.message,
