@@ -93,6 +93,20 @@ export const config = {
     // Scheduled sweep that sends the 48h pre-erasure notice + erases accounts past their window
     // (DPDP "Layer 3", CONSENT_WITHDRAWAL_AND_ERASURE_PLAN.md). UTC. Retime per-env without a deploy.
     eraseAccountsCron: process.env.ERASE_ACCOUNTS_CRON || '30 3 * * *',   // 03:30 UTC daily
+    // The baker's morning "what's going out today" digest. UTC like every schedule here, so the
+    // default is 01:30 UTC = 07:00 IST — early enough to shape the day, late enough not to be an
+    // alarm clock. Retime per-env from the Render dashboard without a deploy.
+    deliveryDigestCron: process.env.DELIVERY_DIGEST_CRON || '30 1 * * *',
+    // Which timezone "today" means when the digest runs. SEPARATE from the cron, because they answer
+    // different questions: the cron says WHEN to look, this says WHICH DAY to look at. Run at 01:30
+    // UTC and ask the server what day it is and you get the right answer by luck — 01:30 UTC and
+    // 07:00 IST are the same date. Move the cron an hour earlier and it silently becomes yesterday's
+    // deliveries, with nothing failing.
+    //
+    // One value, not per-baker, because every baker is in India today. The day that stops being true
+    // this becomes a column on bakers and the digest fans out per zone — which is why the job reads
+    // it from config rather than hardcoding a string it would then have to find again.
+    deliveryDigestTz: process.env.DELIVERY_DIGEST_TZ || 'Asia/Kolkata',
   },
   // Data-retention windows (DPDP storage-limitation). CONFIG, not hardcoded — tune per-env and get
   // counsel sign-off before launch (see plan §6). All in DAYS / HOURS.

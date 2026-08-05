@@ -481,6 +481,41 @@ function buildEmail(typeSlug, recipientEmail, payload) {
         ${restoreUrl ? ctaBtn(escUrl(restoreUrl), 'Log in to restore') : ''}`) };
   }
 
+  // ── The morning delivery digest ────────────────────────────────────────────────────────────────
+  // The one notification here that is about a SET rather than a thing. The subject line carries the
+  // whole message — a baker glancing at a phone on the way to the kitchen should not have to open
+  // it to know whether today is a one-cake day or a five-cake day.
+  if (typeSlug === 'delivery_digest_baker') {
+    const n = p.count ?? 0;
+    const rows = (p.orders ?? []).map(o => `
+      <tr>
+        <td style="padding:8px 12px;border-bottom:1px solid #eee;font-weight:700;color:#2C4433;white-space:nowrap">
+          ${esc(o.deliveryTime ?? '—')}
+        </td>
+        <td style="padding:8px 12px;border-bottom:1px solid #eee">${esc(o.customerName)}</td>
+        <td style="padding:8px 12px;border-bottom:1px solid #eee;color:#6b6b6b;font-size:13px">
+          ${esc(o.deliveryMode ?? '')}
+        </td>
+      </tr>`).join('');
+
+    return {
+      from:    config.smtp.from,
+      to:      recipientEmail,
+      // "an order to deliver today" reads better than "1 order", and at n>1 the number is the
+      // point. Naming the single customer is the whole value of the one-order case.
+      subject: n === 1
+        ? `You have an order to deliver today — ${p.orders?.[0]?.customerName ?? 'a customer'}`
+        : `You have ${n} orders to deliver today`,
+      html: shell(`
+        <h2 style="margin:0 0 12px;font-size:22px;color:#2C4433;font-weight:800;">
+          ${n === 1 ? 'One delivery today' : `${n} deliveries today`}
+        </h2>
+        <p>Good morning${p.bakerName ? `, ${esc(p.bakerName)}` : ''}. Here's what's going out today.</p>
+        <table style="width:100%;border-collapse:collapse;margin:16px 0;font-size:14px">${rows}</table>
+        <p style="color:#6b6b6b;font-size:13px;">Times shown are what's on each order; a dash means no time was set.</p>`),
+    };
+  }
+
   throw new Error(`Unknown notification type: ${typeSlug}`);
 }
 

@@ -1,5 +1,6 @@
 import { supabase } from './supabase.js';
 import { jobQueue } from '../jobs/queue.js';
+import { digestDedupeKey } from './deliveryDigest.js';
 
 async function getTypeId(slug) {
   const { data } = await supabase
@@ -16,15 +17,21 @@ async function getTypeId(slug) {
 // enqueue fails (e.g. Redis down) the row stays 'pending' and the sweeper backstop
 // retries. We flip to 'enqueued' only while still 'pending', so a worker that already
 // advanced the row (sent/failed) is never clobbered.
-async function insertNotification(typeSlug, recipientEmail, payload) {
+async function insertNotification(typeSlug, recipientEmail, payload, { dedupeKey = null } = {}) {
   const typeId = await getTypeId(typeSlug);
   if (!typeId) throw new Error(`Unknown notification type: ${typeSlug}`);
 
   const { data: row, error } = await supabase
     .from('notifications')
-    .insert({ type_id: typeId, recipient_email: recipientEmail, payload })
+    .insert({ type_id: typeId, recipient_email: recipientEmail, payload, dedupe_key: dedupeKey })
     .select('id')
     .single();
+
+  // A dedupe collision is the guard WORKING, not a failure: this notification was already produced
+  // (a retried job, a redeploy mid-tick), so the right outcome is to do nothing quietly. Only
+  // possible when the caller supplied a key — event-triggered notifications pass none and so can
+  // never take this path. 23505 = unique_violation.
+  if (error?.code === '23505' && dedupeKey) return null;
   if (error) throw new Error(`Failed to insert notification: ${error.message}`);
 
   try {
@@ -39,6 +46,7 @@ async function insertNotification(typeSlug, recipientEmail, payload) {
   } catch (err) {
     console.error('[notifications] immediate enqueue failed, leaving for sweeper backstop:', err.message);
   }
+  return row.id;
 }
 
 // The baker's notification email. `bakers.email` is OPTIONAL at onboarding, so don't
@@ -291,5 +299,22 @@ export async function notifyCreditsLow(baker, { threshold, left, allowance, wall
     // that is not there, and "buy more credits" that leads to "your plan cannot" is worse than
     // saying only what is true: the credits come back on the 1st.
     canBuy:        canBuy === true,
+  });
+}
+
+// ── Deliveries due today (scheduled, not event-triggered) ────────────────────────────────────────
+// The morning digest, one per baker per day. Everything about WHAT it says is decided in
+// services/deliveryDigest.js and handed here already shaped.
+//
+// Returns the notification id, or NULL when the dedupe key caught a repeat — the caller counts that
+// as "already produced today", which is a normal outcome of a re-run rather than an error.
+export async function notifyDeliveryDigest({ baker, date, payload }) {
+  const email = await bakerNotifyEmail(baker);
+  // No address, no digest. Silent because a bakery without a reachable email is a state the
+  // onboarding flow owns, not something a 7am cron should start alarming about daily.
+  if (!email) return null;
+
+  return insertNotification('delivery_digest_baker', email, payload, {
+    dedupeKey: digestDedupeKey(baker.id, date),
   });
 }
