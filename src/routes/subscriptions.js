@@ -95,7 +95,11 @@ router.get('/plans', async (req, res) => {
         .select('name, display_name, price_monthly, price_yearly, sort_order')
         .eq('is_active', true).order('sort_order'));
       if (error) return serverError(req, res, error);
-      data = (data ?? []).map(p => ({ ...p, tagline: null, feature_bullets: [], is_popular: false, has_storefront: p.name !== 'spark' }));
+      // has_storefront TRUE for every plan — it was `p.name !== 'spark'`, which stopped being true
+      // when the storefront was opened to all tiers (seed_plan_entitlements.sql). On any deploy that
+      // hit this fallback it would have quietly told a Spark baker they have no storefront, which is
+      // the drift migration 048 exists to remove.
+      data = (data ?? []).map(p => ({ ...p, tagline: null, feature_bullets: [], is_popular: false, has_storefront: true }));
     }
     res.json(data ?? []);
   } catch (err) { serverError(req, res, err); }
