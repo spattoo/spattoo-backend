@@ -32,6 +32,23 @@
 --   * Made the DECLARATION match reality rather than deleting the key: a false value here reads as
 --     a decision, and the next person to wire up gating would have implemented the wrong one.
 --
+-- 2026-08-05 (edible_print_studio — the key every plan was missing):
+--   * The standalone Edible Print Studio shipped GATED SHUT FOR EVERYONE. The registry declares the
+--     key with fallback:false and no plan row carried it, so the resolver's hasOwnProperty check
+--     fell through to the fallback on all four tiers — Blaze and Forge included. The routes and the
+--     menu item were both enforcing correctly against a value nobody had set.
+--   * Blaze/Forge TRUE, Spark/Flame FALSE. What is gated is only the STANDALONE tool: the same
+--     sheet reached from an ORDER carries no entitlement check and stays on every plan. Printing a
+--     photo a customer attached is part of fulfilling an order they have already paid for. What
+--     Blaze buys is printing what no order asked for — a name, a logo, a sheet of one rose — which
+--     is the bakery's own productivity rather than a customer's order.
+--   * Spark and Flame are written FALSE rather than left absent, for the reason this file gives
+--     above about custom_templates: an absent key reads as "nobody has decided", which is the exact
+--     state that caused the outage. A false value reads as a decision.
+--   * ⚠️ This file rebuilds `features` with jsonb_build_object — the WHOLE object. Migration 050
+--     grants the same thing with a merge; running this seed without these four lines would drop the
+--     key back out and silently re-lock Blaze and Forge. Any new entitlement key needs BOTH.
+--
 -- 2026-08-02 (X-Ray opens to every tier; CREDITS are the only lever on it):
 --   * xray_reports false → TRUE on spark and flame. X-Ray is now available on every plan, for both
 --     kinds of order, and the difference between tiers is the AI ALLOWANCE alone.
@@ -98,6 +115,7 @@ update subscription_plans set features = jsonb_build_object(
   'ai_background_removal', false, 'whatsapp_notifications', false, 'xray_reports', true,
   'max_orders_total', null, 'max_team_members', 2, 'max_saved_templates', 30,
   'ai_credits_per_month', 200, 'can_buy_credits', false,
+  'edible_print_studio', false,
   'trial_days', 30
 ) where name = 'spark';
 
@@ -105,19 +123,22 @@ update subscription_plans set features = jsonb_build_object(
   'storefront', true, 'custom_branding', true, 'custom_templates', true,
   'ai_background_removal', false, 'whatsapp_notifications', false, 'xray_reports', true,
   'max_orders_total', null, 'max_team_members', 2, 'max_saved_templates', 30,
-  'ai_credits_per_month', 300, 'can_buy_credits', false
+  'ai_credits_per_month', 300, 'can_buy_credits', false,
+  'edible_print_studio', false
 ) where name = 'flame';
 
 update subscription_plans set features = jsonb_build_object(
   'storefront', true, 'custom_branding', true, 'custom_templates', true,
   'ai_background_removal', true, 'whatsapp_notifications', false, 'xray_reports', true,
   'max_orders_total', null, 'max_team_members', 4, 'max_saved_templates', null,
-  'ai_credits_per_month', 800, 'can_buy_credits', true
+  'ai_credits_per_month', 800, 'can_buy_credits', true,
+  'edible_print_studio', true
 ) where name = 'blaze';
 
 update subscription_plans set features = jsonb_build_object(
   'storefront', true, 'custom_branding', true, 'custom_templates', true,
   'ai_background_removal', true, 'whatsapp_notifications', false, 'xray_reports', true,
   'max_orders_total', null, 'max_team_members', 10, 'max_saved_templates', null,
-  'ai_credits_per_month', 2000, 'can_buy_credits', true
+  'ai_credits_per_month', 2000, 'can_buy_credits', true,
+  'edible_print_studio', true
 ) where name = 'forge';
