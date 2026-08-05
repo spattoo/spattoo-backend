@@ -41,6 +41,27 @@
 -- depending on the day somebody signed up — a trial starting on the 1st never reached the
 -- second allowance at all. 200 now means 200 for everyone.
 --
+-- ── ⚠️ REBUILT FROM 028, NOT 022 ────────────────────────────────────────────────────
+-- The first draft of this file copied reserve_ai_credits out of 022. 028 had since
+-- redefined it — adding `and t.state <> 'released'` to the idempotency lookup, so that a
+-- failed generation stops permanently bricking its key and reporting "out of credits" on
+-- every retry. Copying 022 would have silently reverted that.
+--
+-- The lesson generalises: when a function is CREATE OR REPLACE'd across several migrations,
+-- the newest definition is the source, not the one that introduced it. `grep -l "function
+-- <name>" migrations/` before copying anything.
+--
+-- ── DROPS FIRST ─────────────────────────────────────────────────────────────────────
+-- Postgres refuses to CREATE OR REPLACE across a changed return type, and an earlier draft
+-- of this migration was applied with a different one. Both old signatures are dropped
+-- explicitly — including the 6-argument version, so exactly ONE function survives.
+--
+-- Dropping the 6-arg is deliberate, not tidiness: leaving it means a 6-argument call
+-- resolves to it (an exact match beats a defaulted one) and silently meters on the CALENDAR
+-- month, which is the behaviour this migration exists to remove. PostgREST calls by NAME, so
+-- an un-upgraded caller omitting p_window_start still binds to the 7-arg function and takes
+-- the default.
+--
 -- ── NULL WINDOW START ───────────────────────────────────────────────────────────────
 -- Falls back to the calendar month, so a baker with no resolvable anchor (no subscription
 -- row at all) behaves exactly as before rather than erroring. Such a baker is blocked by
@@ -48,6 +69,12 @@
 -- practice — it exists so a bug upstream cannot take the meter down.
 
 BEGIN;
+
+-- Old signatures, so the return type can change and only one function survives.
+DROP FUNCTION IF EXISTS reserve_ai_credits(uuid, text, integer, uuid, text, text);
+DROP FUNCTION IF EXISTS reserve_ai_credits(uuid, text, integer, uuid, text, text, timestamptz);
+DROP FUNCTION IF EXISTS ai_credit_balance(uuid, integer);
+DROP FUNCTION IF EXISTS ai_credit_balance(uuid, integer, timestamptz);
 
 -- ── The reserve path ─────────────────────────────────────────────────────────────────
 create or replace function reserve_ai_credits(
@@ -57,7 +84,6 @@ create or replace function reserve_ai_credits(
   p_order_id        uuid    default null,
   p_idempotency_key text    default null,
   p_note            text    default null,
-  -- NEW, last and defaulted so an un-upgraded caller keeps working through a rolling deploy.
   p_window_start    timestamptz default null
 )
 returns table (
@@ -83,8 +109,12 @@ declare
   v_prev        credit_transactions%rowtype;
 begin
   -- Replay of an already-accepted request → return the original decision, charge nothing more.
+  -- `state <> 'released'` is the 028 fix: a released row is a failed attempt that charged
+  -- nothing, so it is not a decision to replay. Without it, one failure locked the key forever
+  -- and every retry was reported to the baker as "out of credits".
   if p_idempotency_key is not null then
-    select * into v_prev from credit_transactions t where t.idempotency_key = p_idempotency_key;
+    select * into v_prev from credit_transactions t
+     where t.idempotency_key = p_idempotency_key and t.state <> 'released';
     if found then
       return query select v_prev.id, (v_prev.state <> 'released'), 'REPLAY'::text,
                           -v_prev.credits, -v_prev.allowance_credits, -v_prev.wallet_credits;
@@ -101,11 +131,13 @@ begin
 
   perform pg_advisory_xact_lock(hashtextextended(p_baker_id::text, 0));
 
-  -- The baker's OWN allowance window, resolved from their billing anchor and passed in — the
-  -- same treatment p_allowance gets, for the same reason (022's note above this function).
-  -- The calendar month is the fallback ONLY when no anchor was resolvable; such a baker has no
-  -- subscription row, is blocked by BLOCKED_STATUSES, and has an allowance of 0 anyway. It
-  -- exists so a bug upstream cannot take the meter down.
+  -- The baker's OWN allowance window, resolved from their billing anchor and passed in — the same
+  -- treatment p_allowance gets, and for the reason 022 gives above it: a second source of truth in
+  -- SQL would silently disagree with the middleware and the client.
+  --
+  -- The calendar month remains the fallback for a null anchor. That baker has no subscription row,
+  -- so they are blocked and their allowance is 0 regardless; it exists so a bug upstream cannot
+  -- take the meter down.
   v_window_start := coalesce(
     p_window_start,
     date_trunc('month', now() at time zone 'Asia/Kolkata') at time zone 'Asia/Kolkata'
