@@ -156,6 +156,17 @@ export const config = {
     pass: process.env.SMTP_PASS,
     from: process.env.SMTP_FROM || process.env.SMTP_USER,
   },
+  // Push notifications — Firebase Cloud Messaging. Optional (like razorpay/smtp/sms) so a
+  // deployment without it simply never pushes; email is the durable channel either way.
+  //
+  // The WHOLE service-account JSON in one var, not split into project_id/client_email/private_key.
+  // The private key is multi-line, and three vars is three chances to paste half of one — a single
+  // blob either parses or it does not. Parsed lazily in services/fcm.js so a malformed value breaks
+  // pushes rather than the API's boot.
+  //
+  // THIS IS THE SECRET. Everything the browser holds (apiKey, projectId, the VAPID public key) is
+  // public by design and identifies the project without authorising anything. This authorises.
+  fcm: { serviceAccount: process.env.FIREBASE_SERVICE_ACCOUNT || '' },
   // Outbound SMS — today MSG91, and ONLY ever a delivery pipe. The OTP itself is minted and
   // checked by Supabase, because verify-otp has to hand back a Supabase SESSION (storefront.js)
   // and POST /api/orders reads the verified contact off that token. A provider's own

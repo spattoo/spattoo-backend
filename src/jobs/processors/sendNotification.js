@@ -2,6 +2,7 @@ import { config } from '../../config.js';
 import { supabase } from '../../services/supabase.js';
 import { sendEmail } from '../../services/mailer.js';
 import { esc, escUrl } from '../../lib/htmlEscape.js';
+import { sendPush, pushConfigured } from '../../services/fcm.js';
 
 function formatDate(str) {
   if (!str) return '—';
@@ -519,6 +520,56 @@ function buildEmail(typeSlug, recipientEmail, payload) {
   throw new Error(`Unknown notification type: ${typeSlug}`);
 }
 
+// ── What a notification says on a lock screen ────────────────────────────────────────────────────
+// Returns null for types that should NOT push, and that is the common case. Email can afford to tell
+// a baker everything; a push interrupts them, so it has to earn it — which means the list here stays
+// short on purpose rather than growing to match buildEmail.
+//
+// A push is roughly forty characters of title and a place to land. Both matter: an alert that says
+// something useful but drops you on a dashboard makes the baker do the finding.
+export function buildPush(typeSlug, payload) {
+  const p = payload ?? {};
+
+  // The one the whole push conversation started from: a customer asks for a quote and the baker's
+  // phone lights up, wherever they are.
+  if (typeSlug === 'order_placed_baker') {
+    return {
+      title: 'New quote request',
+      body:  `${p.customerName ?? 'A customer'} wants a cake${p.deliveryDate ? ` for ${p.deliveryDate}` : ''}.`,
+      url:   '/',
+      // Collapses to the latest rather than stacking. Three enquiries overnight should be three
+      // notifications; the tag is per-order so they do not eat each other.
+      tag:   `order:${p.orderId ?? ''}`,
+    };
+  }
+
+  if (typeSlug === 'delivery_digest_baker') {
+    const n = p.count ?? 0;
+    return {
+      title: n === 1 ? 'One delivery today' : `${n} deliveries today`,
+      body:  n === 1
+        ? `${p.orders?.[0]?.customerName ?? 'A customer'}${p.orders?.[0]?.deliveryTime ? ` at ${p.orders[0].deliveryTime}` : ''}.`
+        : (p.orders ?? []).slice(0, 3).map(o => o.customerName).join(', ') + (n > 3 ? ` and ${n - 3} more` : ''),
+      url:   '/',
+      // One digest per day, so a repeat is a correction and should replace rather than pile up.
+      tag:   `digest:${p.date ?? ''}`,
+    };
+  }
+
+  if (typeSlug === 'quote_accepted_baker') {
+    return {
+      title: 'Quote accepted',
+      body:  `${p.customerName ?? 'A customer'} accepted your quote.`,
+      url:   '/',
+      tag:   `order:${p.orderId ?? ''}`,
+    };
+  }
+
+  // Everything else is email-only. A customer has no app to be pushed to, and a baker does not need
+  // their phone to buzz because an invite email went out.
+  return null;
+}
+
 export async function sendNotification({ notificationId }) {
   // Fetch notification with its type
   const { data: notification, error } = await supabase
@@ -551,6 +602,27 @@ export async function sendNotification({ notificationId }) {
       status:  'sent',
       sent_at: new Date().toISOString(),
     }).eq('id', notificationId);
+
+    // ── Push, AFTER the email and never instead of it ────────────────────────────────────────────
+    // Best-effort on purpose. Email is the durable channel and its status is what `sent` means; push
+    // is the fast one. A dead token, an expired credential or a Firebase outage must not fail a
+    // notification the baker has already received — and must not mark it for retry, which would
+    // re-send the email to fix the push.
+    //
+    // Deliberately not awaited into the status: this runs, logs, and cannot change the outcome above.
+    const push = buildPush(typeSlug, notification.payload);
+    if (push && pushConfigured()) {
+      try {
+        const r = await sendPush({ email: notification.recipient_email, ...push });
+        if (r.sent || r.failed) {
+          console.log('[notifications] pushed', JSON.stringify({ notificationId, type: typeSlug, ...r }));
+        }
+      } catch (err) {
+        console.error('[notifications] push failed (email already sent)', JSON.stringify({
+          notificationId, type: typeSlug, error: err.message,
+        }));
+      }
+    }
   } catch (err) {
     console.error('[notifications] send failed', JSON.stringify({ notificationId, type: typeSlug, to: mail.to, error: err.message }));
     const exhausted = notification.attempts >= notification.max_attempts;
