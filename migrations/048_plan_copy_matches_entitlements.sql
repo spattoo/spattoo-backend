@@ -35,6 +35,12 @@
 -- So the ladder is CREDITS, SEATS and SUPPORT. The copy now says that, instead of listing
 -- features every tier has had since storefront and custom_templates were opened up.
 --
+-- ── feature_bullets IS text[] ───────────────────────────────────────────────────────
+-- Not jsonb, though GET /plans serves it as a JSON array — that is PostgREST rendering a
+-- Postgres array, not the column's type. 014 declares it `text[] NOT NULL DEFAULT '{}'`
+-- and assigns it with a bare ARRAY[...]; the first draft here wrapped it in to_jsonb() and
+-- was rejected. Copy the migration that made the column, not the API's output shape.
+--
 -- ── THE FALLBACK IN routes/subscriptions.js ─────────────────────────────────────────
 -- GET /plans has a pre-014 fallback that hardcodes `has_storefront: p.name !== 'spark'`.
 -- That is fixed in the same change — it would have re-introduced the wrong value on any
@@ -45,48 +51,48 @@ BEGIN;
 UPDATE public.subscription_plans SET
   has_storefront  = true,
   tagline         = 'Everything, free for 30 days',
-  feature_bullets = to_jsonb(ARRAY[
+  feature_bullets = ARRAY[
     'Your storefront + 3D designer',
     'Unlimited orders and quotes',
     'Flavour suggestions for your customers',
     '200 smart-tool credits',
     '30 days — then choose a plan'
-  ])
+  ]
 WHERE name = 'spark';
 
 UPDATE public.subscription_plans SET
   has_storefront  = true,
   tagline         = 'Less than the price of one cake',
-  feature_bullets = to_jsonb(ARRAY[
+  feature_bullets = ARRAY[
     'Everything in Spark, with no time limit',
     '300 smart-tool credits a month',
     '2 team members',
     'Email support'
-  ])
+  ]
 WHERE name = 'flame';
 
 UPDATE public.subscription_plans SET
   has_storefront  = true,
   tagline         = 'More credits, more seats, faster help',
-  feature_bullets = to_jsonb(ARRAY[
+  feature_bullets = ARRAY[
     'Everything in Flame',
     '800 smart-tool credits a month',
     'Buy extra credits when you need them',
     '4 team members',
     'Unlimited saved templates',
     'Priority chat support'
-  ])
+  ]
 WHERE name = 'blaze';
 
 UPDATE public.subscription_plans SET
   has_storefront  = true,
   tagline         = 'The most credits and the biggest team',
-  feature_bullets = to_jsonb(ARRAY[
+  feature_bullets = ARRAY[
     'Everything in Blaze',
     '2,000 smart-tool credits a month',
     '10 team members',
     'Dedicated account manager'
-  ])
+  ]
 WHERE name = 'forge';
 
 COMMIT;
