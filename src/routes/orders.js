@@ -196,12 +196,12 @@ function validateOrderBody(body, { requireDesign = true } = {}) {
 const OCCASIONS  = ['birthday', 'anniversary', 'wedding', 'baby_shower', 'engagement',
                     'farewell', 'corporate', 'festival', 'other'];
 const RECIPIENTS = ['child', 'adult', 'couple', 'family', 'friends', 'colleagues'];
-const AGE_BANDS  = ['first_birthday', 'toddler', 'child', 'teen', 'adult', 'senior'];
+const CELEBRATIONS = ['first_birthday', 'kids_party', 'teen_party', 'grown_ups', 'elders'];
 
-function validateOrderSignals({ occasion, recipient, ageBand, cakeNumber, tierCount }) {
+function validateOrderSignals({ occasion, recipient, celebration, cakeNumber, tierCount }) {
   if (occasion  != null && !OCCASIONS.includes(occasion))   return `occasion must be one of: ${OCCASIONS.join(', ')}`;
   if (recipient != null && !RECIPIENTS.includes(recipient)) return `recipient must be one of: ${RECIPIENTS.join(', ')}`;
-  if (ageBand   != null && !AGE_BANDS.includes(ageBand))    return `ageBand must be one of: ${AGE_BANDS.join(', ')}`;
+  if (celebration != null && !CELEBRATIONS.includes(celebration)) return `celebration must be one of: ${CELEBRATIONS.join(', ')}`;
   // Not an age — see 043. Bounded so a decoration nobody can pipe is refused early.
   if (cakeNumber != null && (!Number.isInteger(cakeNumber) || cakeNumber < 0 || cakeNumber > 9999)) {
     return 'cakeNumber must be a whole number between 0 and 9999';
@@ -259,7 +259,7 @@ async function insertOrderAndNotify({ baker, customerId, customerContact, body, 
     // this in English because the baker needs one place to read, while these columns are what any
     // future question — "what do first birthdays order here?" — can actually be asked of.
     // See migration 043 and plans/order-signals.md.
-    occasion, recipient, ageBand, cakeNumber,
+    occasion, recipient, celebration, cakeNumber,
     // The cake's FORM (migration 045). tier_count is asked or comes from a template; shape is only
     // ever derived from one, so it is usually null on a flavour-only enquiry.
     tierCount, shape,
@@ -287,7 +287,8 @@ async function insertOrderAndNotify({ baker, customerId, customerContact, body, 
       delivery_address:     deliveryAddress ?? null,
       occasion:             occasion    ?? null,
       recipient:            recipient   ?? null,
-      age_band:             ageBand     ?? null,
+      // The KIND of celebration, not anybody's age — see migration 046.
+      celebration:          celebration ?? null,
       // NOT an age. 25 on an anniversary cake is years married — see 043.
       cake_number:          Number.isInteger(cakeNumber) ? cakeNumber : null,
       tier_count:           Number.isInteger(tierCount) ? tierCount : null,
