@@ -26,6 +26,19 @@
 -- metering per period would hand them 12x the allowance. Month boundaries are IST — the
 -- bakers are in India and "this month" must mean what it means to them.
 --
+-- ⚠️ THAT ARGUMENT IS A STRAWMAN, noted 2026-08-05. "Per billing period" is not the
+-- alternative anyone would build; the alternative is the monthly ANNIVERSARY of the billing
+-- date — the 20th of every month for a baker who joined on the 20th — which behaves
+-- identically for monthly and annual plans. So calendar-month is a CHOICE, not a necessity,
+-- and it has a cost: a baker who joins on the 28th gets two allowances before their second
+-- month and one who joins on the 2nd gets one, for the same money.
+--
+-- It is kept for now because the exposure is bounded and one-off, and because it errs
+-- generous in a baker's first weeks. The full reasoning, and what changing it would take,
+-- is in services/aiCredits.js above nextAllowanceReset() — including that a trial's anchor
+-- would become its start date, so Spark's allowance must rise from 100 to 200 in the same
+-- change or the trial silently halves.
+--
 -- ── WHY THE ALLOWANCE IS PASSED IN, NOT LOOKED UP HERE ──────────────────────────────
 -- reserve_ai_credits() takes p_allowance as an argument. It does NOT read
 -- subscription_plans.features itself, because resolving a baker's entitlements involves the

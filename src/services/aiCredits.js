@@ -67,6 +67,34 @@ async function resolveAllowance(bakerId) {
 // boundary the ledger meters on (migrations/022). Returned to the client because the copy that
 // matters says a DATE ("they refresh on 1 September"), not "next cycle", which makes someone go
 // and check a calendar.
+//
+// ── ⚠️ THE ALLOWANCE IS NOT ALIGNED TO THE BILLING DATE, AND THAT IS UNEVEN ──────────────────────
+// Everyone refreshes on the 1st, whenever they subscribed. So the first paid month is not equal:
+//
+//     subscribes on the 2nd   → one allowance before month two
+//     subscribes on the 28th  → TWO, four days apart
+//
+// Same money. There is no proration either — the allowance is not scaled to the days remaining.
+//
+// This is a CHOICE, not a necessity, and the reason recorded in migrations/022 is weaker than it
+// looks. It says metering "per billing period" would hand an annual subscriber 12x — true, but that
+// is not the alternative anyone would build. The alternative is the monthly ANNIVERSARY of the
+// billing date (the 20th of every month, for a baker who joined on the 20th), which behaves
+// identically for monthly and annual plans and removes the unevenness entirely.
+//
+// Why it has not been changed yet, honestly:
+//   * the exposure is bounded and one-off — one extra allowance, once, at signup. Fully burned on
+//     the thinnest-margin action that is ~₹70 on Flame, i.e. 7% of one month, once ever.
+//   * it errs GENEROUS in a baker's first weeks, which is when they are deciding whether to stay.
+//   * the meter is DERIVED (`used = sum of debits in the window`) with no grant rows and no expiry
+//     job. Anniversary windows keep that property, but the window start has to be threaded in the
+//     way p_allowance already is — see the note above reserve_ai_credits, which explains why the
+//     resolver owns that and SQL must not re-derive it.
+//
+// If it is changed: the anchor for a TRIAL is the trial start, and a 30-day trial then gets exactly
+// ONE allowance instead of the two the calendar currently hands it. Spark's 100 was chosen knowing
+// it is really ~200 in practice (seed_plan_entitlements.sql), so moving to anniversaries means
+// raising Spark to 200 in the same change, or the trial silently halves.
 export function nextAllowanceReset() {
   const IST = 5.5 * 3600 * 1000;
   const nowIst = new Date(Date.now() + IST);
