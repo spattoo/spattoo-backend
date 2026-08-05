@@ -14,6 +14,15 @@ export const ENTITLEMENTS = {
   ai_background_removal:  { type: 'bool', fallback: false, label: 'AI background removal' },
   whatsapp_notifications: { type: 'bool', fallback: false, label: 'WhatsApp notifications (deferred)' },        // #20 — off all tiers; inert
   xray_reports:           { type: 'bool', fallback: false, label: 'X-Ray reports' },
+  // Chef's Desk → Edible Print Studio: lay a baker's OWN images out on a to-scale A4 and export a
+  // print-ready PDF. Blaze+.
+  //
+  // Gates the STANDALONE tool only. The same sheet reached from an order stays on every plan, and
+  // that is deliberate rather than an oversight: printing a photo a customer attached is part of
+  // fulfilling an order they have already paid for, and taking it away would withhold work in
+  // progress. What Blaze buys is printing things NO order asked for — a name, a logo, a sheet of
+  // roses — which is a bakery's own productivity, not a customer's order.
+  edible_print_studio:    { type: 'bool', fallback: false, label: 'Edible Print Studio' },
   // numeric limits — null (in a plan's features) = unlimited
   max_team_members:       { type: 'int',  fallback: 1, label: 'Team members' },
   max_saved_templates:    { type: 'int',  fallback: 0, label: 'Saved templates (custom)' },                     // Spark 3 / Flame 30 / Blaze+ unlimited
