@@ -24,5 +24,9 @@ COMMIT_MSG_FILE="$1" node "$ROLLOUT_BIN" --repo spattoo-api || exit 1
 # both surfaces directly rather than enforcing a habit, because unlike the gates above it
 # can see both: the repos are siblings and the script lives in spattoo-docs.
 COPY_BIN="$DOCS_DIR/bin/check-plan-copy.mjs"
-[ -f "$COPY_BIN" ] || exit 0
-node "$COPY_BIN"
+[ -f "$COPY_BIN" ] && { node "$COPY_BIN" || exit 1; }
+
+# Migration numbering gate — two sessions each reading "the highest is 051" is how
+# migrations/ ended up with 052 and 053 twice. Local duplicates, plus a new file landing
+# on a number already pushed to origin/dev, which is the collision a local check cannot see.
+node scripts/check-migrations.mjs
