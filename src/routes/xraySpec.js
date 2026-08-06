@@ -7,6 +7,7 @@ import { assertBakerOwns } from '../lib/tenantScope.js';
 import { toPublicUrl } from './elements.js';
 import { analyzeCake, suggestBuildGuide } from '../services/openai.js';
 import { renderStageImage, orderStagesKey } from '../services/decorationStages.js';
+import { isLikenessRisk, LIKENESS_REFUSAL } from '../lib/likeness.js';
 import { matchAnalysis } from '../services/inspirationMatch.js';
 import { buildXraySpec } from '../services/xraySpec.js';
 import { withStageUrl } from '../lib/xrayStageUrls.js';
@@ -245,10 +246,14 @@ router.patch('/orders/:id/design-estimate', requireAuth, requireCapability('orde
 // The decoration's box in the reference photo, from whichever half of the spec holds the design.
 // Written by buildXraySpec onto each sticker as `seen.bbox`; null when the model would not commit,
 // which is common and must not be treated as an error.
-function findDecorationBbox(spec, key) {
+function findDecoration(spec, key) {
   const design = spec?.design ?? spec;      // pre-029 rows are a bare design_snapshot
   const all = [...(design?.stickers ?? []), ...(design?.decorations ?? [])];
-  return all.find(d => d?.id === key)?.seen?.bbox ?? null;
+  return all.find(d => d?.id === key) ?? null;
+}
+
+function findDecorationBbox(spec, key) {
+  return findDecoration(spec, key)?.seen?.bbox ?? null;
 }
 
 // ── POST /api/orders/:id/xray/decoration-steps ────────────────────────────────
@@ -295,6 +300,23 @@ router.post('/orders/:id/xray/decoration-steps', requireAuth, requireCapability(
     const retryPicture = !!existing?.guide && !existing?.stages_key;
     if (existing && !retryPicture) {
       return res.json({ ok: true, reused: true, key, steps: withStageUrl(existing) });
+    }
+
+    // ── A printed photograph never becomes a generated picture ───────────────────────────────
+    // renderStageImage crops this decoration out of the customer's reference photo and hands it to
+    // an image model at input_fidelity 'high' — the setting that makes the sheet show THIS bow
+    // rather than a stock one. On a photo cake that same fidelity reproduces the face on the sheet,
+    // and OpenAI's usage policy forbids reproducing a person's likeness without their express
+    // consent. The baker's warranty that they hold consent (ToS B5.6) settles liability between us
+    // and them; it is not the consent the policy is asking about.
+    //
+    // BEFORE withAiCredits deliberately: a refusal must not reserve, spend or idempotency-lock a
+    // credit. The baker is not being denied something they would have got — an edible sheet is
+    // printed, not modelled, so there were never any steps to teach.
+    //
+    // 200, not 4xx. Nothing has gone wrong and there is nothing for the client to retry.
+    if (isLikenessRisk(findDecoration(order.xray_spec, key)) || isLikenessRisk({ label })) {
+      return res.json({ ok: false, key, ...LIKENESS_REFUSAL });
     }
 
     // Where this decoration is in the photo, so the stage grid can be conditioned on the real

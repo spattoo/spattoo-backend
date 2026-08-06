@@ -273,7 +273,7 @@ Describe ONLY what you can actually see. Return ONLY a JSON object, no prose:
       },
       "decorations": [
         {
-          "type": "<piping_border|rosette|flower|drip|topper|lettering|ribbon_bow|sprinkles|pearls|fruit|macaron|figurine|other>",
+          "type": "<piping_border|rosette|flower|drip|topper|lettering|ribbon_bow|sprinkles|pearls|fruit|macaron|figurine|photo_print|other>",
           "subtype": "<short, e.g. 'shell','rope','ruffle', or null>",
           "placement": "<top_surface|side|middle_tier|board|rim>",
           "rim_side": "<top|bottom — ONLY when placement is 'rim' (a border/edge); else null>",
@@ -295,6 +295,13 @@ Describe ONLY what you can actually see. Return ONLY a JSON object, no prose:
 }
 Rules:
 - Use ONLY the vocabularies above for type/placement/frosting/finish; if unsure, pick the closest.
+- A PHOTOGRAPH printed on the cake (an edible image / photo cake) is type "photo_print". Report it
+  like any other decoration — it is a real feature of the cake and the report must not pretend it is
+  absent — but describe it ONLY as "printed photograph". Do NOT describe, name, characterise or
+  guess at anyone appearing in it: not their age, sex, appearance, expression, relationship, or who
+  they might be. "notes" and "text" must contain nothing identifying. If a person appears anywhere
+  in the image other than as a printed photo (holding the cake, standing behind it), ignore them
+  entirely — they are not part of the cake.
 - height_ratio and width_ratio are RELATIVE and always required. Do NOT try to estimate real
   dimensions in inches or centimetres — a photo has no scale reference and any absolute number
   would be a guess. Only the PROPORTIONS between tiers are asked for, and those you can see:
