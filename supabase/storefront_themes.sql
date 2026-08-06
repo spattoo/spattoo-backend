@@ -13,7 +13,7 @@ CREATE TABLE IF NOT EXISTS storefront_themes (
   description text,                                  -- short blurb for the picker
   is_active   boolean     NOT NULL DEFAULT true,    -- false = coming soon
   -- Needs the `premium_themes` entitlement (Blaze+). Checked when a theme is CHOSEN, never
-  -- when a storefront is rendered. Added by migration 052 for databases that already have
+  -- when a storefront is rendered. Added by migration 054 for databases that already have
   -- this table — a CREATE TABLE IF NOT EXISTS cannot add a column to an existing one.
   is_premium  boolean     NOT NULL DEFAULT false,
   sort_order  smallint    NOT NULL DEFAULT 0

@@ -1,10 +1,10 @@
--- ── 053: the plan picker sells premium themes ───────────────────────────────────────
+-- ── 055: the plan picker sells premium themes ───────────────────────────────────────
 -- Apply manually to dev/prod Supabase (no migration runner). Safe to re-run.
 --
 -- Docs: spattoo-docs/features/subscription-billing.md
 --
 -- ── WHY ─────────────────────────────────────────────────────────────────────────────
--- 052 built the premium-theme gate and the marketing pricing table gained a "Storefront
+-- 054 built the premium-theme gate and the marketing pricing table gained a "Storefront
 -- themes: Basic / Basic + premium" row. feature_bullets is display copy in a different
 -- column that nothing derives from entitlements, so without this the in-app picker would
 -- not mention themes at all — the same one-surface drift that left team seats on the

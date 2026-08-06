@@ -54,7 +54,7 @@
 --     storefront_themes.is_premium, never RENDERING one — a shop already published on a
 --     theme keeps working if that theme is later re-priced.
 --   * Every theme that exists today is BASIC, so this changes nothing a baker can see on the
---     day it runs. It is the capability, ready for the first premium theme. See migration 052.
+--     day it runs. It is the capability, ready for the first premium theme. See migration 054.
 --   * Same both-files rule as edible_print_studio: this file rebuilds `features` wholesale,
 --     so a key granted only in a migration is dropped the next time the seed runs.
 --

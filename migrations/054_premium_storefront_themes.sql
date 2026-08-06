@@ -1,4 +1,4 @@
--- ── 052: premium storefront themes ──────────────────────────────────────────────────
+-- ── 054: premium storefront themes ──────────────────────────────────────────────────
 -- Apply manually to dev/prod Supabase (no migration runner). Safe to re-run.
 --
 -- Docs: spattoo-docs/features/storefront-access-control.md

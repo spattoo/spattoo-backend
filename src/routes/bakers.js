@@ -442,7 +442,7 @@ router.patch('/baker/profile', requireAuth, requireCapability('store:manage'), a
       //
       // Deliberately NOT checked when a storefront is RENDERED. A baker who published on a theme
       // that is later marked premium keeps their shop exactly as it is; re-pricing a theme must
-      // not reach into a live storefront and change it. See migration 052.
+      // not reach into a live storefront and change it. See migration 054.
       if (theme.is_premium) {
         const { ent } = await getEntitlements(contact.baker_id);
         if (!ent.premium_themes) {
