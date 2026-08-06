@@ -3,6 +3,7 @@ import { supabase } from '../../services/supabase.js';
 import { sendEmail } from '../../services/mailer.js';
 import { esc, escUrl } from '../../lib/htmlEscape.js';
 import { sendPush, pushConfigured } from '../../services/fcm.js';
+import { linkFor } from '../../lib/notificationLink.js';
 
 function formatDate(str) {
   if (!str) return '—';
@@ -574,7 +575,7 @@ export function buildPush(typeSlug, payload) {
     return {
       title: 'New quote request',
       body:  `${p.customerName ?? 'A customer'} wants a cake${p.deliveryDate ? ` for ${p.deliveryDate}` : ''}.`,
-      url:   '/',
+      url:   linkFor(typeSlug, p),
       // Collapses to the latest rather than stacking. Three enquiries overnight should be three
       // notifications; the tag is per-order so they do not eat each other.
       tag:   `order:${p.orderId ?? ''}`,
@@ -588,7 +589,7 @@ export function buildPush(typeSlug, payload) {
       body:  n === 1
         ? `${p.orders?.[0]?.customerName ?? 'A customer'}${p.orders?.[0]?.deliveryTime ? ` at ${p.orders[0].deliveryTime}` : ''}.`
         : (p.orders ?? []).slice(0, 3).map(o => o.customerName).join(', ') + (n > 3 ? ` and ${n - 3} more` : ''),
-      url:   '/',
+      url:   linkFor(typeSlug, p),
       // One digest per day, so a repeat is a correction and should replace rather than pile up.
       tag:   `digest:${p.date ?? ''}`,
     };
@@ -598,7 +599,7 @@ export function buildPush(typeSlug, payload) {
     return {
       title: 'Quote accepted',
       body:  `${p.customerName ?? 'A customer'} accepted your quote.`,
-      url:   '/',
+      url:   linkFor(typeSlug, p),
       tag:   `order:${p.orderId ?? ''}`,
     };
   }

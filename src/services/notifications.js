@@ -17,13 +17,13 @@ async function getTypeId(slug) {
 // enqueue fails (e.g. Redis down) the row stays 'pending' and the sweeper backstop
 // retries. We flip to 'enqueued' only while still 'pending', so a worker that already
 // advanced the row (sent/failed) is never clobbered.
-async function insertNotification(typeSlug, recipientEmail, payload, { dedupeKey = null } = {}) {
+async function insertNotification(typeSlug, recipientEmail, payload, { dedupeKey = null, bakerId = null } = {}) {
   const typeId = await getTypeId(typeSlug);
   if (!typeId) throw new Error(`Unknown notification type: ${typeSlug}`);
 
   const { data: row, error } = await supabase
     .from('notifications')
-    .insert({ type_id: typeId, recipient_email: recipientEmail, payload, dedupe_key: dedupeKey })
+    .insert({ type_id: typeId, recipient_email: recipientEmail, payload, dedupe_key: dedupeKey, baker_id: bakerId })
     .select('id')
     .single();
 
@@ -89,7 +89,7 @@ export async function notifyOrderPlaced({ order, baker, customer }) {
 
   const bakerEmail = await bakerNotifyEmail(baker);
   if (bakerEmail) {
-    jobs.push(insertNotification('order_placed_baker', bakerEmail, payload));
+    jobs.push(insertNotification('order_placed_baker', bakerEmail, payload, { bakerId: baker.id }));
   }
   if (customer.email) {
     jobs.push(insertNotification('order_placed_customer', customer.email, payload));
@@ -139,7 +139,7 @@ export async function notifyQuoteAccepted({ order, baker, customer }) {
     customerName,
     orderId:    order.id,
     finalPrice: order.final_price ?? order.quoted_price ?? null,
-  });
+  }, { bakerId: baker.id });
 }
 
 // Customer asked a question on the quote ("Talk to {baker}"). Email the baker the note.
@@ -151,7 +151,7 @@ export async function notifyQuoteQuestion({ order, baker, customer, message }) {
     customerName,
     orderId: order.id,
     message,
-  });
+  }, { bakerId: baker.id });
 }
 
 // Baker invited a customer to a design session. Email the customer the private
@@ -316,5 +316,6 @@ export async function notifyDeliveryDigest({ baker, date, payload }) {
 
   return insertNotification('delivery_digest_baker', email, payload, {
     dedupeKey: digestDedupeKey(baker.id, date),
+    bakerId:   baker.id,
   });
 }

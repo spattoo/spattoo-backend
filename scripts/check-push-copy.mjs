@@ -23,6 +23,7 @@ process.env.R2_BUCKET            ||= 'stub';
 process.env.R2_PUBLIC_URL        ||= 'http://stub';
 
 const { buildPush } = await import('../src/jobs/processors/sendNotification.js');
+const { linkFor }   = await import('../src/lib/notificationLink.js');
 
 let failed = 0;
 const ok  = (m) => console.log(`  ✓ ${m}`);
@@ -100,8 +101,45 @@ ok('every push has a title and somewhere to land');
   d1.tag === d2.tag ? ok('a re-sent digest for the same day replaces rather than stacks') : bad('digests for one day would stack');
 }
 
+// ── 5. Where a notification goes ─────────────────────────────────────────────────────────────────
+// linkFor is shared by the push payload and the notification centre, so a wrong answer here is wrong
+// in two places at once — and they would disagree, which reads as an app bug rather than a shared
+// constant being wrong.
+{
+  const order = linkFor('order_placed_baker', { orderId: 'o1' });
+  order.includes('order=o1') ? ok('an enquiry opens that order') : bad(`enquiry link was "${order}"`);
+
+  // A payload predating the field, or one an older row never carried. Must degrade to the LIST, not
+  // to a link that opens nothing.
+  const noId = linkFor('order_placed_baker', {});
+  noId === '/?panel=orders' ? ok('an order link with no id falls back to the list') : bad(`was "${noId}"`);
+
+  // The digest is about a DAY. Singling out one of five orders would be picking arbitrarily.
+  linkFor('delivery_digest_baker', { count: 5 }) === '/?panel=orders'
+    ? ok('the digest opens the list, not an arbitrary order') : bad('digest link is wrong');
+
+  // NEVER null or empty. A notification that cannot be opened teaches a baker the bell is
+  // decorative, and that lesson is learned once and kept.
+  for (const slug of [...PUSHES, ...SILENT, 'something_unknown']) {
+    const l = linkFor(slug, {});
+    if (typeof l !== 'string' || !l.startsWith('/')) bad(`${slug} produced a non-path link "${l}"`);
+  }
+  ok('every type resolves to a path, including ones nobody has defined');
+
+  // Relative, always — the caller knows which host it is addressing. An absolute URL here would
+  // make this file environment-aware for no reason, and would send a dev push at prod.
+  linkFor('order_placed_baker', { orderId: 'x' }).startsWith('http')
+    ? bad('links must be relative paths, not absolute URLs') : ok('links are relative to the app root');
+
+  // The push must USE the shared helper rather than its own string.
+  const push = buildPush('order_placed_baker', { orderId: 'o9' });
+  push.url === linkFor('order_placed_baker', { orderId: 'o9' })
+    ? ok('the push and the bell agree on where a notification goes')
+    : bad(`push url "${push.url}" disagrees with linkFor`);
+}
+
 if (failed) {
   console.error(`\n✗ check:push-copy — ${failed} failed\n`);
   process.exit(1);
 }
-console.log('✓ check:push-copy — only the types that earn it, and nothing renders undefined');
+console.log('✓ check:push-copy — only the types that earn it, nothing renders undefined, and push agrees with the bell');
