@@ -890,13 +890,31 @@ router.get('/baker/flavours', requireAuth, async (req, res) => {
     // toggle whose default the baker cannot see is a toggle they cannot reason about —
     // and since clearing one of our rows is their right of reply ("our hazelnut sponge
     // IS nut-free"), they have to be able to tell which rows are ours.
-    const [flavours, baseline, { data: baker }] = await Promise.all([
-      resolveFlavours(contact.baker_id),
-      baselineConflictKeys(),
-      supabase.from('bakers')
-        .select('price_visibility')
-        .eq('id', contact.baker_id).maybeSingle(),
-    ]);
+    // ── Has this baker ever curated the list? ────────────────────────────────────────────────
+    // Not a preference and not a new column — it is the same fact `resolveFlavours` already turns
+    // into behaviour, asked directly. A global flavour with no settings row is OFFERED (see the
+    // header of lib/flavourList.js), so a baker with no rows at all is offering EVERY active
+    // global flavour, whether or not they make them.
+    //
+    // That default is right and stays: it is how a flavour added to the master list later reaches
+    // bakers who last opened this screen months ago. What it needs is a baker who has LOOKED, and
+    // this is how the client knows to ask them to.
+    //
+    // Rows exist the moment they touch the screen, including a baker who genuinely offers
+    // everything and saves it unchanged — so confirming once is enough and the prompt does not
+    // return. Counted with head:true; nothing here needs the rows themselves.
+    const [flavours, baseline, { data: baker }, { count: settingsCount }, { count: ownCount }] =
+      await Promise.all([
+        resolveFlavours(contact.baker_id),
+        baselineConflictKeys(),
+        supabase.from('bakers')
+          .select('price_visibility')
+          .eq('id', contact.baker_id).maybeSingle(),
+        supabase.from('baker_flavour_settings')
+          .select('flavour_id', { count: 'exact', head: true }).eq('baker_id', contact.baker_id),
+        supabase.from('baker_flavours')
+          .select('id', { count: 'exact', head: true }).eq('baker_id', contact.baker_id),
+      ]);
 
     res.json({
       flavours: flavours.map(f => ({
@@ -915,6 +933,9 @@ router.get('/baker/flavours', requireAuth, async (req, res) => {
       visibility: {
         price_visibility: baker?.price_visibility ?? 'private',
       },
+      // false = never touched, so every flavour above is offered by default rather than by choice.
+      // The storefront reads the same resolution, so this is exactly the set a customer would see.
+      curated: (settingsCount ?? 0) + (ownCount ?? 0) > 0,
     });
   } catch (err) {
     serverError(req, res, err);
