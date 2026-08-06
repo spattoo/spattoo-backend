@@ -429,9 +429,26 @@ router.patch('/baker/profile', requireAuth, requireCapability('store:manage'), a
     if ('storefront_theme_id' in req.body) {
       const id = Number(req.body.storefront_theme_id);
       const { data: theme } = await supabase
-        .from('storefront_themes').select('id, is_active').eq('id', id).maybeSingle();
+        .from('storefront_themes').select('id, is_active, is_premium').eq('id', id).maybeSingle();
       if (!theme)           return res.status(400).json({ error: 'Unknown storefront_theme_id' });
       if (!theme.is_active) return res.status(400).json({ error: 'That theme is not available yet' });
+      // ── Premium themes are Blaze+ ────────────────────────────────────────────────────────────
+      // Enforced HERE, at the write, and not only by hiding the option in Settings: the picker is
+      // a convenience and this is the gate. A theme is a paid tier lever, so the check has to sit
+      // where the value is actually stored.
+      //
+      // 403 rather than 400 — the request is well-formed and the theme is real; the plan is what
+      // says no. A 400 would send a baker looking for a bad value they do not have.
+      //
+      // Deliberately NOT checked when a storefront is RENDERED. A baker who published on a theme
+      // that is later marked premium keeps their shop exactly as it is; re-pricing a theme must
+      // not reach into a live storefront and change it. See migration 052.
+      if (theme.is_premium) {
+        const { ent } = await getEntitlements(contact.baker_id);
+        if (!ent.premium_themes) {
+          return res.status(403).json({ error: 'That theme is available on Blaze and above.' });
+        }
+      }
       updates.storefront_theme_id = id;
     }
     // storefront_customizations is jsonb (NOT NULL) — only set when a real object is sent.
@@ -460,12 +477,18 @@ router.patch('/baker/profile', requireAuth, requireCapability('store:manage'), a
 
 // ── GET /api/baker/storefront-themes ──────────────────────────────────────────
 // The themes master list for the Settings → Store Settings → Themes picker.
-// Returns [{ id, key, name, description, is_active }] (is_active=false = coming soon).
+// Returns [{ id, key, name, description, is_active, is_premium }] (is_active=false = coming soon).
+//
+// `is_premium` is returned to EVERY plan rather than filtered out for the ones that cannot use it.
+// A premium theme a Flame baker can see and not select is an upgrade prompt; one they never knew
+// existed is not. The gate is on the write (PATCH /baker/profile), so showing it costs nothing —
+// and a picker that quietly drops options would leave a baker wondering why their list is shorter
+// than the pricing page implies.
 router.get('/baker/storefront-themes', requireAuth, async (req, res) => {
   try {
     const { data, error } = await supabase
       .from('storefront_themes')
-      .select('id, key, name, description, is_active')
+      .select('id, key, name, description, is_active, is_premium')
       .order('sort_order');
     if (error) return serverError(req, res, error);
     res.json({ themes: data ?? [] });

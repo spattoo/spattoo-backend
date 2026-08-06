@@ -49,6 +49,15 @@
 --     grants the same thing with a merge; running this seed without these four lines would drop the
 --     key back out and silently re-lock Blaze and Forge. Any new entitlement key needs BOTH.
 --
+-- 2026-08-06 (premium_themes — the next tier lever):
+--   * Blaze/Forge TRUE, Spark/Flame FALSE. Gates CHOOSING a theme marked
+--     storefront_themes.is_premium, never RENDERING one — a shop already published on a
+--     theme keeps working if that theme is later re-priced.
+--   * Every theme that exists today is BASIC, so this changes nothing a baker can see on the
+--     day it runs. It is the capability, ready for the first premium theme. See migration 052.
+--   * Same both-files rule as edible_print_studio: this file rebuilds `features` wholesale,
+--     so a key granted only in a migration is dropped the next time the seed runs.
+--
 -- 2026-08-02 (X-Ray opens to every tier; CREDITS are the only lever on it):
 --   * xray_reports false → TRUE on spark and flame. X-Ray is now available on every plan, for both
 --     kinds of order, and the difference between tiers is the AI ALLOWANCE alone.
@@ -115,7 +124,7 @@ update subscription_plans set features = jsonb_build_object(
   'ai_background_removal', false, 'whatsapp_notifications', false, 'xray_reports', true,
   'max_orders_total', null, 'max_team_members', 2, 'max_saved_templates', 30,
   'ai_credits_per_month', 200, 'can_buy_credits', false,
-  'edible_print_studio', false,
+  'edible_print_studio', false, 'premium_themes', false,
   'trial_days', 30
 ) where name = 'spark';
 
@@ -124,7 +133,7 @@ update subscription_plans set features = jsonb_build_object(
   'ai_background_removal', false, 'whatsapp_notifications', false, 'xray_reports', true,
   'max_orders_total', null, 'max_team_members', 2, 'max_saved_templates', 30,
   'ai_credits_per_month', 300, 'can_buy_credits', false,
-  'edible_print_studio', false
+  'edible_print_studio', false, 'premium_themes', false
 ) where name = 'flame';
 
 update subscription_plans set features = jsonb_build_object(
@@ -132,7 +141,7 @@ update subscription_plans set features = jsonb_build_object(
   'ai_background_removal', true, 'whatsapp_notifications', false, 'xray_reports', true,
   'max_orders_total', null, 'max_team_members', 4, 'max_saved_templates', null,
   'ai_credits_per_month', 800, 'can_buy_credits', true,
-  'edible_print_studio', true
+  'edible_print_studio', true, 'premium_themes', true
 ) where name = 'blaze';
 
 update subscription_plans set features = jsonb_build_object(
@@ -140,5 +149,5 @@ update subscription_plans set features = jsonb_build_object(
   'ai_background_removal', true, 'whatsapp_notifications', false, 'xray_reports', true,
   'max_orders_total', null, 'max_team_members', 10, 'max_saved_templates', null,
   'ai_credits_per_month', 2000, 'can_buy_credits', true,
-  'edible_print_studio', true
+  'edible_print_studio', true, 'premium_themes', true
 ) where name = 'forge';

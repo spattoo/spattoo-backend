@@ -23,6 +23,14 @@ export const ENTITLEMENTS = {
   // progress. What Blaze buys is printing things NO order asked for — a name, a logo, a sheet of
   // roses — which is a bakery's own productivity, not a customer's order.
   edible_print_studio:    { type: 'bool', fallback: false, label: 'Edible Print Studio' },
+  // Storefront themes marked is_premium. Blaze+. Gates CHOOSING one, never RENDERING one: a
+  // shop already published on a theme keeps working if that theme is later re-priced, because
+  // taking away somebody's live storefront is not a thing a price change should do.
+  //
+  // The theme says what KIND it is (storefront_themes.is_premium) and the plan says who may
+  // have that kind. Keeping the tier ladder out of the themes table means a plan can be
+  // renamed or re-ranked without touching a theme.
+  premium_themes:         { type: 'bool', fallback: false, label: 'Premium storefront themes' },
   // numeric limits — null (in a plan's features) = unlimited
   max_team_members:       { type: 'int',  fallback: 1, label: 'Team members' },
   max_saved_templates:    { type: 'int',  fallback: 0, label: 'Saved templates (custom)' },                     // Spark 3 / Flame 30 / Blaze+ unlimited
