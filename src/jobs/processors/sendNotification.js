@@ -356,10 +356,15 @@ export function buildEmail(typeSlug, recipientEmail, payload) {
   }
 
   // ── Baker welcome (post-confirmation onboarding kit) ────────────────────────
-  // Step 4 was "Invite your first customer to design a cake" — invite-era, and it pointed a
+  // The last step was "Invite your first customer to design a cake" — invite-era, and it pointed a
   // brand-new baker AWAY from the storefront the line above had just told them to publish. Sharing
   // the link is the primary path now: a customer can ask for a cake from it without an account and
   // without designing anything.
+  //
+  // Publishing and sharing are ONE step, not two. Splitting them left "Publish your storefront" and
+  // "Share the link" as consecutive items, which reads as two jobs when it is one motion — and the
+  // second half is the part that actually earns anything, so it should not be a line a reader can
+  // finish the list without doing.
   //
   // ⚠️ The comment saying so lived INSIDE the html template literal for one commit, written as a
   // JSX `{/* … */}` block. This file is plain JS and that is not a comment — it is text, and it
@@ -378,8 +383,7 @@ export function buildEmail(typeSlug, recipientEmail, payload) {
         <ol style="margin:0;padding-left:20px;line-height:1.9;">
           <li>Add your branding — logo &amp; colours</li>
           <li>Explore the 3D cake designer — visualise a cake in seconds</li>
-          <li>Publish your storefront${storefrontLc ? ` at <b>${esc(storefrontLc)}</b>` : ''}</li>
-          <li>Share the link — customers can ask for a cake straight from it</li>
+          <li>Publish your storefront${storefrontLc ? ` at <b>${esc(storefrontLc)}</b>` : ''} and share the link — customers can ask for a cake straight from it</li>
         </ol>
         ${dashUrl ? `<p style="margin:24px 0 0;text-align:center;"><a href="${escUrl(dashUrl)}" style="display:inline-block;background:#2C4433;color:#ffffff;text-decoration:none;font-size:16px;font-weight:700;padding:14px 34px;border-radius:12px;">Open your dashboard &rarr;</a></p>` : ''}`),
     };
