@@ -199,9 +199,15 @@ export function buildEmail(typeSlug, recipientEmail, payload) {
 
   if (typeSlug === 'design_updated_customer') {
     const isReco = p.mode === 'recommendations';
-    const link = p.bakerSlug
-      ? config.storefront.urlTemplate.replace('{slug}', p.bakerSlug)
-      : null;
+    // Deep-link to THIS order, the way quote_issued_customer already does. The button said "View
+    // your design" and went to the storefront's front page, leaving the customer to find their own
+    // cake in a shop — a promise the link did not keep. `orderId` was in the payload all along
+    // (services/notifications.js, notifyDesignUpdated) and simply unused.
+    //
+    // Falls back to the storefront root when there is no orderId, which is still better than no
+    // link at all.
+    const base = p.bakerSlug ? config.storefront.urlTemplate.replace('{slug}', p.bakerSlug) : null;
+    const link = base && p.orderId ? `${base.replace(/\/+$/, '')}/orders/${p.orderId}` : base;
     return {
       from:    `${p.bakerName} <${rawEmail(config.smtp.from)}>`,
       to:      recipientEmail,
@@ -324,7 +330,7 @@ export function buildEmail(typeSlug, recipientEmail, payload) {
         <h2 style="color:#2C4433">Your order is complete</h2>
         <p>Hi ${esc(p.customerFirstName)}, your cake order from <b>${esc(p.bakerName)}</b> is complete — we hope it made the moment special!</p>
         ${thumbnailHtml}
-        <p style="margin-top:16px">Thank you for ordering.${base ? ` Design another anytime with <a href="${escUrl(base)}" style="color:#2C4433;font-weight:700">${esc(p.bakerName)}</a>.` : ''}</p>
+        <p style="margin-top:16px">Thank you for ordering.${base ? ` Order another anytime from <a href="${escUrl(base)}" style="color:#2C4433;font-weight:700">${esc(p.bakerName)}</a>.` : ''}</p>
         <p style="color:#888;font-size:12px;margin-top:24px">Powered by Spattoo</p>
       </div>`,
     };
@@ -350,6 +356,15 @@ export function buildEmail(typeSlug, recipientEmail, payload) {
   }
 
   // ── Baker welcome (post-confirmation onboarding kit) ────────────────────────
+  // Step 4 was "Invite your first customer to design a cake" — invite-era, and it pointed a
+  // brand-new baker AWAY from the storefront the line above had just told them to publish. Sharing
+  // the link is the primary path now: a customer can ask for a cake from it without an account and
+  // without designing anything.
+  //
+  // ⚠️ The comment saying so lived INSIDE the html template literal for one commit, written as a
+  // JSX `{/* … */}` block. This file is plain JS and that is not a comment — it is text, and it
+  // rendered into the email a baker receives. Notes about the copy go out here; only copy goes in
+  // there.
   if (typeSlug === 'baker_welcome') {
     const who          = esc(p.firstName || p.bakerName || 'there');
     const storefront   = p.slug ? config.storefront.urlTemplate.replace('{slug}', p.slug) : null;
@@ -364,7 +379,7 @@ export function buildEmail(typeSlug, recipientEmail, payload) {
           <li>Add your branding — logo &amp; colours</li>
           <li>Explore the 3D cake designer — visualise a cake in seconds</li>
           <li>Publish your storefront${storefrontLc ? ` at <b>${esc(storefrontLc)}</b>` : ''}</li>
-          <li>Invite your first customer to design a cake</li>
+          <li>Share the link — customers can ask for a cake straight from it</li>
         </ol>
         ${dashUrl ? `<p style="margin:24px 0 0;text-align:center;"><a href="${escUrl(dashUrl)}" style="display:inline-block;background:#2C4433;color:#ffffff;text-decoration:none;font-size:16px;font-weight:700;padding:14px 34px;border-radius:12px;">Open your dashboard &rarr;</a></p>` : ''}`),
     };

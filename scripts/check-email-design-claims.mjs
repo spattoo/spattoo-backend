@@ -33,9 +33,18 @@ let failed = 0;
 const ok  = (m) => console.log(`  ✓ ${m}`);
 const bad = (m) => { console.error(`  ✗ ${m}`); failed++; };
 
-// The templates an ENQUIRY sends. Not design_updated_customer, which is about a design by
-// definition and may say so freely.
-const TYPES = ['order_placed_customer', 'order_placed_baker'];
+// Two lists, because the two assertions are not the same claim.
+//
+// ENQUIRY: sent the moment a request arrives, when there may or may not be a design. Both halves
+// apply — say nothing false without one, and still credit one when it is there.
+const ENQUIRY = ['order_placed_customer', 'order_placed_baker'];
+// AFTERWARDS: these are about the ORDER, not how it was made, so they must never claim a design —
+// but they have no reason to mention one either, and demanding they do would be inventing copy.
+// order_completed_customer said "Design another anytime" here, to a customer who had chosen a
+// flavour and a date.
+//
+// design_updated_customer is in NEITHER: it exists because a design changed, and may say so freely.
+const AFTERWARDS = ['order_completed_customer', 'order_confirmed_customer', 'order_ready_customer'];
 
 const base = {
   customerName: 'Aarti Rao', customerFirstName: 'Aarti', bakerName: 'Super&bake',
@@ -48,22 +57,35 @@ const base = {
 const DESIGN = /\bdesign(s|ed|ing|er|ers)?\b/i;
 const text = (html) => html.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
 
-for (const type of TYPES) {
+for (const type of [...ENQUIRY, ...AFTERWARDS]) {
   // ── No design: the flavour-and-a-date enquiry, which is now the common case ──
   const without = text(buildEmail(type, 'a@b.test', base).html);
   const hit = without.match(DESIGN);
   if (hit) {
-    bad(`${type} mentions "${hit[0]}" on an enquiry with no design`);
+    bad(`${type} mentions "${hit[0]}" on an order with no design`);
     console.error(`      …${without.slice(Math.max(0, hit.index - 60), hit.index + 60)}…`);
   } else {
     ok(`${type} claims no design when there is none`);
   }
+}
 
+for (const type of ENQUIRY) {
   // ── With a design: it must still say so, or the fix was just deletion ──
   const withDesign = text(buildEmail(type, 'a@b.test', { ...base, thumbnailUrl: 'http://stub/c.webp' }).html);
   if (DESIGN.test(withDesign)) ok(`${type} still credits the design when there is one`);
   else bad(`${type} never mentions the design even when one exists — the branch is dead copy`);
 }
+
+// ── Nothing renders a JSX comment ───────────────────────────────────────────────────────────────
+// These templates are plain template literals, and a `{/* … */}` written out of JSX habit is not a
+// comment — it is text. One shipped into the baker welcome email for exactly one commit, between
+// "Publish your storefront" and the next step, and only a render caught it.
+for (const [type, p] of [['baker_welcome', { firstName: 'A', bakerName: 'B', slug: 'b' }],
+                         ...[...ENQUIRY, ...AFTERWARDS].map(t => [t, base])]) {
+  const raw = buildEmail(type, 'a@b.test', p).html ?? '';
+  if (raw.includes('{/*') || raw.includes('*/}')) bad(`${type} renders a JSX comment into the email`);
+}
+ok('no template renders a JSX comment');
 
 if (failed) {
   console.error(`\n✗ check:email-design-claims — ${failed} problem(s).`);
