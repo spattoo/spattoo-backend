@@ -59,8 +59,15 @@ ALTER TABLE notification_types
 -- Derived from the convention while it is still reliably true — every existing slug ends
 -- in _baker or _customer. Doing this once, now, is what lets the convention stop being
 -- load-bearing.
-UPDATE notification_types SET audience = 'customer' WHERE slug LIKE '%\_customer' ESCAPE '\';
-UPDATE notification_types SET audience = 'baker'    WHERE slug LIKE '%\_baker'    ESCAPE '\';
+--
+-- `right()` rather than `LIKE '%\_customer' ESCAPE '\'`: the underscore is a LIKE wildcard
+-- so it has to be escaped, and a lone backslash in a string literal is exactly the kind of
+-- thing that parses differently depending on the client. The whole file runs as ONE
+-- transaction in the Supabase SQL editor, so one statement failing to parse rolls back the
+-- columns above too — and the symptom is not "the migration failed", it is every
+-- notification email silently stopping.
+UPDATE notification_types SET audience = 'customer' WHERE right(slug, 9) = '_customer';
+UPDATE notification_types SET audience = 'baker'    WHERE right(slug, 6) = '_baker';
 -- Named individually because they follow neither suffix.
 UPDATE notification_types SET audience = 'customer' WHERE slug = 'customer_invite';
 
