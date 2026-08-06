@@ -136,13 +136,28 @@ function rawEmail(from) {
   return match ? match[1] : from;
 }
 
-function buildEmail(typeSlug, recipientEmail, payload) {
+// Exported for `check:email-design-claims`, the same reason buildPush is: these strings are the
+// product, and the only way to assert what they say is to render them.
+export function buildEmail(typeSlug, recipientEmail, payload) {
   const p = payload;
 
   const thumbUrl = escUrl(p.thumbnailUrl);
   const thumbnailHtml = thumbUrl
     ? `<img src="${thumbUrl}" alt="Cake design" style="display:block;max-width:100%;border-radius:8px;margin:16px 0" />`
     : '';
+
+  // ── Is there a design to talk about? ────────────────────────────────────────────────────────
+  // These templates were written when the only way to reach a baker was an INVITE into the 3D
+  // designer, so every order had one and the copy said so: "thanks for designing your cake",
+  // "review the design". The storefront changed that — an enquiry can now be a flavour and a date,
+  // or a reference photo, with nothing designed at all — and those sentences went quietly false on
+  // the majority of enquiries. A customer who picked Black Forest and a Saturday was thanked for
+  // designing a cake they never opened a designer for.
+  //
+  // The thumbnail is the honest signal: it exists only when a design snapshot produced one. It is
+  // used to CHOOSE THE SENTENCE, and the fallback is wording that is true either way — so a
+  // designed cake whose thumbnail is missing gets a vaguer email, never a wrong one.
+  const hasDesign = !!thumbUrl;
 
   if (typeSlug === 'order_placed_baker') {
     return {
@@ -151,7 +166,9 @@ function buildEmail(typeSlug, recipientEmail, payload) {
       subject: `New quote request — ${p.customerName}`,
       html: `<div style="font-family:sans-serif;max-width:560px;margin:0 auto">
         <h2 style="color:#2C4433">New quote request</h2>
-        <p>You have a new cake quote request from <b>${esc(p.customerName)}</b>. Review the design and send them a quote.</p>
+        <p>You have a new cake quote request from <b>${esc(p.customerName)}</b>. ${hasDesign
+          ? 'Review the design and send them a quote.'
+          : 'Take a look at what they have asked for and send them a quote.'}</p>
         ${thumbnailHtml}
         ${orderDetailsHtml(p)}
         <p style="margin-top:24px;color:#888;font-size:12px">Log in to your Spattoo dashboard to review and quote this request.</p>
@@ -169,7 +186,9 @@ function buildEmail(typeSlug, recipientEmail, payload) {
       subject: `Your cake request was sent to ${p.bakerName}`,
       html: `<div style="font-family:sans-serif;max-width:560px;margin:0 auto">
         <h2 style="color:#2C4433">Request sent!</h2>
-        <p>Hi ${esc(p.customerFirstName)}, thanks for designing your cake with <b>${esc(p.bakerName)}</b>. Your request has been sent — <b>${esc(p.bakerName)}</b> will review your design and get back to you with a quote. Here's what you requested:</p>
+        <p>Hi ${esc(p.customerFirstName)}, ${hasDesign
+          ? `thanks for designing your cake with <b>${esc(p.bakerName)}</b>. Your request has been sent — <b>${esc(p.bakerName)}</b> will review your design and get back to you with a quote.`
+          : `thanks for your cake request. It has been sent to <b>${esc(p.bakerName)}</b>, who will get back to you with a quote.`} Here's what you asked for:</p>
         ${thumbnailHtml}
         ${orderDetailsHtml(p)}
         <p style="margin-top:24px">We'll email you as soon as your quote is ready. If you have any questions, contact your baker directly.</p>
