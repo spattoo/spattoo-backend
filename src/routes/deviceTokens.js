@@ -15,6 +15,15 @@ const router = Router();
 
 const PLATFORMS = new Set(['web', 'android', 'ios']);
 
+// Short, because these are labels not payloads: 'Redmi Note 12', 'Android 14', '1.4.2'. Capping
+// them keeps a client from turning a diagnostics column into storage — the field arrives from a
+// device and nothing else validates its shape.
+const INFO_MAX = 120;
+const label = (v) => {
+  const s = String(v ?? '').trim();
+  return s ? s.slice(0, INFO_MAX) : null;   // truncate rather than reject: a long model name is
+};                                          // still worth having, and a 400 here would lose the token
+
 // ── POST /api/device-tokens ───────────────────────────────────────────────────────────────────────
 // Called after the browser (or the app) obtains an FCM registration token. Safe to call on every
 // load — the SDK returns the same token, and this upserts.
@@ -41,6 +50,12 @@ router.post('/device-tokens', requireAuth, attachBakerContext, async (req, res) 
         platform,
         baker_id:     req.bakerId,        // server-resolved, never from the client
         auth_user_id: req.user.id,        // ditto — the session says who this is
+        // Diagnostics only (migration 056). Re-sent on every registration, so a device that
+        // updates the app or the OS corrects itself rather than reporting whatever it was on the
+        // day it first registered.
+        device_model: label(req.body?.deviceModel),
+        os_version:   label(req.body?.osVersion),
+        app_version:  label(req.body?.appVersion),
         last_seen_at: new Date().toISOString(),
       }, { onConflict: 'token' });
     if (error) return serverError(req, res, error);

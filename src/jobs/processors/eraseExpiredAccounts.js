@@ -196,6 +196,26 @@ async function eraseOneBaker(bakerId) {
   await eraseXrayStageImages(bakerId);
   await eraseElementStageImages(bakerId);
 
+  // PUSH DEVICES — deleted, not anonymised, and not reachable by the manifest.
+  //
+  // The manifest nulls COLUMNS, which is right for `customers` (the row must survive for order
+  // history, the name must not). Here the row IS the personal data: an FCM token, the handset model
+  // and the OS of an identified person. Nulling those leaves a meaningless row; there is nothing a
+  // push token is retained FOR, the way an invoice is.
+  //
+  // ── WHY THE CASCADE DOES NOT COVER THIS ───────────────────────────────────────────────────────
+  // device_tokens.baker_id is `references bakers(id) on delete cascade`, which reads like it would
+  // handle this and does not: erasure MARKS `bakers.deletion_status = ERASED` rather than deleting
+  // the row (invoices reference the bakery, and we tell users those are retained). Nothing ever
+  // deletes a bakers row, so that cascade has never fired. And auth_user_id is a plain uuid, not an
+  // FK — auth.users lives in Supabase's schema — so deleting the auth user below cascades nothing
+  // either.
+  //
+  // Left alone, a completed erasure left a token and a dead user id behind. Migration 056 added the
+  // handset model beside them, which is what made this worth fixing rather than tidying.
+  const { error: tokenErr } = await supabase.from('device_tokens').delete().eq('baker_id', bakerId);
+  if (tokenErr) throw new Error(`device token delete failed: ${tokenErr.message}`);
+
   // Delete the Supabase Auth users (blocks login + erases their auth-side PII).
   for (const u of appusers ?? []) {
     if (!u.auth_user_id) continue;
