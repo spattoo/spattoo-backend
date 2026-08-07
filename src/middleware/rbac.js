@@ -57,10 +57,54 @@ export async function loadPrincipal(user) {
   return { role, bakerId, customerId, firstName, lastName, isAdmin: !!admin, capabilities: await capabilitiesForRole(role) };
 }
 
-// Match the verified contact (email/phone from the OTP session) to a customer,
-// gated by a currently-valid invite. Returns { customer_id, baker_id } or null.
-// MVP: if valid invites exist for more than one baker, the most recent wins.
+// Match an OTP-verified session to a customer. Returns { customer_id, baker_id } or null.
+//
+// ── TWO WAYS IN, AND WHY THERE ARE NOW TWO ────────────────────────────────────
+// 1. BOUND (checked first). A `customers` row carrying this auth_user_id. Set by
+//    the invite verify AND by the storefront verify, both of which bind only when
+//    unbound so a binding is never overwritten. This is an identity the DB itself
+//    asserts — no contact matching, nothing to spoof.
+// 2. INVITED (the original). Contact match plus a currently-valid invite.
+//
+// (2) alone described a product that no longer exists: it was written when a baker
+// added a customer and invited them, and almost every customer now walks in through
+// the storefront and serves themselves. Under (2) a self-service visitor got a
+// session and NO role — so the 3D designer 401'd on every catalogue endpoint and
+// rendered an empty cake. The comment this replaces said "there is no global
+// customer session"; that was a decision for the invite era, not a law.
+//
+// ── WHAT (1) DOES NOT WEAKEN ─────────────────────────────────────────────────
+// It is not a way to become a customer of a baker you have nothing to do with. The
+// row must already exist for that baker, and only two paths write one: an invite,
+// or verifying on that baker's own published storefront. Deny-by-default is intact
+// — this adds a positive grant, it does not soften the absence of one.
+//
+// The baker_id it returns is NOT load-bearing for order routes: POST and GET
+// /customer/orders re-resolve the customer themselves from (baker in the request,
+// auth_user_id in the token). It matters for capabilities, which are per-ROLE and
+// identical whichever baker won. Hence "most recent wins" for a contact that is a
+// customer of several bakers — the same MVP rule the invite path already used, and
+// no more load-bearing here than it was there.
 export async function resolveCustomer(user) {
+  // ── 1. Bound identity ───────────────────────────────────────────────────────
+  const { data: bound } = await supabase
+    .from('customers')
+    .select('id, baker_id, first_name, last_name')
+    .eq('auth_user_id', user.id)
+    .eq('is_active', true)
+    .order('created_at', { ascending: false });
+
+  if (bound?.length) {
+    const c = bound[0];
+    return {
+      customer_id: c.id,
+      baker_id:    c.baker_id,
+      first_name:  c.first_name ?? null,
+      last_name:   c.last_name ?? null,
+    };
+  }
+
+  // ── 2. Invited ──────────────────────────────────────────────────────────────
   if (!user.email && !user.phone) return null;
 
   // SEC-10: match with parameterised `.eq` (encoded by supabase-js), NEVER a string-built `.or()`

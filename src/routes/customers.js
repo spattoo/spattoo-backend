@@ -39,6 +39,19 @@ router.get('/baker/customers', requireAuth, requireCapability('customer:manage')
     if (!includeInactive) query = query.eq('is_active', true);
     if (from)             query = query.gte('created_at', from);
 
+    // ── Prospects are hidden by default ──────────────────────────────────────────────────────────
+    // A `storefront_visit` row is somebody who proved a contact to open the 3D designer. They have
+    // not asked the baker for anything, and they have not agreed to be contacted — verifying is an
+    // identity proof, not an invitation to be telephoned.
+    //
+    // This list means "people who wanted something from me". Letting prospects in would quietly
+    // change it to "people who typed a code once", and a list a baker stops trusting is worse than
+    // no list. `?include_prospects=true` is there for the baker who deliberately goes looking.
+    //
+    // NOT folded into is_active: that is the baker's own archive flag, and somebody ticking "show
+    // inactive" wants their archived customers, not a pile of strangers mixed in with them.
+    if (req.query.include_prospects !== 'true') query = query.neq('source', 'storefront_visit');
+
     const { data, error } = await query;
     if (error) return serverError(req, res, error);
 

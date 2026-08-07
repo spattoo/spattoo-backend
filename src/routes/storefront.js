@@ -89,6 +89,58 @@ async function loadOpenStorefront(slug, columns = '') {
   return accepting ? baker : null;
 }
 
+// ── A verified storefront visitor becomes a customer of THIS baker ────────────
+// The row is what turns a proved contact into a principal: loadPrincipal grants an
+// unrecognised identity no role and no capabilities, so without this a verified
+// visitor holds a session that opens nothing.
+//
+// `source: 'storefront_visit'` marks a PROSPECT — somebody who proved a contact,
+// not somebody who asked for a cake. GET /customers filters it out by default, so
+// a baker's list keeps meaning "people who wanted something from me". The enquiry
+// path sets its own source and is unaffected.
+//
+// SEC-10: parameterised `.eq` only, never a string-built `.or()` — a crafted
+// verified contact could otherwise inject PostgREST filter syntax and match rows
+// belonging to somebody else.
+const STOREFRONT_VISIT = 'storefront_visit';
+
+async function bindStorefrontCustomer(bakerId, { channel, to, name, authUserId }) {
+  const email = channel === 'email' ? to.toLowerCase().trim() : null;
+  const phone = channel === 'email' ? null : to.trim();
+  if (!email && !phone) return;
+
+  let lookup = supabase.from('customers').select('id, auth_user_id').eq('baker_id', bakerId);
+  lookup = email ? lookup.eq('email', email) : lookup.eq('phone', phone);
+  const { data: existing } = await lookup.maybeSingle();
+
+  if (!existing) {
+    // first_name is best-effort: the verify screen collects a name and sends it, but a
+    // client that does not is still allowed to verify — an unnamed prospect is better
+    // than a failed login.
+    await supabase.from('customers').insert({
+      baker_id:     bakerId,
+      email, phone,
+      first_name:   (name || '').trim() || null,
+      source:       STOREFRONT_VISIT,
+      auth_user_id: authUserId,
+    });
+    return;
+  }
+
+  // Bind only when UNBOUND, never overwrite — the same rule the invite path states:
+  // overwriting an existing binding is account takeover. A repeat login is a no-op.
+  //
+  // The source is left alone too. Somebody who enquired last month is already a real
+  // customer; verifying again to open the designer must not demote them to a prospect
+  // and drop them out of the baker's list.
+  if (!existing.auth_user_id) {
+    await supabase.from('customers')
+      .update({ auth_user_id: authUserId })
+      .eq('id', existing.id)
+      .is('auth_user_id', null);
+  }
+}
+
 // Load an invite by id with its customer + baker, only if it's still VALID
 // (not expired/revoked). Returns { invite, customer, baker } or null.
 async function loadValidInvite(id) {
@@ -337,7 +389,8 @@ router.post('/storefront/:slug/verify-otp', sfVerifyOtpPerContact, async (req, r
     const { otp, to, error: contactErr } = storefrontContact(channel, req.body?.to);
     if (contactErr) return res.status(400).json({ error: contactErr });
 
-    if (!await loadOpenStorefront(req.params.slug)) return res.status(404).json({ error: 'Storefront not found' });
+    const baker = await loadOpenStorefront(req.params.slug);
+    if (!baker) return res.status(404).json({ error: 'Storefront not found' });
 
     // Same type-probing as the invite path: we don't know whether Supabase issued this as a signup
     // or a login, and a wrong-type attempt doesn't consume the token, so trying in order is safe.
@@ -349,9 +402,24 @@ router.post('/storefront/:slug/verify-otp', sfVerifyOtpPerContact, async (req, r
     }
     if (!data?.session) return res.status(401).json({ error: error?.message || 'Invalid or expired code' });
 
-    // No customer binding here, unlike the invite path — there is no customers row yet. POST /orders
-    // upserts one from the verified contact when the enquiry actually lands, so a visitor who
-    // verifies and then walks away leaves no half-made customer in the baker's list.
+    // ── Bind a customer row, so the session MEANS something ──────────────────────────────────────
+    // This used to say: "No customer binding here — POST /orders upserts one when the enquiry
+    // actually lands, so a visitor who verifies and then walks away leaves no half-made customer in
+    // the baker's list." That was a real concern and it is now answered by `source`, below.
+    //
+    // It has to change because a session with no customer row grants NOTHING. loadPrincipal gives an
+    // unrecognised identity no role and therefore no capabilities — deny-by-default, correctly — so
+    // a storefront visitor who verified and walked into the 3D designer got a 401 on every catalogue
+    // endpoint and a designer with nothing to design with. The row is what turns a proved contact
+    // into a principal.
+    //
+    // ⚠️ The row is a PROSPECT, not a customer who asked for anything: `source: 'storefront_visit'`,
+    // and the baker's Customers list filters it out by default. Contact permission is a STATE, not a
+    // flag — verifying proves identity, it is not an invitation to be telephoned. An enquiry is what
+    // makes contact inherent, and that path still sets its own source.
+    const authUserId = data.session.user?.id ?? null;
+    if (authUserId) await bindStorefrontCustomer(baker.id, { channel, to, name: req.body?.name, authUserId });
+
     res.json({
       session: {
         access_token:  data.session.access_token,
