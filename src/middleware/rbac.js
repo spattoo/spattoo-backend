@@ -22,6 +22,7 @@ export async function loadPrincipal(user) {
   let role = null;
   let bakerId = null;
   let customerId = null;
+  let tourSeen = false;   // designer tour, per PERSON (migration 060). Customers keep a cookie.
   let firstName = null;
   let lastName = null;
 
@@ -31,7 +32,7 @@ export async function loadPrincipal(user) {
     // 2. Baker app-user?
     const { data: appUser } = await supabase
       .from('baker_appusers')
-      .select('baker_id, role, first_name, last_name')
+      .select('baker_id, role, first_name, last_name, tour_seen_at')
       .eq('auth_user_id', userId)
       .maybeSingle();
     if (appUser) {
@@ -39,6 +40,7 @@ export async function loadPrincipal(user) {
       bakerId = appUser.baker_id;
       firstName = appUser.first_name;
       lastName = appUser.last_name;
+      tourSeen = !!appUser.tour_seen_at;
     } else {
       // 3. Customer? Access is invite-gated: a verified contact only becomes a
       //    'customer' principal while a VALID invite exists. Baker context comes
@@ -54,7 +56,7 @@ export async function loadPrincipal(user) {
     }
   }
 
-  return { role, bakerId, customerId, firstName, lastName, isAdmin: !!admin, capabilities: await capabilitiesForRole(role) };
+  return { role, bakerId, customerId, firstName, lastName, tourSeen, isAdmin: !!admin, capabilities: await capabilitiesForRole(role) };
 }
 
 // Match an OTP-verified session to a customer. Returns { customer_id, baker_id } or null.
@@ -173,6 +175,7 @@ async function ensurePrincipal(req) {
   req.customerId = p.customerId;
   req.firstName = p.firstName;
   req.lastName = p.lastName;
+  req.tourSeen = p.tourSeen;
   req.isAdmin = p.isAdmin;
   req.capabilities = p.capabilities;
 }

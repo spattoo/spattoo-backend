@@ -19,7 +19,34 @@ router.get('/me', requireAuth, resolvePrincipal, (req, res) => {
     bakerId: req.bakerId,
     customerId: req.customerId,     // set when the principal is an invited customer
     capabilities: req.capabilities, // ['*'] for super admin
+    // Designer tour, per PERSON (migration 060, baker_appusers.tour_seen_at). Only ever true for a
+    // baker app-user: a CUSTOMER is not identified when the tour runs — DesignFacet opens the
+    // designer straight from a door, before any OTP — so their copy is a cookie, not a column.
+    tourSeen: req.tourSeen,
   });
+});
+
+// ── POST /api/me/tour-seen ────────────────────────────────────────────────────
+// "I have now been shown the designer tour." Fire-and-forget from the client: the tour has already
+// been displayed by the time this is called, so a failure must not do anything visible. Worst case
+// it is offered once more on the next device, which is precisely the old localStorage behaviour.
+//
+// Idempotent, and FIRST WRITE WINS — `is null` in the predicate means a replay cannot move the
+// timestamp forward. The column answers "when did this person first see it", and a value that
+// creeps to the latest replay would answer nothing.
+//
+// No capability check. There is no capability for "has been shown a tour", and inventing one would
+// put an onboarding flag behind a permission; requireAuth + the auth_user_id match is the whole
+// authorisation, and a principal can only ever write their own row.
+router.post('/me/tour-seen', requireAuth, async (req, res) => {
+  const { error } = await supabase
+    .from('baker_appusers')
+    .update({ tour_seen_at: new Date().toISOString() })
+    .eq('auth_user_id', req.user.id)
+    .is('tour_seen_at', null);
+  // A customer principal matches no row here and that is not an error — they have no row to mark.
+  if (error) return serverError(req, res, error);
+  res.json({ ok: true });
 });
 
 // Everything below manages the RBAC matrix itself — super-admin territory.
