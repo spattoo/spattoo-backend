@@ -282,6 +282,41 @@ router.get('/admin/elements', requireAuth, requireCapability('catalog:admin'), a
 // the library grows without bound, and each row carries a placement_config that can embed an inline
 // flatMask data-URI, so the list payload is the wrong thing to hang a single-element read off.
 // `.is('baker_id', null)` mirrors the list: this is the GLOBAL catalog, never a baker's private lib.
+// ── The same element, shaped the way the DESIGNER receives it ─────────────────────────────────────
+// For the admin preview (spattoo-core ElementPreview), which renders through the designer's own
+// addSticker + CakePreview and therefore needs the designer's own inputs.
+//
+// A separate route rather than a flag on the one above, because the two shapes are genuinely
+// different and both are needed: the editor form must see RAW R2 keys to write them back, and the
+// renderer must see PUBLIC URLs to load them. Serve the raw shape to the renderer and a photo-frame
+// element previews with no mask — silently, and only for that one element type, which is exactly the
+// kind of not-quite-right preview that would teach an admin to distrust the screen.
+//
+// Unlike the baker-facing GET this does NOT filter on is_active: previewing an element before it is
+// live is the entire point.
+router.get('/admin/elements/:id/preview', requireAuth, requireCapability('catalog:admin'), async (req, res) => {
+  try {
+    const { data, error } = await supabase
+      .from('cake_elements')
+      .select(ADMIN_ELEM_FIELDS)
+      .eq('id', req.params.id)
+      .is('baker_id', null)
+      .maybeSingle();
+
+    if (error) return serverError(req, res, error);
+    if (!data) return res.status(404).json({ error: 'Element not found' });
+    // withPublicUrls for the top-level image/thumbnail columns, expandPlacementConfig for the keys
+    // nested inside it — the same pair the designer-facing list applies (`:203`, `:227`), called
+    // rather than reimplemented so the two cannot drift.
+    res.json({
+      ...withPublicUrls(data),
+      placement_config: expandPlacementConfig(data.placement_config),
+    });
+  } catch (err) {
+    serverError(req, res, err);
+  }
+});
+
 router.get('/admin/elements/:id', requireAuth, requireCapability('catalog:admin'), async (req, res) => {
   try {
     const { data, error } = await supabase
