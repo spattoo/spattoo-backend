@@ -10,6 +10,7 @@ import { removeBackground } from '../services/removebg.js';
 import { jobQueue } from '../jobs/queue.js';
 import { reindexElement } from '../services/elementIndex.js';
 import { generateWebpThumbnail } from '../services/thumbnails.js';
+import { putObject } from '../services/r2.js';
 import { buildElementGuide } from '../services/decorationGuide.js';
 import { decorationPolicy } from '../services/decorationPolicy.js';
 
@@ -73,15 +74,42 @@ export async function ensureThumbKey(id, thumbnailKey) {
 // GLBs) to public URLs — the same treatment the top-level image_url/thumbnail_url columns get. The
 // DB stores bare keys; the designer loads these straight into texture/GLB loaders, which need full
 // URLs. Only for the designer-facing /elements responses (admin keeps raw keys for editing).
+//
+// ONE list, read by BOTH the expander below (which turns these into URLs for the designer) and the
+// export bundler (which must copy the objects they name). A nested asset added to one and forgotten
+// in the other is an element that promotes to prod with its mask missing — it renders as a frame
+// with no window, only for that element type, and nothing says why.
+const PLACEMENT_ASSET_PATHS = [
+  ['top_alt_glb_url'],
+  ['bottom_alt_glb_url'],
+  ['photo', 'mask'],
+  ['photo', 'overlay'],
+];
+
+const atPath = (obj, path) => path.reduce((o, k) => (o == null ? o : o[k]), obj);
+
+/** Every R2 key nested inside a placement_config, in no particular order. Bare keys only — a value
+ *  that is already an absolute URL is somebody else's object and is not ours to copy. */
+export function placementConfigAssetKeys(pc) {
+  if (!pc || typeof pc !== 'object') return [];
+  return PLACEMENT_ASSET_PATHS
+    .map(path => atPath(pc, path))
+    .filter(v => typeof v === 'string' && v && !/^https?:\/\//i.test(v));
+}
+
 function expandPlacementConfig(pc) {
   if (!pc || typeof pc !== 'object') return pc;
+  // Deep-ish clone only along the paths that change, so untouched branches stay shared.
   const out = { ...pc };
-  if (out.top_alt_glb_url)    out.top_alt_glb_url    = toPublicUrl(out.top_alt_glb_url);
-  if (out.bottom_alt_glb_url) out.bottom_alt_glb_url = toPublicUrl(out.bottom_alt_glb_url);
-  if (out.photo?.mask || out.photo?.overlay) {
-    out.photo = { ...out.photo };
-    if (out.photo.mask)    out.photo.mask    = toPublicUrl(out.photo.mask);
-    if (out.photo.overlay) out.photo.overlay = toPublicUrl(out.photo.overlay);
+  for (const path of PLACEMENT_ASSET_PATHS) {
+    const value = atPath(pc, path);
+    if (!value) continue;
+    if (path.length === 1) { out[path[0]] = toPublicUrl(value); continue; }
+    const [head, ...rest] = path;
+    out[head] = { ...out[head] };
+    let node = out[head];
+    for (let i = 0; i < rest.length - 1; i++) { node[rest[i]] = { ...node[rest[i]] }; node = node[rest[i]]; }
+    node[rest[rest.length - 1]] = toPublicUrl(value);
   }
   return out;
 }
@@ -282,6 +310,224 @@ router.get('/admin/elements', requireAuth, requireCapability('catalog:admin'), a
 // the library grows without bound, and each row carries a placement_config that can embed an inline
 // flatMask data-URI, so the list payload is the wrong thing to hang a single-element read off.
 // `.is('baker_id', null)` mirrors the list: this is the GLOBAL catalog, never a baker's private lib.
+// ── Export a selection of elements as a portable bundle ──────────────────────────────────────────
+// plans/element-preview-and-publish.md. Elements are authored on dev and promoted to prod; this is
+// the dev half. The bundle is plain JSON — readable, diffable, and small.
+//
+// ── IDS ARE CARRIED, NEVER REGENERATED ──────────────────────────────────────────────────────────
+// Every row goes out verbatim, id included. `cake_elements.id` is a uuid, so prod can hold the same
+// value, and that is what makes the whole thing work: `parent_id` is a self-FK, element_tags and
+// element_craft_guide are keyed on the element id, and template/shape DESIGNS embed elementId inside
+// their jsonb. Preserve the ids and every one of those keeps pointing at the right thing, with no
+// remapping anywhere. Regenerate one and the design references break SILENTLY — the cake still
+// renders, but clustering stops working and move/resize caps quietly fall back to defaults.
+//
+// ── EXPORTING N ELEMENTS IS NEVER N ROWS ────────────────────────────────────────────────────────
+// The closure travels too: element types (element_type_id is a FK — the insert fails in prod without
+// it), parent elements (parent_id), tags, the element_tags joins, and craft guides.
+//
+// ── ASSETS ARE URLs, NOT BYTES ──────────────────────────────────────────────────────────────────
+// The bundle names each object by its KEY plus a public URL to fetch it from. Import downloads and
+// re-uploads under the SAME key, so the row needs no rewriting — the DB stores bare keys and each
+// environment composes its own URL via toPublicUrl. Base64 would inflate a GLB by a third for no
+// gain, and a zip would need a dependency on both sides.
+//
+// This makes a bundle TRANSIENT: it points at dev's bucket, so export and import within a sensible
+// window rather than filing it away for months.
+router.get('/admin/elements/export', requireAuth, requireCapability('catalog:admin'), async (req, res) => {
+  try {
+    const ids = String(req.query.ids || '').split(',').map(x => x.trim()).filter(Boolean);
+    if (!ids.length) return res.status(400).json({ error: 'ids is required (comma-separated)' });
+
+    // 1. The picked elements, plus any parents they name. One hop is enough today (the UI only
+    //    authors parent → child), but loop until closed so a deeper chain cannot ship half-exported.
+    const elements = new Map();
+    let wanted = ids;
+    for (let hop = 0; hop < 8 && wanted.length; hop++) {
+      const { data, error } = await supabase
+        .from('cake_elements').select('*').in('id', wanted).is('baker_id', null);
+      if (error) return serverError(req, res, error);
+      for (const el of data ?? []) elements.set(el.id, el);
+      wanted = (data ?? []).map(e => e.parent_id).filter(pid => pid && !elements.has(pid));
+    }
+    if (!elements.size) return res.status(404).json({ error: 'No global elements matched those ids' });
+
+    const elementIds = [...elements.keys()];
+    const rows = [...elements.values()];
+
+    // 2. The closure. `.in()` on an empty array returns nothing, so each is guarded.
+    const typeIds = [...new Set(rows.map(e => e.element_type_id).filter(Boolean))];
+    const [types, elementTags, craftGuides] = await Promise.all([
+      typeIds.length
+        ? supabase.from('element_types').select('*').in('id', typeIds)
+        : Promise.resolve({ data: [] }),
+      supabase.from('element_tags').select('*').in('element_id', elementIds),
+      supabase.from('element_craft_guide').select('*').in('element_id', elementIds),
+    ]);
+    for (const r of [types, elementTags, craftGuides]) if (r.error) return serverError(req, res, r.error);
+
+    const tagIds = [...new Set((elementTags.data ?? []).map(t => t.tag_id).filter(Boolean))];
+    const tags = tagIds.length
+      ? await supabase.from('tags').select('*').in('id', tagIds)
+      : { data: [] };
+    if (tags.error) return serverError(req, res, tags.error);
+
+    // 3. Every object these rows reference: the three columns AND the keys nested in
+    //    placement_config, via the shared list — see PLACEMENT_ASSET_PATHS for why that matters.
+    const keys = new Set();
+    for (const el of rows) {
+      for (const k of [el.image_url, el.thumbnail_url, el.thumb_key]) {
+        if (k && !/^https?:\/\//i.test(k)) keys.add(k);
+      }
+      for (const k of placementConfigAssetKeys(el.placement_config)) keys.add(k);
+    }
+
+    res.json({
+      format: 'spattoo-element-bundle',
+      version: 1,
+      exported_at: new Date().toISOString(),
+      // Recorded so an import can say WHERE a bundle came from, and refuse one aimed at itself.
+      source: { r2_public_url: config.r2.publicUrl },
+      // Insert order. Types and tags first — elements and joins reference them.
+      element_types:       types.data ?? [],
+      tags:                tags.data ?? [],
+      elements:            rows,
+      element_tags:        elementTags.data ?? [],
+      element_craft_guide: craftGuides.data ?? [],
+      assets: [...keys].map(key => ({ key, url: toPublicUrl(key) })),
+    });
+  } catch (err) {
+    serverError(req, res, err);
+  }
+});
+
+// ── Import a bundle ──────────────────────────────────────────────────────────────────────────────
+// The prod half of the promotion. Takes what /admin/elements/export produced and writes it here.
+//
+// `?dryRun=true` reports what WOULD happen and writes nothing — which is the mode to use first,
+// because the interesting number is how many prod rows an import is about to overwrite.
+//
+// ── EVERY ROW KEEPS ITS ID ──────────────────────────────────────────────────────────────────────
+// Upsert on the primary key. That makes a re-import an UPDATE of the same element rather than a
+// twin, and it is why template and shape designs — which embed elementId inside their jsonb — keep
+// resolving after promotion. A row arriving without an id is refused rather than inserted: letting
+// the database mint one produces an element that looks right and is silently a different element.
+//
+// ── SHARED VOCABULARY IS THE SHARP EDGE ─────────────────────────────────────────────────────────
+// element_types and tags are vocabulary, not per-element data. If this environment already holds a
+// tag whose slug matches an incoming one under a DIFFERENT id, then: the tag insert violates
+// tags.slug UNIQUE, and the bundle's element_tags rows point at a tag_id that does not exist here.
+// Neither is recoverable by guessing — matching on slug silently rebinds the elements, matching on
+// id duplicates the vocabulary. So it stops and reports, and a human decides.
+// Body size is the GLOBAL express.json({ limit: '5mb' }) in server.js — a per-route parser here
+// would be a no-op, since body-parser skips a request whose body is already parsed. 5mb is ample:
+// a bundle carries rows and asset URLs, never asset bytes.
+router.post('/admin/elements/import', requireAuth, requireCapability('catalog:admin'), async (req, res) => {
+  try {
+    const bundle = req.body;
+    const dryRun = String(req.query.dryRun || '') === 'true';
+
+    if (bundle?.format !== 'spattoo-element-bundle') return res.status(400).json({ error: 'Not an element bundle' });
+    if (bundle.version !== 1) return res.status(400).json({ error: `Unsupported bundle version ${bundle.version}` });
+
+    const elements     = bundle.elements            ?? [];
+    const types        = bundle.element_types       ?? [];
+    const tags         = bundle.tags                ?? [];
+    const elementTags  = bundle.element_tags        ?? [];
+    const craftGuides  = bundle.element_craft_guide ?? [];
+    const assets       = bundle.assets              ?? [];
+    if (!elements.length) return res.status(400).json({ error: 'Bundle contains no elements' });
+
+    // A row with no id would be minted a new one — see above. Refuse the whole bundle.
+    const idless = [
+      ...elements.filter(r => !r.id).map(() => 'element'),
+      ...types.filter(r => !r.id).map(() => 'element_type'),
+      ...tags.filter(r => !r.id).map(() => 'tag'),
+    ];
+    if (idless.length) return res.status(400).json({ error: `Bundle has ${idless.length} row(s) with no id — refusing rather than generating one` });
+
+    // ── Vocabulary collisions, before anything is written ──────────────────────────────────────
+    const collisions = [];
+    for (const [table, rows] of [['element_types', types], ['tags', tags]]) {
+      const slugs = rows.map(r => r.slug).filter(Boolean);
+      if (!slugs.length) continue;
+      const { data, error } = await supabase.from(table).select('id, slug').in('slug', slugs);
+      if (error) return serverError(req, res, error);
+      for (const here of data ?? []) {
+        const incoming = rows.find(r => r.slug === here.slug);
+        if (incoming && incoming.id !== here.id) {
+          collisions.push({ table, slug: here.slug, here: here.id, incoming: incoming.id });
+        }
+      }
+    }
+    if (collisions.length) {
+      return res.status(409).json({
+        error: 'Same slug, different id — this environment already has that vocabulary under another id. ' +
+               'Reconcile by hand: matching on slug would silently rebind, matching on id would duplicate.',
+        collisions,
+      });
+    }
+
+    // ── What already exists here (create vs update) ────────────────────────────────────────────
+    const existing = async (table, col, values) => {
+      if (!values.length) return new Set();
+      const { data, error } = await supabase.from(table).select(col).in(col, values);
+      if (error) throw error;
+      return new Set((data ?? []).map(r => r[col]));
+    };
+    const haveElements = await existing('cake_elements', 'id', elements.map(e => e.id));
+    const haveTypes    = await existing('element_types', 'id', types.map(t => t.id));
+    const haveTags     = await existing('tags',          'id', tags.map(t => t.id));
+
+    const plan = {
+      element_types:       { create: types.filter(t => !haveTypes.has(t.id)).length,       update: types.filter(t => haveTypes.has(t.id)).length },
+      tags:                { create: tags.filter(t => !haveTags.has(t.id)).length,         update: tags.filter(t => haveTags.has(t.id)).length },
+      elements:            { create: elements.filter(e => !haveElements.has(e.id)).length, update: elements.filter(e => haveElements.has(e.id)).length },
+      element_tags:        { rows: elementTags.length },
+      element_craft_guide: { rows: craftGuides.length },
+      assets:              { count: assets.length },
+      same_environment:    bundle.source?.r2_public_url === config.r2.publicUrl,
+    };
+    if (dryRun) return res.json({ dryRun: true, plan, collisions: [] });
+
+    // ── Assets first: a row pointing at an object that is not there yet renders broken ─────────
+    const assetErrors = [];
+    for (const a of assets) {
+      try {
+        const r = await fetch(a.url);
+        if (!r.ok) throw new Error(`fetch ${r.status}`);
+        const buf = Buffer.from(await r.arrayBuffer());
+        await putObject(a.key, buf, r.headers.get('content-type') || 'application/octet-stream');
+      } catch (e) {
+        assetErrors.push({ key: a.key, error: e.message });
+      }
+    }
+
+    // ── Rows, in dependency order ──────────────────────────────────────────────────────────────
+    // Parents before children: parent_id is a self-FK, and a single upsert array gives no ordering
+    // guarantee, so a child inserted first would fail against a parent that is still on its way.
+    const parents  = elements.filter(e => !e.parent_id);
+    const children = elements.filter(e => e.parent_id);
+    const steps = [
+      ['element_types',       types],
+      ['tags',                tags],
+      ['cake_elements',       parents],
+      ['cake_elements',       children],
+      ['element_tags',        elementTags],
+      ['element_craft_guide', craftGuides],
+    ];
+    for (const [table, rows] of steps) {
+      if (!rows.length) continue;
+      const { error } = await supabase.from(table).upsert(rows);
+      if (error) return res.status(500).json({ error: `${table}: ${error.message}`, plan, assetErrors });
+    }
+
+    res.json({ ok: true, plan, assetErrors });
+  } catch (err) {
+    serverError(req, res, err);
+  }
+});
+
 // ── The same element, shaped the way the DESIGNER receives it ─────────────────────────────────────
 // For the admin preview (spattoo-core ElementPreview), which renders through the designer's own
 // addSticker + CakePreview and therefore needs the designer's own inputs.
