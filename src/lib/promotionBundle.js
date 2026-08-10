@@ -1,0 +1,183 @@
+// ── Promotion bundles: gathering everything a row needs to exist somewhere else ──────────────────
+//
+// See spattoo-docs/plans/element-preview-and-publish.md. Elements and templates are authored on dev
+// and promoted to prod. The hard part is never the rows that were picked — it is the CLOSURE around
+// them, and getting that wrong fails quietly rather than loudly.
+//
+// Shared by the element and template export routes so the two cannot drift: a template's bundle
+// contains an element bundle, assembled by the same code that assembles a standalone one.
+
+import { supabase } from '../services/supabase.js';
+import { ALLOWED_FOLDERS } from './signUpload.js';
+
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/**
+ * Every R2 key buried anywhere inside a jsonb value.
+ *
+ * A DEEP WALK rather than a list of known fields. The alternative — enumerating
+ * `stickers[].imageUrl`, `tiers[].topPipings[].glbUrl`, … — would put spattoo-core's knowledge of
+ * the design shape into this repo, where it cannot be kept in step: add a nested asset in core and
+ * this list silently stops finding it, and the template promotes with an object missing. The design
+ * shape is core's business; what an R2 key looks like is ours.
+ *
+ * A key is a string beginning with one of the managed folders. `FOLDER_POLICY` already calls itself
+ * the single source of truth for those, so a new folder is admitted here for free. Absolute URLs are
+ * skipped — those are somebody else's objects, not ours to copy.
+ */
+export function assetKeysIn(value, out = new Set()) {
+  if (typeof value === 'string') {
+    if (!/^https?:\/\//i.test(value) && ALLOWED_FOLDERS.some(f => value.startsWith(`${f}/`))) out.add(value);
+    return out;
+  }
+  if (Array.isArray(value)) { for (const v of value) assetKeysIn(v, out); return out; }
+  if (value && typeof value === 'object') { for (const v of Object.values(value)) assetKeysIn(v, out); return out; }
+  return out;
+}
+
+/** Every uuid-shaped string anywhere inside a jsonb value. */
+export function uuidsIn(value, out = new Set()) {
+  if (typeof value === 'string') { if (UUID_RE.test(value)) out.add(value.toLowerCase()); return out; }
+  if (Array.isArray(value)) { for (const v of value) uuidsIn(v, out); return out; }
+  if (value && typeof value === 'object') { for (const v of Object.values(value)) uuidsIn(v, out); return out; }
+  return out;
+}
+
+/**
+ * The element ids a design actually references.
+ *
+ * Collect every uuid in the design and ask the database which of them are elements. Intersecting
+ * beats reading known fields (`stickers[].elementId`, a piping layer's `id`) for the same reason the
+ * asset walk does — and it cannot produce a false positive, because a uuid that is not an element id
+ * simply does not come back.
+ */
+export async function elementIdsReferencedBy(designs) {
+  const candidates = [...designs.reduce((acc, d) => uuidsIn(d, acc), new Set())];
+  if (!candidates.length) return [];
+  const { data, error } = await supabase.from('cake_elements').select('id').in('id', candidates);
+  if (error) throw error;
+  return (data ?? []).map(r => r.id);
+}
+
+/**
+ * Elements plus everything they need in order to exist elsewhere: their types (element_type_id is a
+ * FK — the insert fails without it), their parents (parent_id is a self-FK), their tags, the tag
+ * joins, their craft guides, and every R2 object any of it names.
+ *
+ * Rows come back VERBATIM, ids included. That is the whole design: `cake_elements.id` is a uuid, so
+ * prod holds the same value, and every reference to it — parent_id, element_tags, and the elementId
+ * embedded inside template and shape designs — keeps pointing at the right row with nothing to remap.
+ */
+export async function elementClosure(ids) {
+  const elements = new Map();
+  let wanted = ids;
+  // Loop rather than one hop: the UI only authors parent → child today, but a deeper chain must not
+  // ship half-exported. Bounded so a cycle in the data cannot spin here.
+  for (let hop = 0; hop < 8 && wanted.length; hop++) {
+    const { data, error } = await supabase
+      .from('cake_elements').select('*').in('id', wanted).is('baker_id', null);
+    if (error) throw error;
+    for (const el of data ?? []) elements.set(el.id, el);
+    wanted = (data ?? []).map(e => e.parent_id).filter(pid => pid && !elements.has(pid));
+  }
+
+  const rows = [...elements.values()];
+  if (!rows.length) {
+    return { elements: [], element_types: [], tags: [], element_tags: [], element_craft_guide: [], keys: new Set() };
+  }
+  const elementIds = rows.map(e => e.id);
+
+  const typeIds = [...new Set(rows.map(e => e.element_type_id).filter(Boolean))];
+  const [types, elementTags, craftGuides] = await Promise.all([
+    typeIds.length ? supabase.from('element_types').select('*').in('id', typeIds) : { data: [] },
+    supabase.from('element_tags').select('*').in('element_id', elementIds),
+    supabase.from('element_craft_guide').select('*').in('element_id', elementIds),
+  ]);
+  for (const r of [types, elementTags, craftGuides]) if (r.error) throw r.error;
+
+  const tagIds = [...new Set((elementTags.data ?? []).map(t => t.tag_id).filter(Boolean))];
+  const tags = tagIds.length ? await supabase.from('tags').select('*').in('id', tagIds) : { data: [] };
+  if (tags.error) throw tags.error;
+
+  // The three asset columns, plus anything nested in placement_config — found by the same deep walk
+  // the designs use, so a nested asset added in core is picked up here without this file changing.
+  const keys = new Set();
+  for (const el of rows) {
+    for (const k of [el.image_url, el.thumbnail_url, el.thumb_key]) {
+      if (k && !/^https?:\/\//i.test(k)) keys.add(k);
+    }
+    assetKeysIn(el.placement_config, keys);
+  }
+
+  return {
+    elements: rows,
+    element_types: types.data ?? [],
+    tags: tags.data ?? [],
+    element_tags: elementTags.data ?? [],
+    element_craft_guide: craftGuides.data ?? [],
+    keys,
+  };
+}
+
+/**
+ * Templates plus their closure: parents (parent_template_id is a self-FK), tag joins, attrs, their
+ * own thumbnails, every asset named inside their designs, AND the elements those designs reference.
+ *
+ * The elements travel by default, and that is the important decision. A template whose elements are
+ * absent still RENDERS — the design carries a copy of everything it needs to draw — but the designer
+ * is deliberately tolerant of a missing catalogue row, so move/resize caps quietly revert to
+ * defaults and clustering stops working. It would look right and behave differently, with nothing
+ * logged. Shipping the elements alongside is the only version of this that fails loudly or not at
+ * all.
+ */
+export async function templateClosure(ids) {
+  const templates = new Map();
+  let wanted = ids;
+  for (let hop = 0; hop < 8 && wanted.length; hop++) {
+    const { data, error } = await supabase
+      .from('cake_templates').select('*').in('id', wanted).is('baker_id', null);
+    if (error) throw error;
+    for (const t of data ?? []) templates.set(t.id, t);
+    wanted = (data ?? []).map(t => t.parent_template_id).filter(pid => pid && !templates.has(pid));
+  }
+
+  const rows = [...templates.values()];
+  if (!rows.length) return null;
+  const templateIds = rows.map(t => t.id);
+
+  const [templateTags, attrs] = await Promise.all([
+    supabase.from('template_tags').select('*').in('template_id', templateIds),
+    supabase.from('cake_template_attrs').select('*').in('template_id', templateIds),
+  ]);
+  for (const r of [templateTags, attrs]) if (r.error) throw r.error;
+
+  const designs = rows.map(t => t.design).filter(Boolean);
+  const elements = await elementClosure(await elementIdsReferencedBy(designs));
+
+  // Tags reach a template two ways — through its own template_tags and through its elements'
+  // element_tags. One set, or the same tag row would be exported twice and upserted twice.
+  const tagIds = [...new Set([
+    ...(templateTags.data ?? []).map(t => t.tag_id),
+    ...elements.tags.map(t => t.id),
+  ].filter(Boolean))];
+  const tags = tagIds.length ? await supabase.from('tags').select('*').in('id', tagIds) : { data: [] };
+  if (tags.error) throw tags.error;
+
+  const keys = new Set(elements.keys);
+  for (const t of rows) {
+    if (t.thumbnail_url && !/^https?:\/\//i.test(t.thumbnail_url)) keys.add(t.thumbnail_url);
+    // From the DESIGN, not from the elements it references: the design points at keys directly, so a
+    // template made before an element's image was replaced still names the older object — which is
+    // the correct object for that template, and one a walk through today's elements would miss.
+    assetKeysIn(t.design, keys);
+  }
+
+  return {
+    ...elements,
+    tags: tags.data ?? [],
+    cake_templates: rows,
+    template_tags: templateTags.data ?? [],
+    cake_template_attrs: attrs.data ?? [],
+    keys,
+  };
+}

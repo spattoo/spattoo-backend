@@ -11,6 +11,7 @@ import { jobQueue } from '../jobs/queue.js';
 import { reindexElement } from '../services/elementIndex.js';
 import { generateWebpThumbnail } from '../services/thumbnails.js';
 import { putObject } from '../services/r2.js';
+import { elementClosure } from '../lib/promotionBundle.js';
 import { buildElementGuide } from '../services/decorationGuide.js';
 import { decorationPolicy } from '../services/decorationPolicy.js';
 
@@ -343,62 +344,22 @@ router.get('/admin/elements/export', requireAuth, requireCapability('catalog:adm
     const ids = String(req.query.ids || '').split(',').map(x => x.trim()).filter(Boolean);
     if (!ids.length) return res.status(400).json({ error: 'ids is required (comma-separated)' });
 
-    // 1. The picked elements, plus any parents they name. One hop is enough today (the UI only
-    //    authors parent → child), but loop until closed so a deeper chain cannot ship half-exported.
-    const elements = new Map();
-    let wanted = ids;
-    for (let hop = 0; hop < 8 && wanted.length; hop++) {
-      const { data, error } = await supabase
-        .from('cake_elements').select('*').in('id', wanted).is('baker_id', null);
-      if (error) return serverError(req, res, error);
-      for (const el of data ?? []) elements.set(el.id, el);
-      wanted = (data ?? []).map(e => e.parent_id).filter(pid => pid && !elements.has(pid));
-    }
-    if (!elements.size) return res.status(404).json({ error: 'No global elements matched those ids' });
-
-    const elementIds = [...elements.keys()];
-    const rows = [...elements.values()];
-
-    // 2. The closure. `.in()` on an empty array returns nothing, so each is guarded.
-    const typeIds = [...new Set(rows.map(e => e.element_type_id).filter(Boolean))];
-    const [types, elementTags, craftGuides] = await Promise.all([
-      typeIds.length
-        ? supabase.from('element_types').select('*').in('id', typeIds)
-        : Promise.resolve({ data: [] }),
-      supabase.from('element_tags').select('*').in('element_id', elementIds),
-      supabase.from('element_craft_guide').select('*').in('element_id', elementIds),
-    ]);
-    for (const r of [types, elementTags, craftGuides]) if (r.error) return serverError(req, res, r.error);
-
-    const tagIds = [...new Set((elementTags.data ?? []).map(t => t.tag_id).filter(Boolean))];
-    const tags = tagIds.length
-      ? await supabase.from('tags').select('*').in('id', tagIds)
-      : { data: [] };
-    if (tags.error) return serverError(req, res, tags.error);
-
-    // 3. Every object these rows reference: the three columns AND the keys nested in
-    //    placement_config, via the shared list — see PLACEMENT_ASSET_PATHS for why that matters.
-    const keys = new Set();
-    for (const el of rows) {
-      for (const k of [el.image_url, el.thumbnail_url, el.thumb_key]) {
-        if (k && !/^https?:\/\//i.test(k)) keys.add(k);
-      }
-      for (const k of placementConfigAssetKeys(el.placement_config)) keys.add(k);
-    }
+    const c = await elementClosure(ids);
+    if (!c.elements.length) return res.status(404).json({ error: 'No global elements matched those ids' });
 
     res.json({
       format: 'spattoo-element-bundle',
       version: 1,
       exported_at: new Date().toISOString(),
-      // Recorded so an import can say WHERE a bundle came from, and refuse one aimed at itself.
+      // Recorded so an import can say WHERE a bundle came from — and notice one aimed at itself.
       source: { r2_public_url: config.r2.publicUrl },
-      // Insert order. Types and tags first — elements and joins reference them.
-      element_types:       types.data ?? [],
-      tags:                tags.data ?? [],
-      elements:            rows,
-      element_tags:        elementTags.data ?? [],
-      element_craft_guide: craftGuides.data ?? [],
-      assets: [...keys].map(key => ({ key, url: toPublicUrl(key) })),
+      // Insert order. Types and tags first: elements and joins reference them.
+      element_types:       c.element_types,
+      tags:                c.tags,
+      elements:            c.elements,
+      element_tags:        c.element_tags,
+      element_craft_guide: c.element_craft_guide,
+      assets: [...c.keys].map(key => ({ key, url: toPublicUrl(key) })),
     });
   } catch (err) {
     serverError(req, res, err);
@@ -440,13 +401,19 @@ router.post('/admin/elements/import', requireAuth, requireCapability('catalog:ad
     const elementTags  = bundle.element_tags        ?? [];
     const craftGuides  = bundle.element_craft_guide ?? [];
     const assets       = bundle.assets              ?? [];
-    if (!elements.length) return res.status(400).json({ error: 'Bundle contains no elements' });
+    // Present only in a template bundle. Absent ones read as empty, so an element bundle exported
+    // before templates existed still imports unchanged.
+    const templates    = bundle.cake_templates      ?? [];
+    const templateTags = bundle.template_tags       ?? [];
+    const templateAttrs= bundle.cake_template_attrs ?? [];
+    if (!elements.length && !templates.length) return res.status(400).json({ error: 'Bundle contains nothing to import' });
 
     // A row with no id would be minted a new one — see above. Refuse the whole bundle.
     const idless = [
       ...elements.filter(r => !r.id).map(() => 'element'),
       ...types.filter(r => !r.id).map(() => 'element_type'),
       ...tags.filter(r => !r.id).map(() => 'tag'),
+      ...templates.filter(r => !r.id).map(() => 'template'),
     ];
     if (idless.length) return res.status(400).json({ error: `Bundle has ${idless.length} row(s) with no id — refusing rather than generating one` });
 
@@ -482,11 +449,13 @@ router.post('/admin/elements/import', requireAuth, requireCapability('catalog:ad
     const haveElements = await existing('cake_elements', 'id', elements.map(e => e.id));
     const haveTypes    = await existing('element_types', 'id', types.map(t => t.id));
     const haveTags     = await existing('tags',          'id', tags.map(t => t.id));
+    const haveTemplates = await existing('cake_templates', 'id', templates.map(t => t.id));
 
     const plan = {
       element_types:       { create: types.filter(t => !haveTypes.has(t.id)).length,       update: types.filter(t => haveTypes.has(t.id)).length },
       tags:                { create: tags.filter(t => !haveTags.has(t.id)).length,         update: tags.filter(t => haveTags.has(t.id)).length },
       elements:            { create: elements.filter(e => !haveElements.has(e.id)).length, update: elements.filter(e => haveElements.has(e.id)).length },
+      cake_templates:      { create: templates.filter(t => !haveTemplates.has(t.id)).length, update: templates.filter(t => haveTemplates.has(t.id)).length },
       element_tags:        { rows: elementTags.length },
       element_craft_guide: { rows: craftGuides.length },
       assets:              { count: assets.length },
@@ -512,6 +481,10 @@ router.post('/admin/elements/import', requireAuth, requireCapability('catalog:ad
     // guarantee, so a child inserted first would fail against a parent that is still on its way.
     const parents  = elements.filter(e => !e.parent_id);
     const children = elements.filter(e => e.parent_id);
+    // Templates come last and their parents before their children, for the same reason elements do:
+    // parent_template_id is a self-FK, and a single upsert array gives no ordering guarantee.
+    const tplParents  = templates.filter(t => !t.parent_template_id);
+    const tplChildren = templates.filter(t => t.parent_template_id);
     const steps = [
       ['element_types',       types],
       ['tags',                tags],
@@ -519,6 +492,10 @@ router.post('/admin/elements/import', requireAuth, requireCapability('catalog:ad
       ['cake_elements',       children],
       ['element_tags',        elementTags],
       ['element_craft_guide', craftGuides],
+      ['cake_templates',      tplParents],
+      ['cake_templates',      tplChildren],
+      ['template_tags',       templateTags],
+      ['cake_template_attrs', templateAttrs],
     ];
     for (const [table, rows] of steps) {
       if (!rows.length) continue;

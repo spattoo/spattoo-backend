@@ -7,6 +7,9 @@ import { scopeCatalogRead } from '../lib/tenantScope.js';
 import { config } from '../config.js';
 import { jobQueue } from '../jobs/queue.js';
 import { templatesForBaker, allTemplates } from '../lib/templateList.js';
+// toPublicUrl is declared locally further down — not imported, or the two collide and the API
+// fails to boot (check:boot catches it, which is how this was found).
+import { templateClosure } from '../lib/promotionBundle.js';
 
 const router = Router();
 
@@ -44,6 +47,52 @@ router.get('/templates', requireAuth, requireCapability('design:create'), attach
     // inject `.or()` syntax. Invalid or absent → unfiltered, and admin sees everything.
     const scopedId = Number.parseInt(req.query.baker_id, 10);
     res.json(await allTemplates({ type, bakerId: Number.isInteger(scopedId) ? scopedId : null }));
+  } catch (err) {
+    serverError(req, res, err);
+  }
+});
+
+// ── Export templates as a portable bundle ────────────────────────────────────────────────────────
+// The template half of dev → prod promotion (plans/element-preview-and-publish.md). Produces the
+// SAME bundle format the element export does, with the template rows added — so one import route
+// receives both, and a template bundle is a superset rather than a second thing to maintain.
+//
+// ── THE ELEMENTS TRAVEL WITH IT ─────────────────────────────────────────────────────────────────
+// A design embeds elementId on its stickers and the element id on its piping layers. A template
+// whose elements are missing still RENDERS — the design carries its own copy of everything needed
+// to draw — but the designer is deliberately tolerant of an absent catalogue row, so move/resize
+// caps quietly revert to defaults and clustering stops working. It would look right and behave
+// differently, silently. So the elements go too, resolved by the same closure the element export
+// uses.
+//
+// ── ASSETS COME FROM THE DESIGN ─────────────────────────────────────────────────────────────────
+// Not from the elements it references today. The design names R2 keys directly, so a template built
+// before an element's image was replaced still points at the older object — which is the correct
+// object for that template, and one a walk through today's elements would miss.
+router.get('/admin/templates/export', requireAuth, requireCapability('catalog:admin'), async (req, res) => {
+  try {
+    const ids = String(req.query.ids || '').split(',').map(x => x.trim()).filter(Boolean);
+    if (!ids.length) return res.status(400).json({ error: 'ids is required (comma-separated)' });
+
+    const c = await templateClosure(ids);
+    if (!c) return res.status(404).json({ error: 'No global templates matched those ids' });
+
+    res.json({
+      format: 'spattoo-element-bundle',
+      version: 1,
+      exported_at: new Date().toISOString(),
+      source: { r2_public_url: config.r2.publicUrl },
+      // Insert order: vocabulary, then elements, then the templates that reference them.
+      element_types:       c.element_types,
+      tags:                c.tags,
+      elements:            c.elements,
+      element_tags:        c.element_tags,
+      element_craft_guide: c.element_craft_guide,
+      cake_templates:      c.cake_templates,
+      template_tags:       c.template_tags,
+      cake_template_attrs: c.cake_template_attrs,
+      assets: [...c.keys].map(key => ({ key, url: toPublicUrl(key) })),
+    });
   } catch (err) {
     serverError(req, res, err);
   }
