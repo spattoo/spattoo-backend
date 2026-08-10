@@ -12,6 +12,7 @@ import { reindexElement } from '../services/elementIndex.js';
 import { generateWebpThumbnail } from '../services/thumbnails.js';
 import { putObject } from '../services/r2.js';
 import { elementClosure } from '../lib/promotionBundle.js';
+import { rewriteAssetHost } from '../lib/assetKeys.js';
 import { buildElementGuide } from '../services/decorationGuide.js';
 import { decorationPolicy } from '../services/decorationPolicy.js';
 
@@ -497,9 +498,15 @@ router.post('/admin/elements/import', requireAuth, requireCapability('catalog:ad
       ['template_tags',       templateTags],
       ['cake_template_attrs', templateAttrs],
     ];
+    // Absolute URLs → THIS environment's host. cake_templates.design stores fully-qualified URLs
+    // rather than bare keys (nothing expands a design on the way out — toPublicUrl is applied to
+    // thumbnail_url only), so a bundle imported verbatim would leave every template here fetching
+    // its textures from the environment it was exported FROM. The object was copied under the same
+    // key, so only the host in front of it moves. Same rewrite the rollout script does.
+    const fromBase = bundle.source?.r2_public_url;
     for (const [table, rows] of steps) {
       if (!rows.length) continue;
-      const { error } = await supabase.from(table).upsert(rows);
+      const { error } = await supabase.from(table).upsert(rewriteAssetHost(rows, fromBase, config.r2.publicUrl));
       if (error) return res.status(500).json({ error: `${table}: ${error.message}`, plan, assetErrors });
     }
 

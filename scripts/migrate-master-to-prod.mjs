@@ -23,9 +23,11 @@
 //     DEV_SUPABASE_URL      (|| SUPABASE_URL)
 //     DEV_SUPABASE_SERVICE_KEY (|| SUPABASE_SERVICE_KEY)
 //     DEV_R2_ENDPOINT / DEV_R2_ACCESS_KEY_ID / DEV_R2_SECRET_ACCESS_KEY / DEV_R2_BUCKET  (|| R2_*)
+//     DEV_R2_PUBLIC_URL     (|| R2_PUBLIC_URL)   — the base dev's stored URLs were written with
 //   PROD_* required for a real run:
 //     PROD_SUPABASE_URL / PROD_SUPABASE_SERVICE_KEY
 //     PROD_R2_ENDPOINT / PROD_R2_ACCESS_KEY_ID / PROD_R2_SECRET_ACCESS_KEY / PROD_R2_BUCKET
+//     PROD_R2_PUBLIC_URL    — template designs embed absolute URLs; without this they keep dev's host
 // ─────────────────────────────────────────────────────────────────────────────
 import 'dotenv/config';
 import { createClient } from '@supabase/supabase-js';
@@ -33,7 +35,7 @@ import { S3Client, GetObjectCommand, PutObjectCommand, HeadObjectCommand, CopyOb
 // The admin export's own asset walk. lib/assetKeys.js deliberately imports nothing but the folder
 // list, so this stays runnable with only Supabase credentials — importing it via signUpload.js or
 // promotionBundle.js would drag in config.js and refuse to start without an OpenAI key.
-import { assetKeysIn } from '../src/lib/assetKeys.js';
+import { assetKeysIn, rewriteAssetHost, countAssetUrls } from '../src/lib/assetKeys.js';
 
 const DRY_RUN         = process.argv.includes('--dry-run');
 const SERVER_SIDE     = process.argv.includes('--server-side');
@@ -87,6 +89,9 @@ const DEV = {
     secret:   process.env.DEV_R2_SECRET_ACCESS_KEY|| process.env.R2_SECRET_ACCESS_KEY,
     bucket:   process.env.DEV_R2_BUCKET           || process.env.R2_BUCKET,
   },
+  // The public base the DEV rows were written with. Needed even for --dry-run: it is how a URL
+  // buried in a template's design is recognised as naming one of OUR objects.
+  publicUrl: process.env.DEV_R2_PUBLIC_URL || process.env.R2_PUBLIC_URL,
 };
 const PROD = {
   supaUrl: process.env.PROD_SUPABASE_URL,
@@ -97,6 +102,7 @@ const PROD = {
     secret:   process.env.PROD_R2_SECRET_ACCESS_KEY,
     bucket:   process.env.PROD_R2_BUCKET,
   },
+  publicUrl: process.env.PROD_R2_PUBLIC_URL,
 };
 
 const CHECKSUM = { requestChecksumCalculation: 'WHEN_REQUIRED', responseChecksumValidation: 'WHEN_REQUIRED' }; // R2 compat
@@ -107,6 +113,10 @@ function requireProd() {
   if (!PROD.supaUrl) missing.push('PROD_SUPABASE_URL');
   if (!PROD.supaKey) missing.push('PROD_SUPABASE_SERVICE_KEY');
   for (const [k, v] of Object.entries(PROD.r2)) if (!v) missing.push('PROD_R2_' + k.toUpperCase());
+  // Not optional. Template designs embed fully-qualified URLs, so without the destination base every
+  // global template would land in prod still pointing at the dev bucket — rendering perfectly, and
+  // silently coupled to the environment it was migrated out of.
+  if (!PROD.publicUrl) missing.push('PROD_R2_PUBLIC_URL');
   if (missing.length) { console.error(`\n✖ Real run needs prod env vars: ${missing.join(', ')}\n  (run with --dry-run to preview against dev only)\n`); process.exit(1); }
 }
 
@@ -157,7 +167,7 @@ async function main() {
 
   const allKeys = new Set();
   const objStats = { copied: 0, skipped: 0 };
-  let totalRows = 0;
+  let totalRows = 0, urlsRewritten = 0;
 
   for (const step of PLAN) {
     // 1. Read GLOBAL rows from dev
@@ -179,7 +189,7 @@ async function main() {
     // Walking every row with the export tool's own `assetKeysIn` ends both. A key is recognised by
     // its folder, so a new column, a new nested field, or a new folder needs no edit here.
     const keys = [];
-    for (const r of rows) for (const k of assetKeysIn(r)) { keys.push(k); allKeys.add(k); }
+    for (const r of rows) for (const k of assetKeysIn(r, new Set(), DEV.publicUrl)) { keys.push(k); allKeys.add(k); }
 
     console.log(`\n• ${step.table}: ${rows.length} rows${keys.length ? `, ${keys.length} object refs` : ''}`);
     totalRows += rows.length;
@@ -190,8 +200,14 @@ async function main() {
     }
 
     // 4. Prepare + upsert rows into prod (preserve id; strip tenant/auth FKs; topo-sort self-refs)
+    // Absolute URLs → the DESTINATION host. cake_templates.design stores fully-qualified URLs (49 of
+    // them across the 15 global templates, and no bare keys at all) because nothing expands a design
+    // on the way out — toPublicUrl is applied to thumbnail_url only. Inserted verbatim, every global
+    // template in prod would fetch its textures and GLBs from the DEV bucket. The key is untouched;
+    // only the host in front of it moves, because the object was copied to the same key.
+    urlsRewritten += rows.reduce((n, r) => n + countAssetUrls(r, DEV.publicUrl), 0);
     let toInsert = rows.map(r => {
-      const row = { ...r };
+      const row = rewriteAssetHost({ ...r }, DEV.publicUrl, PROD.publicUrl);
       if (step.strip) for (const c of step.strip) row[c] = null;
       if (SKIP_EMBEDDINGS && 'description_embedding' in row) row.description_embedding = null;
       return row;
@@ -210,6 +226,7 @@ async function main() {
   console.log(`\n── summary ──`);
   console.log(`rows planned:    ${totalRows}`);
   console.log(`R2 objects refd: ${allKeys.size}`);
+  console.log(`asset URLs:      ${urlsRewritten} rewritten ${DEV.publicUrl || '(dev base unknown)'} → ${PROD.publicUrl || '(PROD_R2_PUBLIC_URL not set — rows would keep dev URLs)'}`);
   if (!DRY_RUN) {
     console.log(`R2 copied:       ${objStats.copied}   (already-present skipped: ${objStats.skipped})`);
     // Verify row-count parity per table

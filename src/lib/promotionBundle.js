@@ -8,6 +8,7 @@
 // contains an element bundle, assembled by the same code that assembles a standalone one.
 
 import { supabase } from '../services/supabase.js';
+import { config } from '../config.js';
 // The two deep walks live in lib/assetKeys.js, which imports nothing but the folder list — so the
 // rollout script can run the SAME walk without dragging in a Supabase client or config.js's ten
 // required env vars. Re-exported because the routes here import them from this module.
@@ -77,7 +78,7 @@ export async function elementClosure(ids) {
     for (const k of [el.image_url, el.thumbnail_url, el.thumb_key]) {
       if (k && !/^https?:\/\//i.test(k)) keys.add(k);
     }
-    assetKeysIn(el.placement_config, keys);
+    assetKeysIn(el.placement_config, keys, config.r2.publicUrl);
   }
 
   return {
@@ -140,7 +141,9 @@ export async function templateClosure(ids) {
     // From the DESIGN, not from the elements it references: the design points at keys directly, so a
     // template made before an element's image was replaced still names the older object — which is
     // the correct object for that template, and one a walk through today's elements would miss.
-    assetKeysIn(t.design, keys);
+    // With the public base: a design stores fully-qualified URLs, and without it the walk sees no
+    // assets at all — the bundle would carry the template and none of its objects.
+    assetKeysIn(t.design, keys, config.r2.publicUrl);
   }
 
   return {
