@@ -14,6 +14,7 @@
 import { randomUUID } from 'crypto';
 import { getSignedUploadUrl } from '../services/r2.js';
 import { config } from '../config.js';
+import { FOLDER_KIND, ALLOWED_FOLDERS } from './folders.js';
 
 // SEC-5: the bucket is PUBLIC, so we sign uploads only for content-types that render inertly from
 // our asset origin. NEVER allow text/html or image/svg+xml — both execute script when opened
@@ -38,36 +39,29 @@ export const MODEL_MAX = config.uploads.maxModelMb * MB;
 export const FONT_MAX  = config.uploads.maxFontMb  * MB;
 
 // Single source of truth: each managed folder → the content-types we'll sign for it AND the byte
-// ceiling. ALLOWED_FOLDERS is derived from this so the folder list, the type policy and the size
-// policy can never drift apart (DRY).
-export const FOLDER_POLICY = {
-  'elements/files/2D':    { types: IMAGE_TYPES, maxBytes: IMAGE_MAX },
-  'elements/files/3D':    { types: MODEL_TYPES, maxBytes: MODEL_MAX },
-  'elements/thumbnails':  { types: IMAGE_TYPES, maxBytes: IMAGE_MAX },
-  'templates/files':      { types: [...MODEL_TYPES, 'application/json'], maxBytes: MODEL_MAX },
-  'templates/thumbnails': { types: IMAGE_TYPES, maxBytes: IMAGE_MAX },
-  // Front view of a cake shape, captured through the real designer renderer when admin saves the shape.
-  // The New-cake picker shows these as <img> — one image per shape, rather than one WebGL context per
-  // shape (browsers cap those around 16, so a live-3D grid blanks tiles once the catalog grows).
-  'shapes/thumbnails':    { types: IMAGE_TYPES, maxBytes: IMAGE_MAX },
-  'logos':                { types: IMAGE_TYPES, maxBytes: IMAGE_MAX },
-  'portraits':            { types: IMAGE_TYPES, maxBytes: IMAGE_MAX },   // baker portrait for the storefront "Our story" section
-  'storefront/gallery':   { types: IMAGE_TYPES, maxBytes: IMAGE_MAX },   // baker cake photos for the storefront slideshow
-  'orders/thumbnails':    { types: IMAGE_TYPES, maxBytes: IMAGE_MAX },
-  'orders/photos':        { types: IMAGE_TYPES, maxBytes: IMAGE_MAX },   // baker-uploaded finished-cake photos (public → inline in order-ready email)
-  'orders/reference':     { types: IMAGE_TYPES, maxBytes: IMAGE_MAX },   // customer reference photos — a manual order's picture, and the storefront photo door
-  'customer/photos':      { types: IMAGE_TYPES, maxBytes: IMAGE_MAX },   // customer-uploaded photo for a photo-cake frame (public → designer textures it)
-  'meshy/source':         { types: IMAGE_TYPES, maxBytes: IMAGE_MAX },   // uploaded 2D image for the image→3D wizard (public so Meshy can fetch it)
-  'meshy/outputs':        { types: MODEL_TYPES, maxBytes: MODEL_MAX },   // our copy of the Meshy-generated GLB (written server-side via putObject)
-  // "Extract Elements": the uploaded cake photo we identify decorations in. Public so GPT-4o vision
-  // can fetch it by URL. Crops + regenerated outputs are written SERVER-side via putObject (no signed
-  // upload needed for those), but they share this folder tree — see routes/elementExtract.js.
-  'elements/candidates':  { types: IMAGE_TYPES, maxBytes: IMAGE_MAX },
-  // The typeface a text_styles row shapes its placeholder glyphs with. The face is DATA, not a
-  // hardcoded family — a new art style is a new font + config row, never a code change.
-  'elements/fonts':       { types: FONT_TYPES,  maxBytes: FONT_MAX },
+// ceiling. Derived from FOLDER_KIND (lib/folders.js) so the folder list, the type policy and the
+// size policy can never drift apart (DRY) — a new folder is added THERE, once.
+//
+// The folder NAMES live in their own module because recognising one of our object keys must not
+// require this file: it pulls in config.js and its ten required env vars, which would stop the
+// rollout script from running with only Supabase credentials. The types and sizes — the parts that
+// actually matter for SEC-5 — stay here.
+const TYPES_BY_KIND = {
+  image:         { types: IMAGE_TYPES, maxBytes: IMAGE_MAX },
+  model:         { types: MODEL_TYPES, maxBytes: MODEL_MAX },
+  model_or_json: { types: [...MODEL_TYPES, 'application/json'], maxBytes: MODEL_MAX },
+  font:          { types: FONT_TYPES,  maxBytes: FONT_MAX },
 };
-export const ALLOWED_FOLDERS = Object.keys(FOLDER_POLICY);
+export const FOLDER_POLICY = Object.fromEntries(
+  Object.entries(FOLDER_KIND).map(([folder, kind]) => {
+    const policy = TYPES_BY_KIND[kind];
+    // A folder added with a kind nobody defined would otherwise become `undefined` here and throw
+    // only later, inside a request, as "cannot read types of undefined".
+    if (!policy) throw new Error(`folders.js: '${folder}' has unknown kind '${kind}'`);
+    return [folder, policy];
+  }),
+);
+export { ALLOWED_FOLDERS };
 
 const EXT_BY_TYPE = {
   'image/png': 'png', 'image/jpeg': 'jpg', 'image/jpg': 'jpg', 'image/webp': 'webp', 'image/gif': 'gif',

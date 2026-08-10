@@ -30,6 +30,10 @@
 import 'dotenv/config';
 import { createClient } from '@supabase/supabase-js';
 import { S3Client, GetObjectCommand, PutObjectCommand, HeadObjectCommand, CopyObjectCommand } from '@aws-sdk/client-s3';
+// The admin export's own asset walk. lib/assetKeys.js deliberately imports nothing but the folder
+// list, so this stays runnable with only Supabase credentials — importing it via signUpload.js or
+// promotionBundle.js would drag in config.js and refuse to start without an OpenAI key.
+import { assetKeysIn } from '../src/lib/assetKeys.js';
 
 const DRY_RUN         = process.argv.includes('--dry-run');
 const SERVER_SIDE     = process.argv.includes('--server-side');
@@ -37,12 +41,18 @@ const SKIP_EMBEDDINGS = process.argv.includes('--skip-embeddings');
 
 // ── Migration allowlist (config-driven — the ONLY tables touched) ─────────────
 // Ordered so every FK target is migrated before the rows that reference it.
-//   filter  — narrows to GLOBAL rows (exclude tenant/test-owned)
-//   keyCols — columns holding R2 object keys to copy (element/template assets)
-//   selfRef — a self-referencing FK column → rows are topo-sorted (parents first)
-//   strip   — columns nulled on insert because they reference NON-migrated tenant/auth rows
+//   filter   — narrows to GLOBAL rows (exclude tenant/test-owned)
+//   conflict — the upsert's conflict target. DEFAULTS TO 'id'; the join tables have
+//              COMPOSITE primary keys and no id column at all, so they must say so.
+//   selfRef  — a self-referencing FK column → rows are topo-sorted (parents first)
+//   strip    — columns nulled on insert because they reference NON-migrated tenant/auth rows
+//
+// R2 keys are NOT declared per table. Every row is deep-walked with the same `assetKeysIn` the
+// admin export uses, so any column or nested jsonb value holding a managed key is copied — see
+// "the walk, not a column list" below.
 const PLAN = [
   { table: 'element_types' },
+  { table: 'tags' },                                          // vocabulary — before element_tags / template_tags reference it
   { table: 'cake_shapes' },                                   // before cake_templates in case templates.shape references it
   { table: 'flavours' },
   { table: 'nozzles' },
@@ -51,13 +61,20 @@ const PLAN = [
   { table: 'text_styles' },
   { table: 'cake_elements',
     filter:  q => q.is('baker_id', null).is('customer_id', null),   // GLOBAL library only (drops test uploads)
-    keyCols: ['image_url', 'thumbnail_url', 'thumb_key'],
     selfRef: 'parent_id',
     strip:   ['source_upload_id', 'promoted_by'] },                 // provenance → dev baker_uploads / auth.users (not migrated)
+  { table: 'element_tags',
+    conflict: 'element_id,tag_id' },                                // composite PK, no id column
+  { table: 'element_craft_guide',
+    filter:   q => q.is('baker_id', null),                          // a baker's own guide is tenant data — must not travel
+    conflict: 'element_id,guide_type' },                            // composite PK: one guide per element PER TYPE
   { table: 'cake_templates',
     filter:  q => q.is('baker_id', null),                           // global templates only
-    keyCols: ['thumbnail_url'],
     selfRef: 'parent_template_id' },
+  { table: 'template_tags',
+    conflict: 'template_id,tag_id' },
+  { table: 'cake_template_attrs',
+    conflict: 'template_id' },                                      // PK is the FK — one attrs row per template
 ];
 
 // ── Env resolution ────────────────────────────────────────────────────────────
@@ -149,11 +166,22 @@ async function main() {
     const { data: rows, error } = await q;
     if (error) { console.error(`  ✖ ${step.table}: read failed — ${error.message}`); process.exit(1); }
 
-    // 2. Collect R2 keys this step references
+    // 2. Collect the R2 keys this step references — THE WALK, NOT A COLUMN LIST.
+    //
+    // This used to be `keyCols: ['image_url', …]`, named per table. Two things were wrong with it,
+    // one of them live: cake_shapes declared no keyCols at all, so 10 shape thumbnails (the column
+    // is `thumbnail_key`, not `thumbnail_url` — a copy-paste from cake_elements would have missed it
+    // too) were never copied, and prod's New-cake picker would have launched as broken <img> tiles.
+    // The latent one: nothing declared reached inside `placement_config` or a template's `design`,
+    // so a photo frame's mask or a sticker's texture could promote with the row and without the
+    // object. Zero instances today — checked — but nothing prevented the first one.
+    //
+    // Walking every row with the export tool's own `assetKeysIn` ends both. A key is recognised by
+    // its folder, so a new column, a new nested field, or a new folder needs no edit here.
     const keys = [];
-    if (step.keyCols) for (const r of rows) for (const c of step.keyCols) if (r[c]) { keys.push(r[c]); allKeys.add(r[c]); }
+    for (const r of rows) for (const k of assetKeysIn(r)) { keys.push(k); allKeys.add(k); }
 
-    console.log(`\n• ${step.table}: ${rows.length} rows${step.keyCols ? `, ${keys.length} object refs` : ''}`);
+    console.log(`\n• ${step.table}: ${rows.length} rows${keys.length ? `, ${keys.length} object refs` : ''}`);
     totalRows += rows.length;
 
     // 3. Copy the referenced R2 objects (dev → prod)
@@ -172,7 +200,7 @@ async function main() {
 
     if (!DRY_RUN) {
       for (const batch of chunk(toInsert, 500)) {
-        const { error: upErr } = await prodSb.from(step.table).upsert(batch, { onConflict: 'id' });
+        const { error: upErr } = await prodSb.from(step.table).upsert(batch, { onConflict: step.conflict ?? 'id' });
         if (upErr) { console.error(`  ✖ ${step.table}: upsert failed — ${upErr.message}`); process.exit(1); }
       }
       console.log(`  ✔ upserted ${toInsert.length}`);

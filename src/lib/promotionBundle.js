@@ -8,40 +8,11 @@
 // contains an element bundle, assembled by the same code that assembles a standalone one.
 
 import { supabase } from '../services/supabase.js';
-import { ALLOWED_FOLDERS } from './signUpload.js';
-
-const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-
-/**
- * Every R2 key buried anywhere inside a jsonb value.
- *
- * A DEEP WALK rather than a list of known fields. The alternative — enumerating
- * `stickers[].imageUrl`, `tiers[].topPipings[].glbUrl`, … — would put spattoo-core's knowledge of
- * the design shape into this repo, where it cannot be kept in step: add a nested asset in core and
- * this list silently stops finding it, and the template promotes with an object missing. The design
- * shape is core's business; what an R2 key looks like is ours.
- *
- * A key is a string beginning with one of the managed folders. `FOLDER_POLICY` already calls itself
- * the single source of truth for those, so a new folder is admitted here for free. Absolute URLs are
- * skipped — those are somebody else's objects, not ours to copy.
- */
-export function assetKeysIn(value, out = new Set()) {
-  if (typeof value === 'string') {
-    if (!/^https?:\/\//i.test(value) && ALLOWED_FOLDERS.some(f => value.startsWith(`${f}/`))) out.add(value);
-    return out;
-  }
-  if (Array.isArray(value)) { for (const v of value) assetKeysIn(v, out); return out; }
-  if (value && typeof value === 'object') { for (const v of Object.values(value)) assetKeysIn(v, out); return out; }
-  return out;
-}
-
-/** Every uuid-shaped string anywhere inside a jsonb value. */
-export function uuidsIn(value, out = new Set()) {
-  if (typeof value === 'string') { if (UUID_RE.test(value)) out.add(value.toLowerCase()); return out; }
-  if (Array.isArray(value)) { for (const v of value) uuidsIn(v, out); return out; }
-  if (value && typeof value === 'object') { for (const v of Object.values(value)) uuidsIn(v, out); return out; }
-  return out;
-}
+// The two deep walks live in lib/assetKeys.js, which imports nothing but the folder list — so the
+// rollout script can run the SAME walk without dragging in a Supabase client or config.js's ten
+// required env vars. Re-exported because the routes here import them from this module.
+import { assetKeysIn, uuidsIn } from './assetKeys.js';
+export { assetKeysIn, uuidsIn };
 
 /**
  * The element ids a design actually references.
