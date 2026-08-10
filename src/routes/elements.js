@@ -285,7 +285,11 @@ router.post(
 // EXPLICIT column list, so a new column is invisible to admin until it is named here — which is
 // exactly how `medium` appeared to not save at all: the PATCH stored it, the read never returned
 // it, and the form reloaded blank. Add new admin-editable columns HERE as well as to the writer.
-const ADMIN_ELEM_FIELDS = 'id, name, description, image_url, thumbnail_url, thumb_key, element_type_id, parent_id, allowed_zones, placement_config, allowed_actions, default_color, sort_order, is_active, baker_id, file_size, asset_class, tri_count, texture_max_dim, decoded_mem_kb, optimized_size_kb, over_cap, medium';
+// created_at is here for the admin list's "added today / 7 days / 30 days" filter. Its absence was
+// invisible in the worst way: the filter simply matched nothing, which reads as "you added nothing
+// today" rather than "this column never arrived". A hand-maintained field list drops columns
+// silently — the reason the export below uses select('*') instead.
+const ADMIN_ELEM_FIELDS = 'id, created_at, name, description, image_url, thumbnail_url, thumb_key, element_type_id, parent_id, allowed_zones, placement_config, allowed_actions, default_color, sort_order, is_active, baker_id, file_size, asset_class, tri_count, texture_max_dim, decoded_mem_kb, optimized_size_kb, over_cap, medium';
 
 // asset_class is a compact surrogate in the DB; admin clients speak the readable key (schema-scale rule).
 const toAdminElement = el => ({ ...withPublicUrls(el), asset_class: ASSET_CLASS_KEY[el.asset_class] ?? null });
