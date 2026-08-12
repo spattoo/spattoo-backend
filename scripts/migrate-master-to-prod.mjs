@@ -67,17 +67,21 @@ export const PLAN = [
     selfRef: 'parent_id',
     strip:   ['source_upload_id', 'promoted_by'] },                 // provenance → dev baker_uploads / auth.users (not migrated)
   { table: 'element_tags',
-    conflict: 'element_id,tag_id' },                                // composite PK, no id column
+    conflict: 'element_id,tag_id',                                  // composite PK, no id column
+    parents:  { element_id: 'cake_elements', tag_id: 'tags' } },
   { table: 'element_craft_guide',
     filter:   q => q.is('baker_id', null),                          // a baker's own guide is tenant data — must not travel
-    conflict: 'element_id,guide_type' },                            // composite PK: one guide per element PER TYPE
+    conflict: 'element_id,guide_type',                              // composite PK: one guide per element PER TYPE
+    parents:  { element_id: 'cake_elements' } },
   { table: 'cake_templates',
     filter:  q => q.is('baker_id', null),                           // global templates only
     selfRef: 'parent_template_id' },
   { table: 'template_tags',
-    conflict: 'template_id,tag_id' },
+    conflict: 'template_id,tag_id',
+    parents:  { template_id: 'cake_templates', tag_id: 'tags' } },
   { table: 'cake_template_attrs',
-    conflict: 'template_id' },                                      // PK is the FK — one attrs row per template
+    conflict: 'template_id',                                        // PK is the FK — one attrs row per template
+    parents:  { template_id: 'cake_templates' } },
 ];
 
 // ── Env resolution ────────────────────────────────────────────────────────────
@@ -181,9 +185,11 @@ async function main() {
   const devS3  = mkS3(DEV.r2);
   const prodS3 = (!DRY_RUN || PROD.r2.endpoint) && PROD.r2.endpoint ? mkS3(PROD.r2) : null;
 
+  // What each step actually carried, so a child table can filter itself to parents that exist.
+  const migrated = new Map();
   const allKeys = new Set();
   const objStats = { copied: 0, skipped: 0 };
-  let totalRows = 0, urlsRewritten = 0;
+  let totalRows = 0, insertedRows = 0, urlsRewritten = 0;
 
   for (const step of PLAN) {
     // 1. Read GLOBAL rows from dev
@@ -228,7 +234,49 @@ async function main() {
       if (SKIP_EMBEDDINGS && 'description_embedding' in row) row.description_embedding = null;
       return row;
     });
-    if (step.selfRef) toInsert = topoSort(toInsert, 'id', step.selfRef);
+    // ── Drop rows whose PARENT was filtered out ─────────────────────────────────────────────────
+    // A join table inherits nothing from the table it points at. cake_templates is filtered to
+    // `baker_id IS NULL`, but template_tags had no filter at all — so it tried to carry tag links
+    // for BAKER templates that were deliberately never migrated, and prod rejected the lot:
+    //
+    //   violates foreign key constraint "template_tags_template_id_fkey"
+    //
+    // The FK caught it, which is the good outcome. The bad one was available: cake_template_attrs
+    // has the same defect and 1 of its 4 rows IS global, so a run that hit it first would have
+    // written the valid row and failed on an invalid one, leaving the table half-migrated.
+    //
+    // Declaring the parent per FK column makes the join table's filter FOLLOW its parent's, so a
+    // change to `filter` above cannot leave a child table behind again.
+    if (step.parents) {
+      const before = toInsert.length;
+      toInsert = toInsert.filter(r => Object.entries(step.parents).every(([col, parentTable]) => {
+        const ids = migrated.get(parentTable);
+        return r[col] == null || !ids || ids.has(r[col]);
+      }));
+      const dropped = before - toInsert.length;
+      if (dropped) console.log(`  ⊘ ${dropped} row(s) dropped — parent not in the migrated set`);
+    }
+
+    // Same hazard one level in: a global row whose self-reference points at a row that was filtered
+    // out. Nulling is the truthful answer — in prod that parent genuinely does not exist — and it
+    // matches what `strip` already does for FKs into tables we never migrate.
+    if (step.selfRef) {
+      const own = new Set(toInsert.map(r => r.id));
+      let orphaned = 0;
+      for (const r of toInsert) {
+        if (r[step.selfRef] != null && !own.has(r[step.selfRef])) { r[step.selfRef] = null; orphaned++; }
+      }
+      if (orphaned) console.log(`  ⊘ ${orphaned} ${step.selfRef} reference(s) nulled — parent not in the migrated set`);
+      toInsert = topoSort(toInsert, 'id', step.selfRef);
+    }
+
+    // Record what this step actually carries, for the children that point at it. Taken from
+    // toInsert (post-filter), never from the unfiltered dev read.
+    if (toInsert.length && toInsert[0]?.id !== undefined) {
+      migrated.set(step.table, new Set(toInsert.map(r => r.id)));
+    }
+
+    insertedRows += toInsert.length;
 
     if (!DRY_RUN) {
       for (const batch of chunk(toInsert, 500)) {
@@ -240,7 +288,8 @@ async function main() {
   }
 
   console.log(`\n── summary ──`);
-  console.log(`rows planned:    ${totalRows}`);
+  console.log(`rows read:       ${totalRows}${insertedRows !== totalRows ? `  (${totalRows - insertedRows} dropped — parent not migrated)` : ''}`);
+  console.log(`rows to write:   ${insertedRows}`);
   console.log(`R2 objects refd: ${allKeys.size}`);
   console.log(`asset URLs:      ${urlsRewritten} rewritten ${DEV.publicUrl || '(dev base unknown)'} → ${PROD.publicUrl || '(PROD_R2_PUBLIC_URL not set — rows would keep dev URLs)'}`);
   if (!DRY_RUN) {
@@ -255,7 +304,7 @@ async function main() {
     }
     console.log(`\nNext: HEAD a few prod objects and fetch a couple via https://spattoocdn.com/<key> to confirm CDN serving.`);
   } else {
-    console.log(`\n(DRY RUN) Would copy ${allKeys.size} objects and upsert ${totalRows} rows into prod. No changes made.`);
+    console.log(`\n(DRY RUN) Would copy ${allKeys.size} objects and upsert ${insertedRows} rows into prod. No changes made.`);
   }
 }
 

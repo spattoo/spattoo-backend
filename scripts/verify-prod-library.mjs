@@ -65,18 +65,40 @@ async function main() {
   const prodSb = createClient(PROD.url, PROD.key);
 
   // ── 1. Row parity, per table ────────────────────────────────────────────────
-  // dev's GLOBAL count (the same filter the migration used) against prod's total. Prod may hold
-  // MORE — anything authored there directly — but never fewer.
-  console.log('── row parity ──');
+  // Against what the migration should have carried, which is NOT dev's raw count. Two reductions
+  // apply, and both are legitimate:
+  //
+  //   filter   — global rows only (cake_templates: baker_id IS NULL)
+  //   parents  — a join row whose parent was filtered out cannot travel. dev has 4 template_tags
+  //              and ALL FOUR belong to baker templates, so the correct prod count is 0. A naive
+  //              dev-vs-prod comparison would report that as a failure forever.
+  //
+  // Same PLAN, same declarations as the migration — so this cannot drift from what it does.
+  console.log('── row parity (expected = global rows whose parents also migrated) ──');
+  const devIds = new Map();
   for (const step of PLAN) {
-    let dq = devSb.from(step.table).select('*', { count: 'exact', head: true });
+    let dq = devSb.from(step.table).select('*');
     if (step.filter) dq = step.filter(dq);
-    const { count: devN } = await dq;
+    const { data: devRows, error: dErr } = await dq;
+    if (dErr) { fail(`${step.table}: dev read — ${dErr.message}`); continue; }
+
+    const expected = step.parents
+      ? devRows.filter(r => Object.entries(step.parents).every(([col, parent]) => {
+          const ids = devIds.get(parent);
+          return r[col] == null || !ids || ids.has(r[col]);
+        }))
+      : devRows;
+    if (expected.length && expected[0]?.id !== undefined) {
+      devIds.set(step.table, new Set(expected.map(r => r.id)));
+    }
+
     const { count: prodN, error } = await prodSb.from(step.table).select('*', { count: 'exact', head: true });
-    if (error) { fail(`${step.table}: ${error.message}`); continue; }
-    const ok = prodN >= devN;
-    if (!ok) fail(`${step.table}: dev(global)=${devN} prod=${prodN} — SHORT`);
-    console.log(`  ${step.table.padEnd(22)} dev=${String(devN).padStart(3)}  prod=${String(prodN).padStart(3)}  ${ok ? '✔' : '✖'}`);
+    if (error) { fail(`${step.table}: prod read — ${error.message}`); continue; }
+
+    const ok = prodN >= expected.length;
+    if (!ok) fail(`${step.table}: expected ≥${expected.length}, prod has ${prodN} — SHORT`);
+    const note = expected.length !== devRows.length ? ` (${devRows.length - expected.length} not migratable)` : '';
+    console.log(`  ${step.table.padEnd(22)} expected=${String(expected.length).padStart(3)}  prod=${String(prodN).padStart(3)}  ${ok ? '✔' : '✖'}${note}`);
   }
 
   // ── 2. No dev host anywhere in prod's rows ──────────────────────────────────
