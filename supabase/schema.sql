@@ -13,14 +13,18 @@
 -- ─────────────────────────────────────────────────────────────────────────────
 -- ══ PREAMBLE — added by scripts/dump-schema.mjs, NOT from pg_dump ───────────────────────────────
 --
--- Supabase keeps extensions in the `extensions` schema, which a --schema=public dump does
--- not visit. Without these the restore fails on the first vector column.
+-- Extensions live outside `public`, which a --schema=public dump does not visit. Without
+-- these the restore fails on the first vector column.
 --
--- The SUPPORTED route is the dashboard (Database → Extensions) — enable them there BEFORE
--- running this file. These statements are the belt-and-braces: no-ops if already enabled,
--- and pg_cron in particular may need to be enabled from the dashboard regardless.
+-- THE SCHEMA MATTERS, and it is detected from this dump rather than assumed. pg_dump writes
+-- `public.vector(1536)`, so the type must resolve in `public` — enabling vector from the
+-- Supabase dashboard puts it in `extensions` instead, and then a restore dies ~1000 lines in
+-- with: ERROR 42704: type "public.vector" does not exist.
+--
+-- If an extension is already installed in the WRONG schema, `if not exists` will not move it.
+-- Drop and recreate it: drop extension vector; create extension vector with schema public;
 
-create extension if not exists vector;
+create extension if not exists vector with schema public;
 create extension if not exists pg_cron;
 
 -- ══ pg_dump output begins ───────────────────────────────────────────────────────────────────────

@@ -119,18 +119,43 @@ function banner(title) {
   return `-- ══ ${title} ${bar}`;
 }
 
+// Which schema each extension must live in — DETECTED from the dump, never assumed.
+//
+// pg_dump schema-qualifies every type it references, so `description_embedding public.vector(1536)`
+// is the database telling us where its vector extension actually is. On this project that is
+// `public`, not the `extensions` schema Supabase's dashboard toggle uses by default.
+//
+// That mismatch cost a restore: enabling vector from the prod dashboard put it in `extensions`, the
+// preamble's `create extension if not exists vector` then found one already present and did
+// nothing, and the restore died 1000 lines later on
+//   ERROR 42704: type "public.vector" does not exist
+// A hardcoded schema here would be a second copy of a fact only the source database owns.
+function extensionSchema(body, ext) {
+  const m = body.match(new RegExp(`\\b([a-z_]+)\\.${ext}(?:\\(|_)`));
+  return m ? m[1] : null;
+}
+
 function build(body, pgDumpVersion) {
   const pre = [
     banner('PREAMBLE — added by scripts/dump-schema.mjs, NOT from pg_dump'),
     '--',
-    '-- Supabase keeps extensions in the `extensions` schema, which a --schema=public dump does',
-    '-- not visit. Without these the restore fails on the first vector column.',
+    '-- Extensions live outside `public`, which a --schema=public dump does not visit. Without',
+    '-- these the restore fails on the first vector column.',
     '--',
-    '-- The SUPPORTED route is the dashboard (Database → Extensions) — enable them there BEFORE',
-    '-- running this file. These statements are the belt-and-braces: no-ops if already enabled,',
-    '-- and pg_cron in particular may need to be enabled from the dashboard regardless.',
+    '-- THE SCHEMA MATTERS, and it is detected from this dump rather than assumed. pg_dump writes',
+    '-- `public.vector(1536)`, so the type must resolve in `public` — enabling vector from the',
+    '-- Supabase dashboard puts it in `extensions` instead, and then a restore dies ~1000 lines in',
+    '-- with: ERROR 42704: type "public.vector" does not exist.',
+    '--',
+    '-- If an extension is already installed in the WRONG schema, `if not exists` will not move it.',
+    '-- Drop and recreate it: drop extension vector; create extension vector with schema public;',
     '',
-    ...EXTENSIONS.map(e => `create extension if not exists ${e};`),
+    ...EXTENSIONS.map(e => {
+      const schema = extensionSchema(body, e);
+      return schema
+        ? `create extension if not exists ${e} with schema ${schema};`
+        : `create extension if not exists ${e};`;   // nothing in public references it — cron
+    }),
     '',
     banner('pg_dump output begins'),
     '',
