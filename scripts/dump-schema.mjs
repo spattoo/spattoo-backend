@@ -224,6 +224,31 @@ function main() {
   const restrictLines = (body.match(/^\\(un)?restrict\b.*$/gm) || []).length;
   body = body.replace(/^\\(un)?restrict\b.*$\n?/gm, '');
 
+  // ── Fixups for a MANAGED platform ───────────────────────────────────────────────────────────
+  // pg_dump assumes it is restoring into a bare Postgres it has full rights over. Supabase hands
+  // you a database that already exists, with a `public` schema it owns. Two statements collide:
+  //
+  //   CREATE SCHEMA public;
+  //     Emitted since PG 15, when public stopped being treated as always-present. Every Supabase
+  //     project already has one → ERROR 42P06, and because the editor runs the file as one
+  //     implicit transaction, the whole 700-statement restore rolls back on line 51.
+  //     → made IF NOT EXISTS: still correct against a bare Postgres, a no-op here.
+  //
+  //   COMMENT ON SCHEMA public IS 'standard public schema';
+  //     Requires ownership of the schema, which the `postgres` role may not have on a managed
+  //     platform. And the string is Postgres's OWN default comment — carrying it across restores
+  //     nothing and describes nothing.
+  //     → dropped. This is the one place the baseline deliberately differs from the source.
+  const fixups = [];
+  if (/^CREATE SCHEMA public;$/m.test(body)) {
+    body = body.replace(/^CREATE SCHEMA public;$/m, 'CREATE SCHEMA IF NOT EXISTS public;');
+    fixups.push('CREATE SCHEMA public → IF NOT EXISTS');
+  }
+  if (/^COMMENT ON SCHEMA public IS 'standard public schema';$/m.test(body)) {
+    body = body.replace(/^COMMENT ON SCHEMA public IS 'standard public schema';$\n?/m, '');
+    fixups.push("dropped COMMENT ON SCHEMA public (Postgres's own default)");
+  }
+
   // A dump that "succeeded" with nothing in it is the outcome worth catching: an empty file
   // committed as the baseline looks exactly like a schema that has not drifted.
   const tables   = (body.match(/^CREATE TABLE /gm)   || []).length;
@@ -253,6 +278,7 @@ function main() {
   console.log(`  indexes   ${indexes}`);
   console.log(`  extensions re-emitted: ${EXTENSIONS.join(', ')}`);
   if (restrictLines) console.log(`  psql meta-commands stripped: ${restrictLines} (\\restrict — pg_dump 18+)`);
+  for (const f of fixups) console.log(`  managed-platform fixup: ${f}`);
   console.log(`  cron jobs re-emitted:  ${CRON_JOBS.map(j => j.name).join(', ')}`);
   console.log(`\n✓ wrote ${OUT.replace(ROOT + '/', '')}`);
   console.log(`\nNext: commit it. Then to build a fresh project —`);
