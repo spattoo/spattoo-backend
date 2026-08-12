@@ -4839,6 +4839,20 @@ CREATE POLICY "Authenticated users can delete flavours" ON public.flavours FOR D
 
 
 --
+-- Name: flavours Authenticated users can insert flavours; Type: POLICY; Schema: public; Owner: -
+--
+
+CREATE POLICY "Authenticated users can insert flavours" ON public.flavours FOR INSERT WITH CHECK ((auth.role() = 'authenticated'::text));
+
+
+--
+-- Name: flavours Authenticated users can read flavours; Type: POLICY; Schema: public; Owner: -
+--
+
+CREATE POLICY "Authenticated users can read flavours" ON public.flavours FOR SELECT USING ((auth.role() = 'authenticated'::text));
+
+
+--
 -- Name: flavours Authenticated users can update flavours; Type: POLICY; Schema: public; Owner: -
 --
 
@@ -5637,5 +5651,17 @@ CREATE POLICY "users can read own row" ON public.baker_appusers FOR SELECT TO au
 -- Re-running cron.schedule with an existing job name UPDATES it, so this is idempotent.
 
 select cron.schedule('purge-old-notifications', '17 3 * * *', 'SELECT purge_old_notifications(90);');
+
+-- ── Event triggers ──
+-- Cluster-level, so a --schema=public dump never sees them. `ensure_rls` fires on CREATE
+-- TABLE and enables RLS on the new table: its FUNCTION travels with the dump, the trigger
+-- that fires it does not. Without this the database has the machinery and never starts it,
+-- and every table added later is anon-readable.
+--
+-- Supabase's own six (pgrst_ddl_watch, issue_pg_cron_access, …) call functions in
+-- `extensions` and come with every project — deliberately not carried.
+
+drop event trigger if exists ensure_rls;
+CREATE EVENT TRIGGER ensure_rls ON ddl_command_end WHEN TAG IN ('CREATE TABLE', 'CREATE TABLE AS', 'SELECT INTO') EXECUTE FUNCTION public.rls_auto_enable();
 
 -- ══ end ─────────────────────────────────────────────────────────────────────────────────────────

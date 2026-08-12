@@ -119,6 +119,56 @@ function banner(title) {
   return `-- ══ ${title} ${bar}`;
 }
 
+// ── Event triggers ───────────────────────────────────────────────────────────────────────────────
+// Cluster-level objects, not schema-scoped, so `--schema=public` never sees them — the same blind
+// spot as the pg_cron schedule, and with the same consequence: the restore succeeds and something
+// stops happening.
+//
+// This project has ONE of its own: `ensure_rls`, which fires on CREATE TABLE and enables RLS on the
+// new table. Its FUNCTION lives in public and so travels with the main dump; the trigger that fires
+// it does not. Restoring without it gives you a database that has the machinery and never starts it
+// — new tables land with RLS off and become anon-readable, which is precisely the hole the trigger
+// exists to close, in the environment where it matters most.
+//
+// Supabase's own six (pgrst_ddl_watch, issue_pg_cron_access, …) call functions in `extensions` and
+// are provisioned with every project. Emitting those would fail on a fresh restore or, worse,
+// duplicate platform behaviour — so ONLY triggers calling a `public.` function are carried.
+//
+// Read from the catalog with psql rather than a second pg_dump. pg_dump has no flag that says "just
+// the event triggers" — you would have to dump the WHOLE database unfiltered and grep, and on
+// Supabase that means auth, storage, realtime and vault as well: minutes, for seven lines. psql sits
+// next to pg_dump in whatever install provided it, so this costs one round trip.
+//
+// There is no pg_get_eventtriggerdef(), so the statement is rebuilt from the catalog. Joining
+// pg_proc → pg_namespace (rather than casting to regproc) is what makes the `public` filter exact:
+// a regproc cast omits the schema whenever it is on the search_path, which is precisely when we
+// most need to know it.
+function eventTriggers(pgDump, dbUrl) {
+  const psql = pgDump.replace(/pg_dump$/, 'psql');
+  const sql = `
+    select format('CREATE EVENT TRIGGER %I ON %s%s EXECUTE FUNCTION %I.%I();',
+      e.evtname, e.evtevent,
+      case when e.evttags is null then ''
+           else ' WHEN TAG IN (' ||
+                (select string_agg(quote_literal(t), ', ') from unnest(e.evttags) t) || ')' end,
+      n.nspname, p.proname)
+    from pg_event_trigger e
+    join pg_proc p      on p.oid = e.evtfoid
+    join pg_namespace n on n.oid = p.pronamespace
+    where n.nspname = 'public'
+    order by e.evtname;`;
+  try {
+    const out = execSync(`"$PSQL" "$SUPABASE_DB_URL" -At -c "$SQL"`, {
+      encoding: 'utf8',
+      env: { ...process.env, PSQL: psql, SUPABASE_DB_URL: dbUrl, SQL: sql },
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    return out.split('\n').map(s => s.trim()).filter(Boolean);
+  } catch {
+    return null;                       // non-fatal: the main dump is what matters
+  }
+}
+
 // Which schema each extension must live in — DETECTED from the dump, never assumed.
 //
 // pg_dump schema-qualifies every type it references, so `description_embedding public.vector(1536)`
@@ -135,7 +185,7 @@ function extensionSchema(body, ext) {
   return m ? m[1] : null;
 }
 
-function build(body, pgDumpVersion) {
+function build(body, pgDumpVersion, evtTriggers) {
   const pre = [
     banner('PREAMBLE — added by scripts/dump-schema.mjs, NOT from pg_dump'),
     '--',
@@ -174,6 +224,28 @@ function build(body, pgDumpVersion) {
     ...CRON_JOBS.map(j =>
       `select cron.schedule(${q(j.name)}, ${q(j.schedule)}, ${q(j.command)});`),
     '',
+    ...(evtTriggers === null ? [
+      '-- ⚠️ Event triggers could NOT be read (the second pg_dump pass failed). If this project has',
+      '--    any of its own, they are MISSING from this file. Check with:',
+      "--      select evtname, evtevent, evttags from pg_event_trigger where evtname not like 'issue_%';",
+      '',
+    ] : evtTriggers.length ? [
+      '-- ── Event triggers ──',
+      '-- Cluster-level, so a --schema=public dump never sees them. `ensure_rls` fires on CREATE',
+      '-- TABLE and enables RLS on the new table: its FUNCTION travels with the dump, the trigger',
+      '-- that fires it does not. Without this the database has the machinery and never starts it,',
+      '-- and every table added later is anon-readable.',
+      '--',
+      "-- Supabase's own six (pgrst_ddl_watch, issue_pg_cron_access, …) call functions in",
+      '-- `extensions` and come with every project — deliberately not carried.',
+      '',
+      ...evtTriggers.flatMap(t => {
+        const name = t.match(/CREATE EVENT TRIGGER (\w+)/)?.[1];
+        // Not idempotent otherwise — CREATE EVENT TRIGGER errors if the name is taken, which would
+        // abort the whole restore on a re-run.
+        return [name ? `drop event trigger if exists ${name};` : '', t, ''];
+      }),
+    ] : []),
     banner('end'),
     '',
   ].join('\n');
@@ -282,7 +354,8 @@ function main() {
   const indexes  = (body.match(/^CREATE (UNIQUE )?INDEX /gm) || []).length;
   if (!tables) fail('pg_dump returned no tables — refusing to write an empty baseline.');
 
-  const out = build(body, pgDumpVersion);
+  const evtTriggers = eventTriggers(PG_DUMP, DB_URL);
+  const out = build(body, pgDumpVersion, evtTriggers);
 
   if (CHECK) {
     if (!existsSync(OUT)) fail(`No baseline at ${OUT}. Run without --check to create it.`);
@@ -305,6 +378,7 @@ function main() {
   if (restrictLines) console.log(`  psql meta-commands stripped: ${restrictLines} (\\restrict — pg_dump 18+)`);
   for (const f of fixups) console.log(`  managed-platform fixup: ${f}`);
   console.log(`  cron jobs re-emitted:  ${CRON_JOBS.map(j => j.name).join(', ')}`);
+  console.log(`  event triggers:        ${evtTriggers === null ? '⚠ COULD NOT READ' : evtTriggers.length ? evtTriggers.map(t => t.match(/CREATE EVENT TRIGGER (\w+)/)?.[1]).join(', ') : 'none of our own'}`);
   console.log(`\n✓ wrote ${OUT.replace(ROOT + '/', '')}`);
   console.log(`\nNext: commit it. Then to build a fresh project —`);
   console.log(`  1. enable the extensions in the dashboard (Database → Extensions)`);
