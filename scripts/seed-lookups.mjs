@@ -46,6 +46,12 @@ const DRY_RUN = process.argv.includes('--dry-run');
 const SEQ_SQL_PATH = join(ROOT, 'supabase', 'seed-sequences.sql');
 
 // ── The allowlist ─────────────────────────────────────────────────────────────
+// Every conflict target and every `sequence` flag below was derived from supabase/schema.sql — a
+// dump of the live database — and NOT from the CREATE TABLE in supabase/*.sql. Those files have
+// drifted: order_statuses is keyed on `id` there and on `key` in the file, and subscription_plans
+// and billing_periods are `integer` live where the file says `uuid`. Re-derive from a fresh dump
+// rather than from a file if this list ever needs revisiting.
+//
 //   conflict — upsert target. DEFAULTS TO 'id'; text-keyed and composite tables say so.
 //   sequence — the PK is serial/identity. Inserting explicit ids does NOT advance the
 //              sequence, so the first row prod creates ITSELF collides. See below.
@@ -61,13 +67,26 @@ const PLAN = [
   { table: 'role_capabilities',       conflict: 'role_key,capability_key' },   // composite PK, no id
 
   // ── Vocabularies the code speaks by key ──
-  { table: 'order_statuses',          conflict: 'key' },                       // orders.status FKs this
+  // order_statuses conflicts on `id`, NOT `key`, and is identity-backed. supabase/order_statuses.sql
+  // says the PK is `key` with no id column at all — that file is stale. The live schema has
+  // `order_statuses_pkey PRIMARY KEY (id)` with `key` demoted to a unique constraint, and dev holds
+  // 11 rows to the file's 9 (`quote_approved` among them). Trusting the file here would have seeded
+  // the wrong shape AND missed two statuses. Taken from supabase/schema.sql, which is the point of it.
+  { table: 'order_statuses',          conflict: 'id', sequence: true },
   { table: 'design_session_statuses', conflict: 'id' },
   { table: 'element_action_types',    conflict: 'id' },                        // `move` (migration 061)
   { table: 'dietary_requirements',    conflict: 'id', sequence: true },
   { table: 'notification_types',      conflict: 'id', sequence: true },        // notifications.type_id FKs this
 
   // ── Billing + commerce. Prices and entitlements: read them before you trust them. ──
+  //
+  // subscription_statuses and payment_providers exist in NO file in this repo — they were found by
+  // diffing supabase/schema.sql against it, along with 12 other tables including `orders` and
+  // `bakers`. An empty subscription_statuses is the worst of the set: baker_subscriptions.status_id
+  // is a FK to it, so every subscription insert would fail on a constraint, and the first symptom
+  // would be a baker unable to pay.
+  { table: 'subscription_statuses',   conflict: 'id' },                        // baker_subscriptions.status_id FKs this
+  { table: 'payment_providers',       conflict: 'id', review: ['name', 'is_active'] },
   { table: 'billing_periods',         conflict: 'id' },
   { table: 'subscription_plans',      conflict: 'id', review: ['name', 'price_monthly', 'price_yearly', 'is_active'] },
   { table: 'cancellation_reasons',    conflict: 'id' },

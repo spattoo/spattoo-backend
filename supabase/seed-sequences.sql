@@ -6,6 +6,9 @@
 -- without this the next row the app inserts collides on the primary key.
 -- ─────────────────────────────────────────────────────────────────────────────
 
+select setval(pg_get_serial_sequence('public.order_statuses', 'id'),
+              coalesce((select max(id) from public.order_statuses), 1));
+
 select setval(pg_get_serial_sequence('public.dietary_requirements', 'id'),
               coalesce((select max(id) from public.dietary_requirements), 1));
 

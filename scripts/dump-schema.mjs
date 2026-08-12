@@ -56,6 +56,12 @@ const OUT = outArg > -1 ? process.argv[outArg + 1] : join(ROOT, 'supabase', 'sch
 
 const DB_URL = process.env.SUPABASE_DB_URL;
 
+// Which pg_dump to run. Overridable because the macOS routes to a Postgres client all put it
+// somewhere different — Postgres.app buries it inside the bundle, Homebrew's libpq is keg-only and
+// unlinked by default — and none of them is worth a PATH edit to run a script once a release.
+//   PG_DUMP=/Applications/Postgres.app/Contents/Versions/latest/bin/pg_dump npm run db:schema
+const PG_DUMP = process.env.PG_DUMP || 'pg_dump';
+
 // Extensions this schema genuinely depends on. Kept as a list rather than detected, because
 // detection needs a live connection we would only make to ask a question whose answer is two
 // items long and changes about once a year.
@@ -78,10 +84,17 @@ function fail(msg, hint) {
 function requirePgDump() {
   let version;
   try {
-    version = execFileSync('pg_dump', ['--version'], { encoding: 'utf8' }).trim();
+    version = execFileSync(PG_DUMP, ['--version'], { encoding: 'utf8' }).trim();
   } catch {
-    fail('pg_dump not found on PATH.',
-      `  Install the Postgres CLIENT (you do not need a server):\n` +
+    fail(`pg_dump not found (tried: ${PG_DUMP}).`,
+      `  You need the Postgres CLIENT tools. You do NOT need a database server —\n` +
+      `  this only ever talks to a remote one.\n\n` +
+      `  Easiest on macOS — Postgres.app (no package manager, no sudo):\n` +
+      `    1. download from https://postgresapp.com  →  drag to /Applications\n` +
+      `    2. run with an explicit path, no PATH edit needed:\n` +
+      `       PG_DUMP=/Applications/Postgres.app/Contents/Versions/latest/bin/pg_dump \\\n` +
+      `         npm run db:schema\n\n` +
+      `  Or via Homebrew, if you have it:\n` +
       `    brew install libpq && brew link --force libpq\n\n` +
       `  Supabase runs Postgres 15+, and pg_dump refuses to dump a server NEWER than\n` +
       `  itself — so an old client fails with a version-mismatch error, not a bad dump.`);
@@ -179,8 +192,8 @@ function main() {
   let body;
   try {
     body = execSync(
-      `pg_dump "$SUPABASE_DB_URL" --schema-only --no-owner --no-privileges --schema=public`,
-      { encoding: 'utf8', maxBuffer: 64 * 1024 * 1024, env: { ...process.env, SUPABASE_DB_URL: DB_URL }, stdio: ['ignore', 'pipe', 'inherit'] },
+      `"$PG_DUMP" "$SUPABASE_DB_URL" --schema-only --no-owner --no-privileges --schema=public`,
+      { encoding: 'utf8', maxBuffer: 64 * 1024 * 1024, env: { ...process.env, SUPABASE_DB_URL: DB_URL, PG_DUMP }, stdio: ['ignore', 'pipe', 'inherit'] },
     );
   } catch (e) {
     fail(`pg_dump failed (exit ${e.status}). Its stderr is above.`,
