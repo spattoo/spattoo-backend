@@ -3,6 +3,7 @@ import { serverError } from '../lib/httpError.js';
 import { supabase, supabaseAuth } from '../services/supabase.js';
 import { config } from '../config.js';
 import { getOrderAcceptance } from '../services/entitlements.js';
+import { servedThemeKey } from '../lib/storefrontTheme.js';
 import { templatesForStorefront } from '../lib/templateList.js';
 import { rateLimit } from '../middleware/rateLimit.js';
 import { normalizePhone } from '../lib/phone.js';
@@ -179,7 +180,7 @@ router.get('/storefront/:slug', async (req, res) => {
   try {
     const { data: baker, error } = await supabase
       .from('bakers')
-      .select('id, name, slug, logo_url, logo_transparent_key, primary_color, accent_color, tagline, story, portrait_url, instagram_handle, website_url, storefront_published, storefront_customizations, storefront_themes(key)')
+      .select('id, name, slug, logo_url, logo_transparent_key, primary_color, accent_color, tagline, story, portrait_url, instagram_handle, website_url, storefront_published, storefront_customizations, storefront_themes(key, is_premium)')
       .eq('slug', req.params.slug)
       .eq('is_active', true)
       .maybeSingle();
@@ -203,7 +204,7 @@ router.get('/storefront/:slug', async (req, res) => {
     // (cancelled past grace / expired / paused) is not served AT ALL — the storefront
     // exists only to take orders, so with no way to order there is nothing to show.
     // Also drives the "not accepting orders" banner in the servable (active) case.
-    const { accepting } = await getOrderAcceptance(baker.id);
+    const { accepting, ent } = await getOrderAcceptance(baker.id);
     if (!accepting) return res.status(404).json({ error: 'Storefront not found' });
 
     res.json({
@@ -219,7 +220,10 @@ router.get('/storefront/:slug', async (req, res) => {
       portrait_url:     toPublicUrl(baker.portrait_url),
       instagram_handle: baker.instagram_handle,
       website_url:      baker.website_url,
-      storefront_theme: baker.storefront_themes?.key || 'spotlight',
+      // A premium theme needs the entitlement to be SERVED, not only to be chosen — otherwise a
+      // baker who downgrades off Blaze keeps rendering it forever (see lib/storefrontTheme.js).
+      // Resolved, never written back: their choice stays in the row and returns if they re-subscribe.
+      storefront_theme: servedThemeKey(baker.storefront_themes, ent),
       storefront_customizations: baker.storefront_customizations || {},
       gallery:          (photos ?? []).map(p => ({ url: toPublicUrl(p.storage_key), caption: p.caption })),
       testimonials:     (tms ?? []).map(t => ({ quote: t.quote, author: t.author, occasion: t.occasion })),

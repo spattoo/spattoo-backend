@@ -60,6 +60,10 @@ export async function getEntitlements(bakerId) {
 // two can never drift.
 export async function getOrderAcceptance(bakerId) {
   const e = await getEntitlements(bakerId);
-  if (!e.active) return { accepting: false, code: 'BAKER_INACTIVE' };
-  return { accepting: true, code: null };
+  // `ent` rides along because this already paid for it. The public storefront route calls this on
+  // every request and then needs `premium_themes` to decide which theme to serve — resolving the
+  // set twice on the hottest unauthenticated route would be two round trips for an answer that is
+  // sitting right here. Callers that only want `accepting` can keep ignoring it.
+  if (!e.active) return { accepting: false, code: 'BAKER_INACTIVE', ent: e };
+  return { accepting: true, code: null, ent: e };
 }
