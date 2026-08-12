@@ -117,6 +117,21 @@ function requireProd() {
   // global template would land in prod still pointing at the dev bucket — rendering perfectly, and
   // silently coupled to the environment it was migrated out of.
   if (!PROD.publicUrl) missing.push('PROD_R2_PUBLIC_URL');
+
+  // The SOURCE base is required for the same reason, and was not checked until 2026-08-12.
+  //
+  // Rewriting needs both ends. Without the dev base, `assetKeysIn` cannot recognise a URL as naming
+  // one of OUR objects, so `rewriteAssetHost` matches nothing — the 49 absolute URLs inside
+  // cake_templates.design travel verbatim and prod's templates fetch their textures and GLBs from
+  // the DEV bucket. Identical outcome to a missing PROD_R2_PUBLIC_URL, reached from the other side.
+  //
+  // It also loses objects: 2 of the assets named inside designs are referenced by no element row,
+  // so with the base unknown nothing collects them (298 copied instead of 300) and those two
+  // templates render broken in prod.
+  //
+  // The dry run says `(dev base unknown)` in its summary, but a dry run that prints a plausible
+  // number is exactly what someone reads as "fine" before doing the real one.
+  if (!DEV.publicUrl) missing.push('DEV_R2_PUBLIC_URL (or R2_PUBLIC_URL) — the base dev\'s rows were written with');
   if (missing.length) { console.error(`\n✖ Real run needs prod env vars: ${missing.join(', ')}\n  (run with --dry-run to preview against dev only)\n`); process.exit(1); }
 }
 
