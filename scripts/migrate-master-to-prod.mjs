@@ -36,6 +36,7 @@ import { S3Client, GetObjectCommand, PutObjectCommand, HeadObjectCommand, CopyOb
 // list, so this stays runnable with only Supabase credentials — importing it via signUpload.js or
 // promotionBundle.js would drag in config.js and refuse to start without an OpenAI key.
 import { assetKeysIn, rewriteAssetHost, countAssetUrls } from '../src/lib/assetKeys.js';
+import { pathToFileURL } from 'node:url';
 
 const DRY_RUN         = process.argv.includes('--dry-run');
 const SERVER_SIDE     = process.argv.includes('--server-side');
@@ -52,7 +53,7 @@ const SKIP_EMBEDDINGS = process.argv.includes('--skip-embeddings');
 // R2 keys are NOT declared per table. Every row is deep-walked with the same `assetKeysIn` the
 // admin export uses, so any column or nested jsonb value holding a managed key is copied — see
 // "the walk, not a column list" below.
-const PLAN = [
+export const PLAN = [
   { table: 'element_types' },
   { table: 'tags' },                                          // vocabulary — before element_tags / template_tags reference it
   { table: 'cake_shapes' },                                   // before cake_templates in case templates.shape references it
@@ -258,4 +259,8 @@ async function main() {
   }
 }
 
-main().catch(e => { console.error('FATAL:', e?.message || e); process.exit(1); });
+// Only when invoked directly. verify-prod-library.mjs imports PLAN from here, and an import that
+// starts a migration would be a remarkable way to find that out.
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+  main().catch(e => { console.error('FATAL:', e?.message || e); process.exit(1); });
+}

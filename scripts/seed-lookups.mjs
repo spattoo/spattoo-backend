@@ -247,4 +247,4 @@ async function main() {
 
 // Only run when invoked directly — seed-lookups-sql.mjs imports PLAN from here and must not
 // trigger a migration by doing so.
-if (import.meta.url === pathToFileURL(process.argv[1]).href) main();
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) main();
