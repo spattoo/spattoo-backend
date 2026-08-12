@@ -203,6 +203,27 @@ function main() {
       `    • the password in the URI needs percent-encoding`);
   }
 
+  // ── Strip pg_dump 18's psql meta-commands ───────────────────────────────────────────────────
+  // pg_dump 18 wraps its output in a matched pair:
+  //
+  //   \restrict   <random token>
+  //   …
+  //   \unrestrict <random token>
+  //
+  // They are psql DIRECTIVES, not SQL — hardening added so that a hostile object name cannot
+  // smuggle psql meta-commands into a restore that is being piped through psql. Any other client
+  // sees a bare backslash and stops: the Supabase SQL editor fails the whole script on
+  //   ERROR: 42601: syntax error at or near "\"
+  // at line 31, having executed nothing.
+  //
+  // Safe to remove HERE specifically, because the protection is meaningless where it lands. It
+  // guards psql's interpretation of meta-commands; a client that does not interpret meta-commands
+  // has nothing to guard. This file's whole purpose is to be pasted into a SQL editor.
+  //
+  // Only matters with pg_dump ≥ 18. Harmless on older clients — the lines simply are not there.
+  const restrictLines = (body.match(/^\\(un)?restrict\b.*$/gm) || []).length;
+  body = body.replace(/^\\(un)?restrict\b.*$\n?/gm, '');
+
   // A dump that "succeeded" with nothing in it is the outcome worth catching: an empty file
   // committed as the baseline looks exactly like a schema that has not drifted.
   const tables   = (body.match(/^CREATE TABLE /gm)   || []).length;
@@ -231,6 +252,7 @@ function main() {
   console.log(`  policies  ${policies}`);
   console.log(`  indexes   ${indexes}`);
   console.log(`  extensions re-emitted: ${EXTENSIONS.join(', ')}`);
+  if (restrictLines) console.log(`  psql meta-commands stripped: ${restrictLines} (\\restrict — pg_dump 18+)`);
   console.log(`  cron jobs re-emitted:  ${CRON_JOBS.map(j => j.name).join(', ')}`);
   console.log(`\n✓ wrote ${OUT.replace(ROOT + '/', '')}`);
   console.log(`\nNext: commit it. Then to build a fresh project —`);

@@ -28,7 +28,6 @@ create extension if not exists pg_cron;
 -- PostgreSQL database dump
 --
 
-\restrict rRPYA66nm2HwziZkxL2tth702OXcZ1iC5PHH6qNbRptnoEAzbLxeyw16A9xaPk0
 
 -- Dumped from database version 17.6
 -- Dumped by pg_dump version 18.4 (Postgres.app)
@@ -5623,7 +5622,6 @@ CREATE POLICY "users can read own row" ON public.baker_appusers FOR SELECT TO au
 -- PostgreSQL database dump complete
 --
 
-\unrestrict rRPYA66nm2HwziZkxL2tth702OXcZ1iC5PHH6qNbRptnoEAzbLxeyw16A9xaPk0
 
 
 
