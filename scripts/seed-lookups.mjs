@@ -39,7 +39,7 @@ import 'dotenv/config';
 import { createClient } from '@supabase/supabase-js';
 import { writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 const DRY_RUN = process.argv.includes('--dry-run');
@@ -60,7 +60,10 @@ const SEQ_SQL_PATH = join(ROOT, 'supabase', 'seed-sequences.sql');
 //
 // Ordered so FK targets precede the rows that reference them (roles + capabilities
 // before the matrix that joins them). Everything else here is independent.
-const PLAN = [
+// Exported so scripts/seed-lookups-sql.mjs emits the SAME sixteen tables in the SAME order with
+// the SAME conflict targets. A second copy of this list is exactly how the two paths would come to
+// disagree about, say, whether order_statuses keys on `id` or `key`.
+export const PLAN = [
   // ── RBAC. Deny-by-default: empty tables mean every admin route 403s. ──
   { table: 'capabilities',            conflict: 'key' },
   { table: 'roles',                   conflict: 'key' },
@@ -242,4 +245,6 @@ async function main() {
   console.log(`until that row exists, every admin route in prod returns 403.\n`);
 }
 
-main();
+// Only run when invoked directly — seed-lookups-sql.mjs imports PLAN from here and must not
+// trigger a migration by doing so.
+if (import.meta.url === pathToFileURL(process.argv[1]).href) main();

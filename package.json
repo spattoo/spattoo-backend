@@ -34,7 +34,8 @@
     "verify:ai-credit-buckets": "node scripts/verify-ai-credit-buckets.mjs",
     "db:schema": "node scripts/dump-schema.mjs",
     "db:schema:check": "node scripts/dump-schema.mjs --check",
-    "db:seed-lookups": "node scripts/seed-lookups.mjs"
+    "db:seed-lookups": "node scripts/seed-lookups.mjs",
+    "db:seed-lookups:sql": "node scripts/seed-lookups-sql.mjs"
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.1036.0",
