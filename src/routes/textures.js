@@ -1,4 +1,5 @@
 import { Router } from 'express';
+import { serverError } from '../lib/httpError.js';
 import { supabase } from '../services/supabase.js';
 import { requireAuth } from '../middleware/auth.js';
 import { requireCapability } from '../middleware/rbac.js';
@@ -44,10 +45,10 @@ router.get('/textures', requireAuth, requireCapability('design:create'), async (
       .select(FIELDS)
       .eq('is_active', true)
       .order('sort_order');
-    if (error) return res.status(500).json({ error: error.message });
+    if (error) return serverError(req, res, error);
     res.json(data);
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    serverError(req, res, err);
   }
 });
 
@@ -59,10 +60,10 @@ router.get('/admin/textures', requireAuth, requireCapability('catalog:admin'), a
       .from('cake_textures')
       .select(FIELDS)
       .order('sort_order');
-    if (error) return res.status(500).json({ error: error.message });
+    if (error) return serverError(req, res, error);
     res.json(data);
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    serverError(req, res, err);
   }
 });
 
@@ -95,7 +96,7 @@ router.post('/admin/textures', requireAuth, requireCapability('catalog:admin'), 
     }
     res.json(data);
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    serverError(req, res, err);
   }
 });
 
@@ -128,7 +129,7 @@ router.patch('/admin/textures/:id', requireAuth, requireCapability('catalog:admi
     }
     res.json(data);
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    serverError(req, res, err);
   }
 });
 

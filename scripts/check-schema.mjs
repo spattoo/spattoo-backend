@@ -20,8 +20,15 @@ const SQL_DIR = join(dirname(fileURLToPath(import.meta.url)), '..', 'supabase');
 const TEXT_KEY_COLS = /\b(key|slug|code|name|email|title)\b/i;
 const REF_RE = /REFERENCES\s+\w+\s*\(\s*([a-z_]+)\s*\)/gi;
 
+// Generated files, skipped. `schema.sql` is a pg_dump snapshot (scripts/dump-schema.mjs), and
+// pg_dump does not carry inline `--` comments — so every `-- scale-ok:` opt-out in the authored
+// files is absent from the dump, and scanning it would re-report decisions already made and
+// justified, with no line to write the opt-out on. This gate's job is to catch a NEW text-key FK
+// where it is authored; the dump is a mirror, not a place anyone declares one.
+const GENERATED = new Set(['schema.sql', 'seed-sequences.sql']);
+
 let violations = 0;
-for (const file of readdirSync(SQL_DIR).filter(f => f.endsWith('.sql'))) {
+for (const file of readdirSync(SQL_DIR).filter(f => f.endsWith('.sql') && !GENERATED.has(f))) {
   const lines = readFileSync(join(SQL_DIR, file), 'utf8').split('\n');
   lines.forEach((line, i) => {
     REF_RE.lastIndex = 0;

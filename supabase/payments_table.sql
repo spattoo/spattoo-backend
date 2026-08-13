@@ -15,3 +15,5 @@ CREATE TABLE IF NOT EXISTS payments (
 );
 
 CREATE INDEX IF NOT EXISTS payments_baker_id_idx ON payments(baker_id);
+-- Hot access pattern: a baker's payments newest-first (latest-row fetch + count).
+CREATE INDEX IF NOT EXISTS payments_baker_charged_at_idx ON payments(baker_id, charged_at DESC);

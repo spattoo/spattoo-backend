@@ -3,11 +3,23 @@ import { connection } from './queue.js';
 import { extractImage } from './processors/extractImage.js';
 import { autoTag } from './processors/autoTag.js';
 import { sendNotification } from './processors/sendNotification.js';
+import { removeLogoBg } from './processors/removeLogoBg.js';
+import { optimizePhoto } from './processors/optimizePhoto.js';
+import { reconcileSubscriptions } from './processors/reconcileSubscriptions.js';
+import { relayBillingOutbox } from './processors/relayBillingOutbox.js';
+import { eraseExpiredAccounts } from './processors/eraseExpiredAccounts.js';
+import { sendDeliveryDigest } from './processors/sendDeliveryDigest.js';
 
 const processors = {
-  extract_image:     extractImage,
-  auto_tag:          autoTag,
-  send_notification: sendNotification,
+  extract_image:           extractImage,
+  auto_tag:                autoTag,
+  send_notification:       sendNotification,
+  remove_logo_bg:          removeLogoBg,
+  optimize_photo:          optimizePhoto,
+  reconcile_subscriptions: reconcileSubscriptions,
+  relay_billing_outbox:    relayBillingOutbox,
+  erase_expired_accounts:  eraseExpiredAccounts,
+  send_delivery_digest:    sendDeliveryDigest,
 };
 
 export function startWorker() {

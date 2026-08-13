@@ -1,4 +1,5 @@
 import { Router } from 'express';
+import { serverError } from '../lib/httpError.js';
 import { supabase } from '../services/supabase.js';
 import { requireAuth } from '../middleware/auth.js';
 import { requireCapability } from '../middleware/rbac.js';
@@ -42,10 +43,10 @@ router.get('/nozzles', requireAuth, requireCapability('design:create'), async (r
       .order('sort_order', { ascending: true })
       .order('brand', { ascending: true });
 
-    if (error) return res.status(500).json({ error: error.message });
+    if (error) return serverError(req, res, error);
     res.json(data);
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    serverError(req, res, err);
   }
 });
 
@@ -66,7 +67,7 @@ router.post('/admin/nozzles', requireAuth, requireCapability('catalog:admin'), a
     }
     res.status(201).json(data);
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    serverError(req, res, err);
   }
 });
 
@@ -99,13 +100,13 @@ router.post('/admin/nozzles/bulk', requireAuth, requireCapability('catalog:admin
         .from('nozzles')
         .upsert(valid, { onConflict: 'brand,number', ignoreDuplicates: true })
         .select('id');
-      if (error) return res.status(500).json({ error: error.message });
+      if (error) return serverError(req, res, error);
       created = data?.length ?? 0;
     }
 
     res.json({ created, skipped: valid.length - created, errors });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    serverError(req, res, err);
   }
 });
 
@@ -128,7 +129,7 @@ router.patch('/admin/nozzles/:id', requireAuth, requireCapability('catalog:admin
     }
     res.json(data);
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    serverError(req, res, err);
   }
 });
 
@@ -136,10 +137,10 @@ router.patch('/admin/nozzles/:id', requireAuth, requireCapability('catalog:admin
 router.delete('/admin/nozzles/:id', requireAuth, requireCapability('catalog:admin'), async (req, res) => {
   try {
     const { error } = await supabase.from('nozzles').delete().eq('id', req.params.id);
-    if (error) return res.status(500).json({ error: error.message });
+    if (error) return serverError(req, res, error);
     res.json({ deleted: req.params.id });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    serverError(req, res, err);
   }
 });
 

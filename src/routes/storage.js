@@ -1,45 +1,41 @@
 import { Router } from 'express';
-import { getSignedUploadUrl, deleteObject } from '../services/r2.js';
+import { serverError } from '../lib/httpError.js';
+import { deleteObject } from '../services/r2.js';
+import { signUpload, IMAGE_MAX, MODEL_MAX, FONT_MAX, ALLOWED_FOLDERS } from '../lib/signUpload.js';
 import { requireAuth } from '../middleware/auth.js';
-import { requireCapability } from '../middleware/rbac.js';
+import { requireCapability, requireAdmin } from '../middleware/rbac.js';
 import { config } from '../config.js';
 
 const router = Router();
 
-const ALLOWED_FOLDERS = [
-  'elements/files/2D',
-  'elements/files/3D',
-  'elements/thumbnails',
-  'templates/files',
-  'templates/thumbnails',
-  'logos',
-  'portraits',             // baker portrait for the storefront "Our story" section
-  'storefront/gallery',    // baker cake photos for the storefront slideshow
-  'orders/thumbnails',
-  'customer/photos',   // customer-uploaded photo for a photo-cake frame (public so the designer can texture it)
-  'meshy/source',   // uploaded 2D image for the image→3D wizard (public so Meshy can fetch it)
-  'meshy/outputs',  // our copy of the Meshy-generated GLB (written server-side via putObject)
-];
+// What the client is allowed to upload. The browser must refuse an oversized file at the moment it is
+// PICKED — telling her after a long upload that it was never going to be accepted is not a limit, it is
+// an insult — and to do that it needs the number. It reads it from HERE rather than carrying a copy,
+// because a copy is a second number that drifts: raise the env and a hardcoded client goes on accepting
+// what this route then 413s.
+router.get('/storage/limits', requireAuth, (req, res) => {
+  res.json({
+    imageBytes: IMAGE_MAX,
+    modelBytes: MODEL_MAX,
+    fontBytes:  FONT_MAX,
+  });
+});
 
+// ── POST /api/storage/sign-upload ─────────────────────────────────────────────
+// The AUTHENTICATED upload path: a baker app-user or admin writing to any managed folder. WHO may
+// write lives here; WHAT is a legal object lives in lib/signUpload.js, shared with the storefront's
+// reference-photo route, which admits a different set of people to exactly one folder.
 router.post('/storage/sign-upload', requireAuth, requireCapability('design:create'), async (req, res) => {
   try {
-    const { folder, filename, contentType } = req.body;
-    if (!folder || !filename || !contentType) {
-      return res.status(400).json({ error: 'folder, filename and contentType are required' });
-    }
-    if (!ALLOWED_FOLDERS.includes(folder)) {
-      return res.status(400).json({ error: `Invalid folder. Allowed: ${ALLOWED_FOLDERS.join(', ')}` });
-    }
-
-    const key = `${folder}/${filename}`;
-    const url = await getSignedUploadUrl(key, contentType);
+    const { folder, filename, contentType, contentLength } = req.body;
+    const { error, status, ...signed } = await signUpload({ folder, filename, contentType, contentLength });
+    if (error) return res.status(status).json({ error });
     // publicUrl: the directly-loadable URL for `key`, so a client that needs to render the asset
     // immediately (e.g. a photo-cake frame texture persisted inside design JSON) can store a stable
     // URL without re-deriving the R2 base. Bare `key` is still returned for DB columns the API expands.
-    const publicUrl = config.r2.publicUrl ? `${config.r2.publicUrl}/${key}` : null;
-    res.json({ url, key, publicUrl });
+    res.json(signed);
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    serverError(req, res, err);
   }
 });
 
@@ -54,7 +50,12 @@ function toKey(raw) {
   return k.replace(/^\/+/, '');
 }
 
-router.post('/storage/delete', requireAuth, requireCapability('design:create'), async (req, res) => {
+// SEC-2: ADMIN-only. This deletes arbitrary managed-folder objects with no per-tenant ownership
+// check, so it must not be reachable by bakers/customers (they could delete another tenant's logo/
+// gallery via publicly-discoverable keys). Its only real caller is the admin catalog UI
+// (ManageElements). Baker/customer asset deletion goes through owner-scoped endpoints
+// (DELETE /baker/storefront-photos/:id, order photo deletes) — never this route.
+router.post('/storage/delete', requireAuth, requireAdmin, async (req, res) => {
   try {
     const key = toKey(req.body?.key);
     if (!key) return res.status(400).json({ error: 'key is required' });
@@ -65,7 +66,7 @@ router.post('/storage/delete', requireAuth, requireCapability('design:create'), 
     await deleteObject(key);
     res.json({ ok: true, key });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    serverError(req, res, err);
   }
 });
 

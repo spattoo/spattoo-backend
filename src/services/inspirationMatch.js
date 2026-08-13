@@ -4,13 +4,15 @@ import { config } from '../config.js';
 import {
   TYPE_MAP, isMatchable, ZONE_ADJACENCY,
   normalizeZones, zoneCompat, bestZone, modeCompat, colourProximity, decorationQueryText,
+  isConfidentMatch,
 } from './inspirationMaps.js';
 
 // Score weights — semantic dominates, placement is the strong secondary signal.
 const W = { semantic: 0.40, zone: 0.25, type: 0.15, mode: 0.08, colour: 0.12 };
 const ZONE_FLOOR = 0.1;       // a placement-incompatible candidate (e.g. board-only for a top-rim deco) is dropped
-const CONFIDENCE_MIN = 0.35;  // best score below this → reported as a coverage gap (no confident match)
 const SHORTLIST = 20;
+// CONFIDENCE_MIN / SEMANTIC_MIN and the gate itself live in inspirationMaps.js with the other
+// knobs, so the policy can be tested without pulling in supabase and the whole config.
 
 function publicUrl(key) {
   if (!key) return null;
@@ -63,8 +65,13 @@ function scoreCandidate(deco, cand) {
   };
 }
 
-async function matchDecoration(deco) {
-  const qv = await embedText(decorationQueryText(deco) || deco.type || 'cake decoration');
+async function matchDecoration(deco, calls) {
+  const { embedding: qv, usage, model } = await embedText(decorationQueryText(deco) || deco.type || 'cake decoration');
+  // Every decoration costs one embedding. Individually trivial (~$0.00002), but a metered caller
+  // that ignored them would understate its own cost by however many decorations the cake has — and
+  // the point of the margin guardrail is that it is not guessing. Collected, not summed here: the
+  // pricing table lives in services/aiCredits.js and this file has no business knowing rupees.
+  calls?.push({ model, usage });
   const cands = await retrieve(qv);
   const scored = cands
     .map(c => {
@@ -81,11 +88,17 @@ async function matchDecoration(deco) {
     .filter(Boolean)
     .sort((a, b) => b.score - a.score);
   const best = scored[0] || null;
+  const confident = isConfidentMatch(best);
   return {
-    decoration: { type: deco.type, subtype: deco.subtype, placement: deco.placement, rim_side: deco.rim_side, color_hex: deco.color_hex, count: deco.count, text: deco.text },
-    match: best && best.score >= CONFIDENCE_MIN ? best : null,
+    decoration: { type: deco.type, subtype: deco.subtype, placement: deco.placement, rim_side: deco.rim_side, color_hex: deco.color_hex, count: deco.count, text: deco.text, bbox: deco.bbox ?? null, tier_width_ratio: deco.tier_width_ratio ?? null },
+    match: confident ? best : null,
     alternatives: scored.slice(1, 4),
     confidence: best ? +best.score.toFixed(3) : 0,
+    // The semantic term on its own, kept whether or not the match was accepted. Without it a
+    // rejection is unattributable — a composite of 0.58 looks like a near-miss when it may have
+    // been 0.58 of pure placement agreement — and SEMANTIC_MIN could only ever be re-argued
+    // rather than measured. This is the tuning signal.
+    semantic: best ? best.breakdown.semantic : 0,
   };
 }
 
@@ -95,6 +108,9 @@ export async function matchAnalysis(analysis) {
   const tiers = [];
   let matched = 0, total = 0;
   const gaps = [], nonMatched = [];
+  // Provider calls this run made, for the caller's cost accounting. Additive to the return shape,
+  // so the (unmetered) inspiration route is free to ignore it.
+  const calls = [];
 
   for (const tier of analysis.tiers || []) {
     const items = [];
@@ -104,12 +120,12 @@ export async function matchAnalysis(analysis) {
         continue;
       }
       total++;
-      const r = await matchDecoration(deco);
+      const r = await matchDecoration(deco, calls);
       if (r.match) matched++; else gaps.push({ type: deco.type, placement: deco.placement, color_hex: deco.color_hex });
       items.push(r);
     }
     tiers.push({ index: tier.index ?? null, position: tier.position ?? null, matches: items });
   }
 
-  return { tiers, coverage: { matched, total, gaps }, nonMatched };
+  return { tiers, coverage: { matched, total, gaps }, nonMatched, calls };
 }

@@ -8,7 +8,36 @@
   "scripts": {
     "start": "node src/index.js",
     "dev": "nodemon src/index.js",
-    "check:schema": "node scripts/check-schema.mjs"
+    "prepare": "git config core.hooksPath .githooks 2>/dev/null || true",
+    "check:boot": "node scripts/check-boot.mjs",
+    "check:migrations": "node scripts/check-migrations.mjs",
+    "check:occasions": "node ../spattoo-docs/bin/check-occasions.mjs",
+    "check:schema": "node scripts/check-schema.mjs",
+    "check:admin-routes": "node scripts/check-admin-routes.mjs",
+    "check:xray-spec": "node scripts/check-xray-spec.mjs",
+    "check:ai-credit-pricing": "node scripts/check-ai-credit-pricing.mjs",
+    "check:dup": "jscpd src",
+    "check:feature-docs": "node ../spattoo-docs/bin/check-feature-docs.mjs --repo spattoo-api",
+    "check": "npm run check:migrations && npm run check:occasions && npm run check:boot && npm run check:schema && npm run check:admin-routes && npm run check:xray-spec && npm run check:ai-credit-pricing && npm run check:match-confidence && npm run check:sale-events && npm run check:credit-alerts && npm run check:bg-fallback && npm run check:gst && npm run check:print-sheets && npm run check:likeness && npm run check:premium-themes && npm run check:delivery-digest && npm run check:push-copy && npm run check:email-design-claims && npm run check:dup && npm run check:feature-docs",
+    "check:match-confidence": "node scripts/check-match-confidence.mjs",
+    "check:sale-events": "node scripts/check-sale-events.mjs",
+    "check:credit-alerts": "node scripts/check-credit-alerts.mjs",
+    "check:bg-fallback": "node scripts/check-bg-fallback.mjs",
+    "check:gst": "node scripts/check-gst.mjs",
+    "check:print-sheets": "node scripts/check-print-sheets.mjs",
+    "check:premium-themes": "node scripts/check-premium-themes.mjs",
+    "check:likeness": "node scripts/check-likeness.mjs",
+    "check:delivery-digest": "node scripts/check-delivery-digest.mjs",
+    "check:push-copy": "node scripts/check-push-copy.mjs",
+    "check:email-design-claims": "node scripts/check-email-design-claims.mjs",
+    "check:plan-copy": "node ../spattoo-docs/bin/check-plan-copy.mjs",
+    "verify:ai-credit-buckets": "node scripts/verify-ai-credit-buckets.mjs",
+    "db:schema": "node scripts/dump-schema.mjs",
+    "db:schema:check": "node scripts/dump-schema.mjs --check",
+    "db:seed-lookups": "node scripts/seed-lookups.mjs",
+    "db:seed-lookups:sql": "node scripts/seed-lookups-sql.mjs",
+    "db:verify-library": "node scripts/verify-prod-library.mjs",
+    "verify:razorpay-plans": "node scripts/verify-razorpay-plans.mjs"
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.1036.0",
@@ -19,11 +48,16 @@
     "cors": "^2.8.5",
     "dotenv": "^16.4.0",
     "express": "^4.21.0",
+    "firebase-admin": "^14.2.0",
     "ioredis": "^5.3.2",
+    "libphonenumber-js": "^1.13.7",
     "nodemailer": "^8.0.10",
-    "razorpay": "^2.9.6"
+    "razorpay": "^2.9.6",
+    "sharp": "^0.35.2",
+    "standardwebhooks": "^1.0.0"
   },
   "devDependencies": {
+    "jscpd": "^5.0.14",
     "nodemon": "^3.1.0"
   }
 }

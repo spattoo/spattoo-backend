@@ -1,0 +1,244 @@
+import { Router } from 'express';
+import { serverError } from '../lib/httpError.js';
+import { requireAuth } from '../middleware/auth.js';
+import { resolvePrincipal, requireCapability } from '../middleware/rbac.js';
+import { config } from '../config.js';
+import { razorpay, razorpayEnabled } from './billing.js';
+import {
+  getAiCreditBalance, listAiCreditCosts, listCreditPacks, getCreditPack, listAiCreditHistory,
+} from '../services/aiCredits.js';
+import { creditWarningLevel } from '../services/creditAlerts.js';
+import { gstBreakup, withGst } from '../lib/gst.js';
+
+const router = Router();
+
+// ── GET /api/baker/ai-credits ─────────────────────────────────────────────────
+// The metered-tools balance, plus what that balance is WORTH in each action.
+//
+// No requireCapability: the two surfaces that need this number are the designer (smart tools) and
+// the orders panel (X-Ray from a photo), which sit behind different capabilities — gating on either
+// one would blank the meter on the other. A tenant's own credit balance is not privileged
+// information inside that tenant, so the guard is "is a baker account", the same shape as
+// /baker/dashboard's check.
+//
+// WHY `actions` IS PART OF THIS RESPONSE — it is not a convenience.
+// SUBSCRIPTION_TIERS.md is explicit that bakers see a CONCRETE COUNT ("5 photo→cake designs
+// left"), never an abstract credit balance, and credit_costs is DATA precisely so a price can move
+// without a deploy. Those two facts together mean the client must never divide by a hardcoded
+// price: retune the seed and every client that carries its own copy starts lying. So the server
+// does the division and hands over the counts. The raw credit figures ride along for the admin/
+// billing surfaces, which legitimately deal in credits.
+router.get('/baker/ai-credits', requireAuth, resolvePrincipal, async (req, res) => {
+  try {
+    if (!req.bakerId) return res.status(403).json({ error: 'Not a baker account' });
+
+    const [balance, costs] = await Promise.all([
+      getAiCreditBalance(req.bakerId),
+      listAiCreditCosts(),
+    ]);
+
+    // `spendable` is null on an unlimited plan — so is every count, which is what lets the UI say
+    // "included" instead of inventing a countdown it would then have to keep accurate.
+    const actions = costs.map(c => ({
+      actionKey: c.action_key,
+      label:     c.label,
+      credits:   c.credits,
+      remaining: balance.spendable === null ? null : Math.floor(balance.spendable / c.credits),
+      affordable: balance.spendable === null ? true : balance.spendable >= c.credits,
+    }));
+
+    // Graduated nudges fire at 70/90/100% of the ALLOWANCE (not of allowance+wallet): the wall the
+    // baker is walking towards is the plan's, and someone who has topped up has already answered
+    // the upgrade question. Sent as a computed percentage so the thresholds live in one place —
+    // here — rather than being re-derived by every client that draws a meter.
+    const usedPct = balance.unlimited || !balance.allowance
+      ? 0
+      : Math.min(100, Math.round((balance.allowanceUsed / balance.allowance) * 100));
+
+    // Whether this baker should be WARNED, decided by the same pure function the email path uses
+    // (services/creditAlerts.js). Sent rather than re-derived on the client: the rule includes the
+    // 80% watermark and the "suppress when bought credits cover it" case, and a second copy in the
+    // UI is a second thing to keep in step — the two would disagree the first time either moved.
+    //
+    // 'low' | 'exhausted' | null. The client decides how to SHOW it and when it has been
+    // dismissed; it never decides whether there is something to show.
+    res.json({ ...balance, usedPct, creditWarning: creditWarningLevel(balance), actions });
+  } catch (err) {
+    serverError(req, res, err);
+  }
+});
+
+// ── GET /api/baker/ai-credits/history ─────────────────────────────────────────
+// Where the credits went — a dated list of every spend, and which bucket paid for it.
+//
+// This exists because a metered resource a baker cannot audit is one they have to TRUST, and the
+// balance alone gives them no way to check it. "I had 300 and now I have 240" is answerable only
+// if something can say what the 60 went on.
+//
+// It matters more here than it would for a plain counter, because there are TWO buckets with
+// different rules — the monthly allowance resets, purchased credits never expire — and the terms
+// (ToS B8.2) promise a specific spend ORDER. This is the surface where a baker can see that
+// promise being kept rather than being asked to believe it.
+//
+// Same guard as the balance route, for the same reason: a tenant's own ledger is not privileged
+// information inside that tenant.
+router.get('/baker/ai-credits/history', requireAuth, resolvePrincipal, async (req, res) => {
+  try {
+    if (!req.bakerId) return res.status(403).json({ error: 'Not a baker account' });
+    const { limit, before } = req.query;
+    const size  = Math.min(Number(limit) || 50, 100);
+    const items = await listAiCreditHistory(req.bakerId, { limit: size, before });
+    // The cursor is the last row's timestamp, handed back rather than reconstructed by the client
+    // — the client should not have to know that this list is keyed on created_at.
+    //
+    // NULL on a short page, which is what tells the client it has reached the end. Returning a
+    // cursor unconditionally would leave a "load more" button that fetches an empty page and then
+    // disappears — the baker clicks, waits, and nothing happens, which reads as broken.
+    res.json({
+      items,
+      nextBefore: items.length === size ? items[items.length - 1].at : null,
+    });
+  } catch (err) {
+    serverError(req, res, err);
+  }
+});
+
+// ── GET /api/baker/ai-credits/packs ───────────────────────────────────────────
+// The top-up shelf. Returns credits + price so the client can render each pack, and the
+// per-action counts so it can render them the way SUBSCRIPTION_TIERS.md requires — "+20 build
+// guides · ₹299", not "300 credits · ₹299". Same reasoning as `actions` on the balance route:
+// the price is data, so the division belongs on the server.
+//
+// Prices are GST-EXCLUSIVE in the TABLE, matching how subscription_plans stores them — so every
+// pack also reports basePaise / gstPaise / totalPaise, and `totalPaise` is what gets charged.
+// Publishing only the base is what let the buy screen say "prices exclude GST" beside a button
+// that then billed the base and nothing more.
+router.get('/baker/ai-credits/packs', requireAuth, resolvePrincipal, async (req, res) => {
+  try {
+    if (!req.bakerId) return res.status(403).json({ error: 'Not a baker account' });
+
+    const [packs, costs, balance] = await Promise.all([
+      listCreditPacks(), listAiCreditCosts(), getAiCreditBalance(req.bakerId),
+    ]);
+
+    // TWO independent gates, and the response reports them separately so the UI can say which
+    // one is in the way — "your plan doesn't include top-ups" and "you're already well stocked"
+    // are different sentences and lead to different actions.
+    //
+    //   canBuy  — the PLAN may buy at all (can_buy_credits). Flame's wall is a real wall.
+    //   blocked — this particular pack would breach the stock ceiling. Per-pack, so a small pack
+    //             stays available when a large one does not, rather than refusing everything.
+    const ceiling = balance.ceiling;
+    const wallet  = balance.walletBalance ?? 0;
+    const rows = packs.map(p => ({
+      packKey:    p.pack_key,
+      label:      p.label,
+      credits:    p.credits,
+      pricePaise: p.price_paise,                 // the BASE — kept for anything that reports net
+      // What the card will actually be debited. Sent rather than computed client-side so the
+      // number on the button and the number Razorpay is told to charge come from ONE function.
+      ...gstBreakup(p.price_paise),
+      blocked:    ceiling != null && (wallet + p.credits) > ceiling,
+      buys: costs.map(c => ({
+        actionKey: c.action_key,
+        label:     c.label,
+        count:     Math.floor(p.credits / c.credits),
+      })),
+    }));
+
+    res.json({
+      canBuy:  balance.canBuy,
+      // 'plan' → the tier cannot buy · 'stocked' → it can, but everything would breach the ceiling
+      reason:  !balance.canBuy ? 'plan' : (rows.every(r => r.blocked) ? 'stocked' : null),
+      ceiling,
+      walletBalance: wallet,
+      resetsOn: balance.resetsOn,
+      packs: rows,
+    });
+  } catch (err) {
+    serverError(req, res, err);
+  }
+});
+
+// ── POST /api/baker/ai-credits/purchase ───────────────────────────────────────
+// Opens a Razorpay ORDER for a top-up pack. One-time payment, not a subscription — so this
+// uses the Orders API rather than the Subscriptions API the plan checkout uses, and needs no
+// pre-created Razorpay plan id.
+//
+// SECURITY: the amount is read from credit_packs by the pack key the client sends. It is NEVER
+// taken from the request body. A checkout that trusts a client-supplied amount is a
+// free-credits endpoint with extra steps.
+//
+// This route does NOT credit anything. Credits are minted only by the payment webhook
+// (billing.js), because "the payment succeeded" is a claim that has to come from Razorpay, not
+// from the browser that just clicked pay. notes.* below is what lets the webhook identify the
+// payment as a credit purchase and know which baker and pack it was for.
+router.post('/baker/ai-credits/purchase', requireAuth, requireCapability('billing:manage'), async (req, res) => {
+  try {
+    if (!req.bakerId) return res.status(403).json({ error: 'Not a baker account' });
+    if (!razorpayEnabled()) {
+      return res.status(503).json({ error: 'Payments are temporarily unavailable. Please try again shortly.', code: 'razorpay_unavailable' });
+    }
+
+    const packKey = String(req.body?.packKey ?? '').trim();
+    if (!packKey) return res.status(400).json({ error: 'packKey is required' });
+
+    const pack = await getCreditPack(packKey);
+    if (!pack) return res.status(404).json({ error: 'Unknown or inactive pack' });
+
+    // Both gates enforced HERE, not only in the UI. A disabled button is a courtesy; this is the
+    // rule. Checked before a Razorpay order exists, so a refusal never leaves a payable order.
+    const balance = await getAiCreditBalance(req.bakerId);
+    if (!balance.canBuy) {
+      return res.status(403).json({
+        error: 'Your plan does not include credit top-ups.',
+        code:  'TOPUP_NOT_AVAILABLE',
+        resetsOn: balance.resetsOn,
+      });
+    }
+    if (balance.ceiling != null && (balance.walletBalance ?? 0) + pack.credits > balance.ceiling) {
+      return res.status(409).json({
+        error: `You can hold up to ${balance.ceiling} top-up credits. Add more once your balance drops.`,
+        code:  'TOPUP_LIMIT_REACHED',
+        ceiling: balance.ceiling,
+        walletBalance: balance.walletBalance ?? 0,
+      });
+    }
+
+    // ── GST is ADDED here, and this is the line that decides what leaves a bank account ──
+    // credit_packs.price_paise is the BASE (GST-exclusive), exactly like subscription_plans.
+    // Charging it directly under-collected by 18% on every pack and, because the accounting
+    // service treats whatever was charged as GROSS, reported a sale 15.25% below the sticker
+    // price with the difference silently owed as tax. Fixed 2026-08-02.
+    const charge = withGst(pack.price_paise);
+    const order = await razorpay().orders.create({
+      amount:   charge,                    // base + GST, from the DB — never the request
+      currency: 'INR',
+      // RAZORPAY CAPS `receipt` AT 40 CHARACTERS and rejects the whole order if it is longer.
+      // 'credits:' + a uuid + ':' + a pack key is 54, so every purchase failed with a 500 that
+      // said nothing about length. The uuid is truncated to its first block, which is plenty to
+      // recognise a payment in the dashboard — full identity travels in `notes` below, which is
+      // what the webhook actually reads and what reconciliation depends on.
+      receipt:  `cr:${String(req.bakerId).slice(0, 8)}:${pack.pack_key}`.slice(0, 40),
+      notes: {
+        kind:     'ai_credit_pack',        // the webhook branches on this
+        baker_id: req.bakerId,
+        pack_key: pack.pack_key,
+      },
+    });
+
+    res.json({
+      key_id:     config.razorpay.keyId,
+      order_id:   order.id,
+      amount:     charge,                  // what Checkout will collect
+      currency:   'INR',
+      packKey:    pack.pack_key,
+      credits:    pack.credits,
+      ...gstBreakup(pack.price_paise),     // so a receipt/confirmation can show the split
+    });
+  } catch (err) {
+    serverError(req, res, err);
+  }
+});
+
+export default router;

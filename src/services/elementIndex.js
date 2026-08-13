@@ -38,7 +38,7 @@ export async function reindexElement(elementId) {
   const text = [el.name, description].filter(Boolean).join(' — ').trim();
   if (!text) return { generatedDescription }; // nothing to embed
 
-  const embedding = await embedText(text);
+  const { embedding } = await embedText(text);
 
   // pgvector accepts the '[a,b,c]' text form, which JSON.stringify of the array produces exactly.
   const updates = { description_embedding: JSON.stringify(embedding) };

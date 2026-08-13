@@ -1,19 +1,21 @@
 import { Router } from 'express';
+import { serverError } from '../lib/httpError.js';
 import { supabase } from '../services/supabase.js';
 import { requireAuth } from '../middleware/auth.js';
 import { requireCapability } from '../middleware/rbac.js';
 import { notifyCustomerInvited } from '../services/notifications.js';
+import { normalizePhone } from '../lib/phone.js';
 import { config } from '../config.js';
+import { DESIGN_SESSION_STATUS } from '../constants/designSessionStatuses.js';
+
+// Basic email shape check — the authoritative check is the OTP delivery, but reject
+// obvious garbage at the write point so an unreachable address never lands on a customer.
+const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
 const router = Router();
 
-// ── Resolve baker_id from auth user ──────────────────────────────────────────
-async function getBakerId(userId) {
-  const { data } = await supabase
-    .from('baker_appusers').select('baker_id')
-    .eq('auth_user_id', userId).maybeSingle();
-  return data?.baker_id ?? null;
-}
+// baker_id is the SERVER-RESOLVED req.bakerId (middleware/rbac.js → ensurePrincipal, populated by
+// requireCapability on every route here) — no local re-lookup needed (SEC-14: one canonical source).
 
 // ── GET /api/baker/customers ──────────────────────────────────────────────────
 // ?include_inactive=true  → include deactivated customers
@@ -21,7 +23,7 @@ async function getBakerId(userId) {
 
 router.get('/baker/customers', requireAuth, requireCapability('customer:manage'), async (req, res) => {
   try {
-    const bakerId = await getBakerId(req.user.id);
+    const bakerId = req.bakerId;
     if (!bakerId) return res.status(403).json({ error: 'Not a baker account' });
 
     const includeInactive = req.query.include_inactive === 'true';
@@ -37,8 +39,21 @@ router.get('/baker/customers', requireAuth, requireCapability('customer:manage')
     if (!includeInactive) query = query.eq('is_active', true);
     if (from)             query = query.gte('created_at', from);
 
+    // ── Prospects are hidden by default ──────────────────────────────────────────────────────────
+    // A `storefront_visit` row is somebody who proved a contact to open the 3D designer. They have
+    // not asked the baker for anything, and they have not agreed to be contacted — verifying is an
+    // identity proof, not an invitation to be telephoned.
+    //
+    // This list means "people who wanted something from me". Letting prospects in would quietly
+    // change it to "people who typed a code once", and a list a baker stops trusting is worse than
+    // no list. `?include_prospects=true` is there for the baker who deliberately goes looking.
+    //
+    // NOT folded into is_active: that is the baker's own archive flag, and somebody ticking "show
+    // inactive" wants their archived customers, not a pile of strangers mixed in with them.
+    if (req.query.include_prospects !== 'true') query = query.neq('source', 'storefront_visit');
+
     const { data, error } = await query;
-    if (error) return res.status(500).json({ error: error.message });
+    if (error) return serverError(req, res, error);
 
     const result = q
       ? data.filter(c => {
@@ -49,7 +64,7 @@ router.get('/baker/customers', requireAuth, requireCapability('customer:manage')
 
     res.json(result);
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    serverError(req, res, err);
   }
 });
 
@@ -58,12 +73,20 @@ router.get('/baker/customers', requireAuth, requireCapability('customer:manage')
 
 router.post('/baker/customers', requireAuth, requireCapability('customer:manage'), async (req, res) => {
   try {
-    const bakerId = await getBakerId(req.user.id);
+    const bakerId = req.bakerId;
     if (!bakerId) return res.status(403).json({ error: 'Not a baker account' });
 
-    const { firstName, lastName, email, phone } = req.body;
+    const { firstName, lastName, email, phone, phoneCountry } = req.body;
+    const emailNorm = email?.trim().toLowerCase() || null;
     if (!firstName?.trim())                  return res.status(400).json({ error: 'firstName is required' });
-    if (!phone?.trim() && !email?.trim())    return res.status(400).json({ error: 'phone or email is required' });
+    if (!phone?.trim() && !emailNorm)        return res.status(400).json({ error: 'phone or email is required' });
+    if (emailNorm && !EMAIL_RE.test(emailNorm)) return res.status(400).json({ error: 'Enter a valid email address' });
+    let phoneNorm = null;
+    if (phone?.trim()) {
+      const p = normalizePhone(phone, phoneCountry);
+      if (!p.ok) return res.status(400).json({ error: p.error });
+      phoneNorm = p.e164;
+    }
 
     const { data, error } = await supabase
       .from('customers')
@@ -71,18 +94,18 @@ router.post('/baker/customers', requireAuth, requireCapability('customer:manage'
         baker_id:   bakerId,
         first_name: firstName.trim(),
         last_name:  lastName?.trim() || null,
-        email:      email?.trim().toLowerCase() || null,
-        phone:      phone?.trim() || null,
+        email:      emailNorm,
+        phone:      phoneNorm,
         source:     'manual',
         is_active:  true,
       })
       .select('id, first_name, last_name, email, phone, is_active, source, created_at')
       .single();
 
-    if (error) return res.status(500).json({ error: error.message });
+    if (error) return serverError(req, res, error);
     res.status(201).json(data);
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    serverError(req, res, err);
   }
 });
 
@@ -91,7 +114,7 @@ router.post('/baker/customers', requireAuth, requireCapability('customer:manage'
 
 router.patch('/baker/customers/:id', requireAuth, requireCapability('customer:manage'), async (req, res) => {
   try {
-    const bakerId = await getBakerId(req.user.id);
+    const bakerId = req.bakerId;
     if (!bakerId) return res.status(403).json({ error: 'Not a baker account' });
 
     const { firstName, lastName, email, phone } = req.body;
@@ -111,11 +134,11 @@ router.patch('/baker/customers/:id', requireAuth, requireCapability('customer:ma
       .select('id, first_name, last_name, email, phone, is_active, source, created_at')
       .maybeSingle();
 
-    if (error)  return res.status(500).json({ error: error.message });
+    if (error)  return serverError(req, res, error);
     if (!data)  return res.status(404).json({ error: 'Customer not found' });
     res.json(data);
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    serverError(req, res, err);
   }
 });
 
@@ -123,7 +146,7 @@ router.patch('/baker/customers/:id', requireAuth, requireCapability('customer:ma
 
 router.patch('/baker/customers/:id/deactivate', requireAuth, requireCapability('customer:manage'), async (req, res) => {
   try {
-    const bakerId = await getBakerId(req.user.id);
+    const bakerId = req.bakerId;
     if (!bakerId) return res.status(403).json({ error: 'Not a baker account' });
 
     const { data, error } = await supabase
@@ -131,11 +154,11 @@ router.patch('/baker/customers/:id/deactivate', requireAuth, requireCapability('
       .eq('id', req.params.id).eq('baker_id', bakerId)
       .select('id, is_active').maybeSingle();
 
-    if (error)  return res.status(500).json({ error: error.message });
+    if (error)  return serverError(req, res, error);
     if (!data)  return res.status(404).json({ error: 'Customer not found' });
     res.json(data);
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    serverError(req, res, err);
   }
 });
 
@@ -143,7 +166,7 @@ router.patch('/baker/customers/:id/deactivate', requireAuth, requireCapability('
 
 router.patch('/baker/customers/:id/reactivate', requireAuth, requireCapability('customer:manage'), async (req, res) => {
   try {
-    const bakerId = await getBakerId(req.user.id);
+    const bakerId = req.bakerId;
     if (!bakerId) return res.status(403).json({ error: 'Not a baker account' });
 
     const { data, error } = await supabase
@@ -151,11 +174,11 @@ router.patch('/baker/customers/:id/reactivate', requireAuth, requireCapability('
       .eq('id', req.params.id).eq('baker_id', bakerId)
       .select('id, is_active').maybeSingle();
 
-    if (error)  return res.status(500).json({ error: error.message });
+    if (error)  return serverError(req, res, error);
     if (!data)  return res.status(404).json({ error: 'Customer not found' });
     res.json(data);
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    serverError(req, res, err);
   }
 });
 
@@ -175,11 +198,45 @@ router.post('/baker/customers/invite', requireAuth, requireCapability('customer:
       return res.status(409).json({ error: 'Publish your storefront before inviting customers.' });
     }
 
-    const { firstName, lastName, email, phone, channels, note, expiresInDays = 14 } = req.body;
+    const { firstName, lastName, email, phone, phoneCountry, channels, note, expiresInDays = 14,
+            templateId, designSnapshot, designThumbnailKey, sessionId } = req.body;
     const emailNorm = email?.trim().toLowerCase() || null;
-    const phoneNorm = phone?.trim() || null;
     if (!firstName?.trim())        return res.status(400).json({ error: 'firstName is required' });
-    if (!emailNorm && !phoneNorm)  return res.status(400).json({ error: 'email or phone is required' });
+    if (!emailNorm && !phone?.trim()) return res.status(400).json({ error: 'email or phone is required' });
+    if (emailNorm && !EMAIL_RE.test(emailNorm)) return res.status(400).json({ error: 'Enter a valid email address' });
+    // Validate + canonicalise the phone (libphonenumber /max) so a junk number never reaches an invite.
+    let phoneNorm = null;
+    if (phone?.trim()) {
+      const p = normalizePhone(phone, phoneCountry);
+      if (!p.ok) return res.status(400).json({ error: p.error });
+      phoneNorm = p.e164;
+    }
+
+    // ── Resolve the OPTIONAL starting design (frozen onto the invite) ───────────
+    // Path A (templateId): seed from a library template — only a GLOBAL template or
+    // one this baker owns may be shared. Path B (designSnapshot): an inline snapshot
+    // from the designer's "Share the draft". Neither → a blank invite (today's
+    // behaviour). templateId wins if both are somehow supplied. Fail fast (before
+    // creating a customer) on an invalid template. See docs/INVITE_WITH_TEMPLATE_PLAN.md.
+    let inviteDesign = null, inviteThumbKey = null, inviteTemplateId = null;
+    if (templateId) {
+      const { data: tpl, error: tErr } = await supabase
+        .from('cake_templates').select('id, baker_id, design, thumbnail_url').eq('id', templateId).maybeSingle();
+      if (tErr)  return serverError(req, res, tErr);
+      if (!tpl)  return res.status(404).json({ error: 'Template not found' });
+      if (tpl.baker_id != null && tpl.baker_id !== bakerId) {
+        return res.status(403).json({ error: 'Template does not belong to this baker' });
+      }
+      inviteDesign     = tpl.design ?? null;
+      inviteThumbKey   = tpl.thumbnail_url ?? null;
+      inviteTemplateId = tpl.id;
+    } else if (designSnapshot != null) {
+      if (typeof designSnapshot !== 'object' || Array.isArray(designSnapshot)) {
+        return res.status(400).json({ error: 'designSnapshot must be a design object' });
+      }
+      inviteDesign   = designSnapshot;
+      inviteThumbKey = designThumbnailKey?.trim() || null;
+    }
 
     // ── Upsert the customer (the person) — dedupe by email, else phone ──────────
     let lookup = supabase.from('customers').select('id').eq('baker_id', bakerId);
@@ -200,7 +257,7 @@ router.post('/baker/customers/invite', requireAuth, requireCapability('customer:
         })
         .select('id')
         .single();
-      if (cErr) return res.status(500).json({ error: cErr.message });
+      if (cErr) return serverError(req, res, cErr);
       customer = created;
     }
 
@@ -230,13 +287,36 @@ router.post('/baker/customers/invite', requireAuth, requireCapability('customer:
         note:        note?.trim() || null,
         expires_at:  expiresAt,
         created_by:  appUser?.id ?? null,
+        design_snapshot:      inviteDesign,
+        design_thumbnail_url: inviteThumbKey,
+        template_id:          inviteTemplateId,
       })
-      .select('id, status, channels, note, expires_at, created_at')
+      // design_snapshot is big — echo only the lightweight fields (a client that needs
+      // the design has it already; the customer gets it post-OTP from verify-otp).
+      .select('id, status, channels, note, expires_at, created_at, template_id, design_thumbnail_url')
       .single();
-    if (iErr) return res.status(500).json({ error: iErr.message });
+    if (iErr) return serverError(req, res, iErr);
+
+    // ── Live co-design ("Design Together"): bind this customer to the caller's live
+    // session and carry it in the link, so the storefront routes them straight into the
+    // live room after OTP. The baker already started the session (createDesignSession);
+    // an unknown/foreign/ended sessionId is ignored (the invite still works, just not live).
+    let liveSessionParam = '';
+    if (sessionId) {
+      const { data: sess } = await supabase
+        .from('design_sessions')
+        .select('id, baker_id, status_id, customer_id')
+        .eq('id', sessionId).eq('baker_id', bakerId).maybeSingle();
+      if (sess && sess.status_id === DESIGN_SESSION_STATUS.ACTIVE) {
+        if (sess.customer_id !== customer.id) {
+          await supabase.from('design_sessions').update({ customer_id: customer.id }).eq('id', sess.id);
+        }
+        liveSessionParam = `&session=${sess.id}`;
+      }
+    }
 
     // Subdomain link: {slug}.<storefront domain>. The invite id grants nothing — OTP gates access.
-    const link = `${config.storefront.urlTemplate.replace('{slug}', baker.slug)}/?invite=${invite.id}`;
+    const link = `${config.storefront.urlTemplate.replace('{slug}', baker.slug)}/?invite=${invite.id}${liveSessionParam}`;
 
     // Queue the invite email through the durable notification outbox (worker sends it,
     // sweeper retries on failure). The invite is already created — a delivery hiccup
@@ -278,7 +358,7 @@ router.post('/baker/customers/invite', requireAuth, requireCapability('customer:
       delivery: { email: emailResult },
     });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    serverError(req, res, err);
   }
 });
 

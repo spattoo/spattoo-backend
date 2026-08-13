@@ -1,0 +1,24 @@
+#!/bin/sh
+# ── main is reached through a PR, never by pushing ──────────────────────────────────────────────
+# Tracked hook. Refuses BEFORE anything leaves the machine, which is the point: a direct push to
+# main is not undoable by the person who made it — the ref has moved for everyone by the time you
+# notice. (It happened in this org on 2026-08-07: a `git push origin main` in the docs repo
+# published four-day-old local commits that nobody had chosen to publish.)
+#
+# The server-side ruleset is the real enforcement. This exists because it fails EARLIER and with a
+# sentence, and because it works on a plan that has no rulesets. Both, not either.
+#
+# Bypass, for a release or a hotfix you own: git push --no-verify
+
+while read -r local_ref local_sha remote_ref remote_sha; do
+  case "$remote_ref" in
+    refs/heads/main|refs/heads/master)
+      printf 'x Push blocked: %s takes changes through a pull request.\n' "${remote_ref#refs/heads/}"
+      printf '  Push your branch, then open a PR into %s.\n' "${remote_ref#refs/heads/}"
+      printf '  Deliberate exception (a release, a hotfix you own): git push --no-verify\n'
+      exit 1
+      ;;
+  esac
+done
+
+exit 0

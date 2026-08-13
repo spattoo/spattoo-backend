@@ -1,4 +1,5 @@
 import { Router } from 'express';
+import { serverError } from '../lib/httpError.js';
 import { supabase } from '../services/supabase.js';
 import { requireAuth } from '../middleware/auth.js';
 
@@ -16,10 +17,10 @@ router.get('/patterns', async (req, res) => {
       .select('id, name, slug, placements, tier_count, created_at')
       .order('created_at', { ascending: false });
 
-    if (error) return res.status(500).json({ error: error.message });
+    if (error) return serverError(req, res, error);
     res.json(data);
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    serverError(req, res, err);
   }
 });
 
@@ -55,7 +56,7 @@ router.post('/admin/patterns', requireAuth, async (req, res) => {
 
     res.status(201).json(data);
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    serverError(req, res, err);
   }
 });
 
@@ -70,10 +71,10 @@ router.delete('/admin/patterns/:slug', requireAuth, async (req, res) => {
       .delete()
       .eq('slug', slug);
 
-    if (error) return res.status(500).json({ error: error.message });
+    if (error) return serverError(req, res, error);
     res.json({ deleted: slug });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    serverError(req, res, err);
   }
 });
 

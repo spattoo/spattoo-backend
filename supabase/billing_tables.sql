@@ -10,17 +10,23 @@ CREATE TABLE IF NOT EXISTS subscription_plans (
   price_monthly  numeric(10,2) NOT NULL DEFAULT 0,
   price_yearly   numeric(10,2) NOT NULL DEFAULT 0,
   features     jsonb NOT NULL DEFAULT '{}',
+  -- Human-facing marketing catalog (billing + onboarding read these from here, one source).
+  tagline         text,
+  feature_bullets text[]  NOT NULL DEFAULT '{}',
+  is_popular      boolean NOT NULL DEFAULT false,
+  has_storefront  boolean NOT NULL DEFAULT true,
   is_active    boolean NOT NULL DEFAULT true,
   sort_order   int NOT NULL DEFAULT 0,
   created_at   timestamptz NOT NULL DEFAULT now()
 );
 
-INSERT INTO subscription_plans (name, display_name, price_monthly, price_yearly, sort_order)
+-- Prices in PAISE (Razorpay subunit format): ₹999 = 99900. The UI divides by 100 to display.
+INSERT INTO subscription_plans (name, display_name, price_monthly, price_yearly, sort_order, tagline, is_popular, has_storefront, feature_bullets)
 VALUES
-  ('spark', 'Spark',  0,       0,       0),
-  ('flame', 'Flame',  999,     9999,    1),
-  ('blaze', 'Blaze',  2499,    24999,   2),
-  ('forge', 'Forge',  4999,    49999,   3)
+  ('spark', 'Spark',  0,       0,        0, 'Design canvas · 10 orders',           false, false, ARRAY['Design canvas','10 total orders','1 team member','Help-docs support']),
+  ('flame', 'Flame',  99900,   999900,   1, 'Public storefront · unlimited orders', false, true,  ARRAY['Everything in Spark','Public storefront (yourname.spattoo.com)','Unlimited orders','2 team members','Email support']),
+  ('blaze', 'Blaze',  249900,  2499900,  2, 'Custom branding & templates',          true,  true,  ARRAY['Everything in Flame','Custom templates','Custom branding','5 team members','Priority chat support']),
+  ('forge', 'Forge',  499900,  4999900,  3, 'Everything · unlimited team',          false, true,  ARRAY['Everything in Blaze','Unlimited team members','Dedicated account manager'])
 ON CONFLICT (name) DO NOTHING;
 
 -- ── 2. billing_periods ────────────────────────────────────────────────────────

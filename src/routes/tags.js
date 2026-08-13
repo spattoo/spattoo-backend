@@ -1,4 +1,5 @@
 import { Router } from 'express';
+import { serverError } from '../lib/httpError.js';
 import { supabase } from '../services/supabase.js';
 import { requireAuth } from '../middleware/auth.js';
 import { requireCapability } from '../middleware/rbac.js';
@@ -88,10 +89,10 @@ router.get('/tags', requireAuth, requireCapability('design:create'), async (req,
       .eq('is_active', true)
       .order('category')
       .order('sort_order');
-    if (error) return res.status(500).json({ error: error.message });
+    if (error) return serverError(req, res, error);
     res.json(data);
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    serverError(req, res, err);
   }
 });
 
@@ -102,10 +103,10 @@ router.get('/admin/tags', requireAuth, requireCapability('catalog:admin'), async
       .select('id, name, slug, category, ai_assignable, sort_order, is_active, created_at')
       .order('category')
       .order('sort_order');
-    if (error) return res.status(500).json({ error: error.message });
+    if (error) return serverError(req, res, error);
     res.json(data);
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    serverError(req, res, err);
   }
 });
 
@@ -120,10 +121,10 @@ router.post('/admin/tags', requireAuth, requireCapability('catalog:admin'), asyn
       .insert({ name, slug, category, ai_assignable, sort_order, is_active: true })
       .select('id, name, slug, category, ai_assignable, sort_order, is_active')
       .single();
-    if (error) return res.status(500).json({ error: error.message });
+    if (error) return serverError(req, res, error);
     res.status(201).json(data);
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    serverError(req, res, err);
   }
 });
 
@@ -137,10 +138,10 @@ router.patch('/admin/tags/:id', requireAuth, requireCapability('catalog:admin'),
       .eq('id', req.params.id)
       .select('id, name, slug, category, ai_assignable, sort_order, is_active')
       .single();
-    if (error) return res.status(500).json({ error: error.message });
+    if (error) return serverError(req, res, error);
     res.json(data);
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    serverError(req, res, err);
   }
 });
 
@@ -155,10 +156,10 @@ router.delete('/admin/tags/:id', requireAuth, requireCapability('catalog:admin')
       return res.status(409).json({ error: `Tag is used by ${ec} element(s) and ${tc} template(s). Remove usages first.` });
     }
     const { error } = await supabase.from('tags').delete().eq('id', req.params.id);
-    if (error) return res.status(500).json({ error: error.message });
+    if (error) return serverError(req, res, error);
     res.json({ ok: true });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    serverError(req, res, err);
   }
 });
 
@@ -170,10 +171,10 @@ router.get('/admin/elements/:id/tags', requireAuth, requireCapability('catalog:a
       .from('element_tags')
       .select('tag_id, source, confidence, tags(id, name, slug, category)')
       .eq('element_id', req.params.id);
-    if (error) return res.status(500).json({ error: error.message });
+    if (error) return serverError(req, res, error);
     res.json(data);
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    serverError(req, res, err);
   }
 });
 
@@ -186,11 +187,11 @@ router.put('/admin/elements/:id/tags', requireAuth, requireCapability('catalog:a
     if (tagIds.length > 0) {
       const rows = tagIds.map(tag_id => ({ element_id: elementId, tag_id, source: 'manual', confidence: null }));
       const { error } = await supabase.from('element_tags').insert(rows);
-      if (error) return res.status(500).json({ error: error.message });
+      if (error) return serverError(req, res, error);
     }
     res.json({ ok: true });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    serverError(req, res, err);
   }
 });
 
@@ -208,7 +209,7 @@ router.post('/admin/elements/:id/retag', requireAuth, requireCapability('catalog
     const tags = await runAutoTag('element', el.id, el.thumbnail_url, el.name);
     res.json({ tags });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    serverError(req, res, err);
   }
 });
 
@@ -220,10 +221,10 @@ router.get('/admin/templates/:id/tags', requireAuth, requireCapability('catalog:
       .from('template_tags')
       .select('tag_id, source, confidence, tags(id, name, slug, category)')
       .eq('template_id', req.params.id);
-    if (error) return res.status(500).json({ error: error.message });
+    if (error) return serverError(req, res, error);
     res.json(data);
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    serverError(req, res, err);
   }
 });
 
@@ -235,11 +236,11 @@ router.put('/admin/templates/:id/tags', requireAuth, requireCapability('catalog:
     if (tagIds.length > 0) {
       const rows = tagIds.map(tag_id => ({ template_id: templateId, tag_id, source: 'manual', confidence: null }));
       const { error } = await supabase.from('template_tags').insert(rows);
-      if (error) return res.status(500).json({ error: error.message });
+      if (error) return serverError(req, res, error);
     }
     res.json({ ok: true });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    serverError(req, res, err);
   }
 });
 
@@ -256,7 +257,7 @@ router.post('/admin/templates/:id/retag', requireAuth, requireCapability('catalo
     const tags = await runAutoTag('template', tmpl.id, tmpl.thumbnail_url, tmpl.name);
     res.json({ tags });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    serverError(req, res, err);
   }
 });
 
@@ -269,10 +270,10 @@ router.get('/admin/templates/:id/attrs', requireAuth, requireCapability('catalog
       .select('min_weight_kg, min_age, max_age')
       .eq('template_id', req.params.id)
       .maybeSingle();
-    if (error) return res.status(500).json({ error: error.message });
+    if (error) return serverError(req, res, error);
     res.json(data ?? {});
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    serverError(req, res, err);
   }
 });
 
@@ -289,10 +290,10 @@ router.put('/admin/templates/:id/attrs', requireAuth, requireCapability('catalog
     const { error } = await supabase
       .from('cake_template_attrs')
       .upsert(attrs, { onConflict: 'template_id' });
-    if (error) return res.status(500).json({ error: error.message });
+    if (error) return serverError(req, res, error);
     res.json({ ok: true });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    serverError(req, res, err);
   }
 });
 

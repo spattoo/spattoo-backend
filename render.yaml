@@ -1,27 +1,105 @@
+# ── Render blueprint ─────────────────────────────────────────────────────────
+#
+# ⚠️ THIS FILE IS NOT CURRENTLY SYNCING. Both services were created and are
+# managed from the Render dashboard. Until a Blueprint instance is connected to
+# this repo, nothing here is applied — it is documentation that happens to be
+# valid YAML.
+#
+# It drifted while inert: it declared the prod service as `spattoo-api` (the live
+# one is `spattoo-api-prod`) and linked both services to an env-var group called
+# `spattoo-shared` that does not exist and never did. Corrected 2026-08-13.
+#
+# ── BEFORE CONNECTING A BLUEPRINT, READ THIS ────────────────────────────────
+# Render matches services by NAME. Connect this and it will adopt both existing
+# services and apply everything below — including `plan`, which would move a
+# service between tiers. Check the live dashboard values against this file first;
+# the two have already disagreed once.
+#
+# Env-var GROUPS are deliberately not declared at the bottom of this file. A
+# blueprint that declares a group also defines its membership, so declaring `Dev`
+# with a partial key list could remove the keys it does not mention. The group is
+# referenced by name and owned by the dashboard.
+# ─────────────────────────────────────────────────────────────────────────────
 services:
+  # ── Production API — auto-deploys from `main` → api.spattoo.com ───────────
   - type: web
-    name: spattoo-api
+    name: spattoo-api-prod
     env: node
+    # ⚠️ NOT `free`. registerJobSchedulers() (src/index.js) and the sweeper's
+    # setInterval (src/jobs/sweeper.js) run IN THIS PROCESS, and Free spins the
+    # service down after ~15 min idle. The BullMQ schedules survive in Redis, but
+    # nothing is alive to execute them — so the 07:00 delivery digest fires
+    # whenever someone next happens to hit the API, and invoice relay,
+    # reconciliation and account erasure drift the same way. The sweeper stops
+    # outright. Plus a 30-60s cold start for the first customer after a lull.
     plan: starter
+    branch: main
     buildCommand: npm install
     startCommand: node src/index.js
     healthCheckPath: /health
-    envVarGroups:
-      - spattoo-shared
+    # No envVarGroups. Prod carries its own SUPABASE_*, R2_* and everything else
+    # per-service — nothing is shared with dev. The `Dev` group below exists for
+    # dev alone, and it holds ALLOW_FREE_PLAN_SELECT=true, which would bypass
+    # payment entirely if it ever reached this service.
     envVars:
       - key: NODE_ENV
         value: production
-
-envVarGroups:
-  - name: spattoo-shared
-    envVars:
-      - key: SUPABASE_URL
+      # prod: https://{slug}.spattoo.com  (value set in Render dashboard)
+      - key: STOREFRONT_URL_TEMPLATE
         sync: false
-      - key: SUPABASE_SERVICE_KEY
-        sync: false
-      - key: OPENAI_API_KEY
-        sync: false
-      - key: REMOVE_BG_API_KEY
-        sync: false
+      # Env-specific Redis — kept service-level so dev and prod never share an
+      # instance. The BullMQ queue name ('jobs') is global within a Redis, so a
+      # shared instance would let workers cross-process jobs.
       - key: REDIS_URL
+        sync: false
+      # ── Upload ceilings, in MB (config.uploads) ──────────────────────────
+      # Declared here so the knob is DISCOVERABLE — a limit nobody knows is tunable
+      # gets "fixed" by editing code. Values live in the dashboard (sync: false), not
+      # in this file: a value here could only be changed by a commit + redeploy, and
+      # the whole point is to retune the cap during an incident WITHOUT one. Unset in
+      # the dashboard = the code default (5 / 75 / 5 — src/config.js).
+      #
+      # Measured against the file the USER PICKS. What reaches R2 is far smaller (the
+      # designer downscales to 2048 + WebP first). The API signs the length into the
+      # presigned URL and serves the same number to the browser via
+      # GET /api/storage/limits, so the client's refusal and the server's 413 agree.
+      # Raise IMAGE if real customers on 48-200MP phones start getting refused.
+      - key: UPLOAD_MAX_IMAGE_MB
+        sync: false
+      - key: UPLOAD_MAX_MODEL_MB
+        sync: false
+      - key: UPLOAD_MAX_FONT_MB
+        sync: false
+
+  # ── Dev API — auto-deploys from `dev` → api.spattoo.dev ───────────────────
+  - type: web
+    name: spattoo-api-dev
+    env: node
+    plan: starter
+    branch: dev
+    buildCommand: npm install
+    startCommand: node src/index.js
+    healthCheckPath: /health
+    # Dev-only group, owned by the dashboard (see the header note on why its
+    # membership is not declared here). Holds the settings that must never reach
+    # prod — ALLOW_FREE_PLAN_SELECT and CORS_ALLOW_LOCALHOST among them.
+    envVarGroups:
+      - Dev
+    envVars:
+      - key: NODE_ENV
+        value: production
+      # dev: https://{slug}.spattoo.dev  (value set in Render dashboard)
+      - key: STOREFRONT_URL_TEMPLATE
+        sync: false
+      # SEPARATE dev Redis instance — its own URL, isolated from prod's queue.
+      - key: REDIS_URL
+        sync: false
+      # Upload ceilings — per-service, so dev can be loosened for testing without
+      # touching what customers are held to in prod. See the prod service above for
+      # what these mean. Unset = the code default (5 / 75 / 5).
+      - key: UPLOAD_MAX_IMAGE_MB
+        sync: false
+      - key: UPLOAD_MAX_MODEL_MB
+        sync: false
+      - key: UPLOAD_MAX_FONT_MB
         sync: false

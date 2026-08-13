@@ -1,14 +1,79 @@
 import { Router } from 'express';
+import { serverError } from '../lib/httpError.js';
 import { supabase } from '../services/supabase.js';
 import { requireAuth } from '../middleware/auth.js';
 import { requireCapability } from '../middleware/rbac.js';
+import { assertBakerOwns } from '../lib/tenantScope.js';
 import { config } from '../config.js';
+import { toPublicUrl } from '../lib/publicUrl.js';
+import { withOrderStageUrls } from '../lib/xrayStageUrls.js';
 import { notifyOrderPlaced, notifyDesignUpdated, notifyQuoteIssued, notifyQuoteAccepted, notifyQuoteQuestion, notifyOrderConfirmed, notifyOrderReady, notifyOrderCompleted } from '../services/notifications.js';
 import { getOrderStatuses, getValidStatusKeys, isQuotePhase, idForKey } from '../lib/orderStatuses.js';
+import { getDietaryRequirements, validateDietaryKeys, setOrderDietaryRequirements, requirementsForBaker } from '../lib/dietaryRequirements.js';
+import { baselineConflictKeys, setBaselineConflicts } from '../lib/flavourDietary.js';
+import { flavoursForCustomer } from '../lib/flavourList.js';
+import { getOrderAcceptance } from '../services/entitlements.js';
+import { deleteObject } from '../services/r2.js';
+import { logError } from '../lib/telemetry.js';
+import { recordConsent } from '../services/legalConsent.js';
+import { CONSENT_SUBJECT_TYPE, CONSENT_SOURCE, CONSENT_REQUIRED_DOC_KEYS } from '../constants/legalDocuments.js';
 
-function toPublicUrl(key) {
-  if (!key) return null;
-  return `${config.r2.publicUrl}/${key}`;
+// Baker may attach at most this many photos to an order — per set (finished or reference).
+const MAX_ORDER_PHOTOS = 3;
+
+// Trial/plan gate at the storefront's order INTAKE — shares getOrderAcceptance with
+// the storefront banner so the two can't drift. A baker stops taking NEW orders once
+// their subscription lapses (Spark's 30-day window) OR they hit their plan's lifetime
+// order cap. Gates CREATION only — existing orders stay manageable. Customer-facing.
+// Returns a {error, code} block payload, or null when the baker can take the order.
+async function orderIntakeBlock(bakerId) {
+  const { accepting, code } = await getOrderAcceptance(bakerId);
+  if (accepting) return null;
+  return { error: "This bakery isn't accepting new orders right now.", code };
+}
+
+// ── Calendar month view: per-day counts ───────────────────────────────────────
+// The widest window GET /orders/calendar will serve. The UI draws one month at a
+// time; 62 days covers a month plus the leading/trailing days of a 6-row grid.
+const CALENDAR_MAX_SPAN_DAYS = 62;
+const ISO_DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
+// PostgREST caps a response page; page explicitly so a busy month can't be silently
+// truncated into wrong counts. The ceiling is a runaway guard, not an expected limit.
+const CALENDAR_PAGE = 1000;
+const CALENDAR_MAX_PAGES = 50;
+
+// [{ delivery_date, status_id, order_count }] for one baker over a date window.
+// Prefers the DB group-by (migration 021); falls back to counting the two columns we
+// need in Node so the endpoint works before that function has been applied by hand.
+async function calendarCounts(bakerId, from, to) {
+  const rpc = await supabase.rpc('orders_calendar_counts', {
+    p_baker_id: bakerId, p_from: from, p_to: to,
+  });
+  if (!rpc.error) return rpc.data ?? [];
+
+  const tally = new Map();
+  for (let page = 0; page < CALENDAR_MAX_PAGES; page++) {
+    const { data, error } = await supabase
+      .from('orders')
+      .select('delivery_date, status_id')
+      .eq('baker_id', bakerId)
+      .gte('delivery_date', from)
+      .lte('delivery_date', to)
+      .range(page * CALENDAR_PAGE, (page + 1) * CALENDAR_PAGE - 1);
+    if (error) throw error;
+    for (const o of data ?? []) {
+      const k = `${o.delivery_date}|${o.status_id}`;
+      tally.set(k, (tally.get(k) ?? 0) + 1);
+    }
+    if ((data?.length ?? 0) < CALENDAR_PAGE) break;
+    if (page === CALENDAR_MAX_PAGES - 1) {
+      logError(new Error('orders calendar fallback hit the page ceiling — counts may be short'), null, { bakerId, from, to });
+    }
+  }
+  return [...tally].map(([k, order_count]) => {
+    const [delivery_date, statusId] = k.split('|');
+    return { delivery_date, status_id: Number(statusId), order_count };
+  });
 }
 
 // orders stores the compact `status_id`; reads embed `order_statuses ( key )`. This
@@ -19,6 +84,38 @@ function withStatusKey(row) {
   if (!row) return row;
   const { order_statuses, status_id, ...rest } = row;
   return { ...rest, status: order_statuses?.key ?? rest.status ?? null };
+}
+
+// Dietary requirements live in a child table, so reads embed them and this flattens
+// the embed to `[{ key, label, kind }]` for the HTTP response, in the lookup's own
+// display order.
+//
+// Only rewrites the row when the embed was actually SELECTED. That matters: an absent
+// key means "not fetched", while `dietary_requirements: []` means "this order states
+// none" — and quietly turning the first into the second would let a caller that forgot
+// the embed conclude a cake has no requirements. Same reason withStatusKey tolerates
+// an already-flattened row instead of guessing.
+const DIETARY_EMBED = 'order_dietary_requirements ( dietary_requirements ( key, label, kind, sort_order ) )';
+
+function withDietaryKeys(row) {
+  if (!row || !('order_dietary_requirements' in row)) return row;
+  const { order_dietary_requirements, ...rest } = row;
+  return {
+    ...rest,
+    // label and kind travel WITH the order, rather than the order carrying bare keys
+    // that every surface then joins against a separately-fetched vocabulary. Four
+    // surfaces render this — order list, order detail, the X-Ray screen and the
+    // printed sheet — and a join each is four chances to show a raw key because the
+    // vocabulary hadn't loaded, or to disagree about a label. The rows are tiny and
+    // bounded per order; the denormalisation costs nothing and removes that class of
+    // bug entirely. `kind` in particular must never be lost: it is what stops a nut
+    // allergy being rendered like a flavour preference.
+    dietary_requirements: (order_dietary_requirements ?? [])
+      .map(r => r.dietary_requirements)
+      .filter(Boolean)
+      .sort((a, b) => (a.sort_order ?? 0) - (b.sort_order ?? 0))
+      .map(({ key, label, kind }) => ({ key, label, kind })),
+  };
 }
 
 // A quote is "stale" when a design version exists past the one it priced — i.e. the
@@ -33,6 +130,7 @@ const CUSTOMER_ORDER_FIELDS = `
   id, status_id, order_statuses ( key ), quoted_price, quote_line_items, quote_valid_until, final_price,
   advance_amount, quote_note, advance_paid_at,
   weight_kg, flavours, special_instructions,
+  order_dietary_requirements ( dietary_requirements ( key, label, kind, sort_order ) ),
   delivery_date, delivery_time, delivery_mode, delivery_address,
   design_thumbnail_url, design_snapshot, current_version_id, quoted_version_id,
   created_at, updated_at, baker_id, customer_id,
@@ -40,7 +138,7 @@ const CUSTOMER_ORDER_FIELDS = `
 `;
 
 function toCustomerOrder(o) {
-  const { baker_id, customer_id, bakers, order_statuses, status_id, ...rest } = o;
+  const { baker_id, customer_id, bakers, order_statuses, status_id, ...rest } = withDietaryKeys(o);
   return {
     ...rest,
     status:               order_statuses?.key ?? rest.status ?? null,
@@ -70,11 +168,49 @@ async function loadCustomerOrder(authUserId, orderId) {
 // Shared validation for the design + delivery part of an order body. Customer
 // identity is validated separately because the trust boundary differs per entry
 // point (public form vs. authenticated session). Returns an error string or null.
-function validateOrderBody(body) {
+/**
+ * `requireDesign` exists because an ENQUIRY legitimately has no design.
+ *
+ * This required a designSnapshot unconditionally, which silently made every storefront enquiry a
+ * 400: a flavour-only enquiry has no design, a reference-photo one has referenceKeys instead, and
+ * even a template pick carries `snapshot: null` until somebody opens the designer. The whole premise
+ * of the facets is that a customer may send a real enquiry from whichever end they care about — see
+ * plans/storefront-facets.md, "What fills the design slot", which lists 'neither' as a valid shape.
+ *
+ * Left ON by default so the designer paths keep the guard; only the enquiry route turns it off.
+ */
+function validateOrderBody(body, { requireDesign = true } = {}) {
   const { designSnapshot, deliveryMode = 'pickup', deliveryAddress } = body;
-  if (!designSnapshot) return 'designSnapshot is required';
+  if (requireDesign && !designSnapshot) return 'designSnapshot is required';
   if (!['pickup', 'home_delivery'].includes(deliveryMode)) return 'deliveryMode must be pickup or home_delivery';
   if (deliveryMode === 'home_delivery' && !deliveryAddress) return 'deliveryAddress is required for home_delivery';
+  return validateOrderSignals(body);
+}
+
+// ── The order signals (migration 043) ───────────────────────────────────────────────────────────
+// Checked HERE as well as by the CHECK constraints, so a bad value is a 400 that names the field
+// rather than a 500 from a constraint violation the client cannot read. The lists are duplicated
+// from 043 on purpose: a DB constraint is the guarantee, this is the error message, and they are
+// allowed to be verified against each other rather than derived — a typo here is a bad message, a
+// typo there is bad data.
+const OCCASIONS  = ['birthday', 'anniversary', 'wedding', 'baby_shower', 'engagement',
+                    'farewell', 'corporate', 'festival', 'other'];
+const RECIPIENTS = ['child', 'adult', 'couple', 'family', 'friends', 'colleagues'];
+const CELEBRATIONS = ['first_birthday', 'kids_party', 'teen_party', 'grown_ups', 'elders'];
+
+function validateOrderSignals({ occasion, recipient, celebration, cakeNumber, tierCount }) {
+  if (occasion  != null && !OCCASIONS.includes(occasion))   return `occasion must be one of: ${OCCASIONS.join(', ')}`;
+  if (recipient != null && !RECIPIENTS.includes(recipient)) return `recipient must be one of: ${RECIPIENTS.join(', ')}`;
+  if (celebration != null && !CELEBRATIONS.includes(celebration)) return `celebration must be one of: ${CELEBRATIONS.join(', ')}`;
+  // Not an age — see 043. Bounded so a decoration nobody can pipe is refused early.
+  if (cakeNumber != null && (!Number.isInteger(cakeNumber) || cakeNumber < 0 || cakeNumber > 9999)) {
+    return 'cakeNumber must be a whole number between 0 and 9999';
+  }
+  // Matches 045's CHECK. Six tiers is already a wedding centrepiece; beyond that it is a typo, and
+  // an unbounded value would imply a weight floor nobody could satisfy.
+  if (tierCount != null && (!Number.isInteger(tierCount) || tierCount < 1 || tierCount > 6)) {
+    return 'tierCount must be a whole number between 1 and 6';
+  }
   return null;
 }
 
@@ -82,21 +218,65 @@ function validateOrderBody(body) {
 // Callers resolve the baker and the customer FIRST (that's where the trust
 // boundary lives) and hand a resolved customerId + contact here. Throws on insert
 // error so the caller's try/catch maps it to a 500.
-async function insertOrderAndNotify({ baker, customerId, customerContact, body, authoredBy = 'customer' }) {
+// Find-or-create a customer within a baker by email (preferred) or phone. Returns
+// { customerId, emailNorm, phoneNorm }. Shared by the public order route and the
+// baker's manual-order route (same upsert, different `source` label). Throws on insert
+// error so the caller's try/catch maps it to a 500.
+async function upsertCustomer(bakerId, customer, { source = 'online_order' } = {}) {
+  const emailNorm = customer.email?.toLowerCase().trim() || null;
+  const phoneNorm = customer.phone?.trim() || null;
+
+  let lookup = supabase.from('customers').select('id').eq('baker_id', bakerId);
+  lookup = emailNorm ? lookup.eq('email', emailNorm) : lookup.eq('phone', phoneNorm);
+  let { data: existing } = await lookup.maybeSingle();
+
+  if (!existing) {
+    const { data: created, error } = await supabase
+      .from('customers')
+      .insert({
+        baker_id:   bakerId,
+        email:      emailNorm,
+        first_name: customer.firstName,
+        last_name:  customer.lastName ?? null,
+        phone:      phoneNorm,
+        source,
+      })
+      .select('id')
+      .single();
+    if (error) throw new Error(error.message);
+    existing = created;
+  }
+  return { customerId: existing.id, emailNorm, phoneNorm };
+}
+
+async function insertOrderAndNotify({ baker, customerId, customerContact, body, authoredBy = 'customer', uploadedBy = null }) {
   const {
-    designSnapshot, designThumbnailKey, weightKg, flavours,
+    designSnapshot = null, designThumbnailKey, referenceKeys, weightKg, flavours,
     specialInstructions, deliveryDate, deliveryTime,
-    deliveryMode = 'pickup', deliveryAddress,
+    deliveryMode = 'pickup', deliveryAddress, dietaryRequirementKeys,
+    // ── What the cake was FOR ──────────────────────────────────────────────────────────────────
+    // Structured alongside the prose, not instead of it: specialInstructions still carries all of
+    // this in English because the baker needs one place to read, while these columns are what any
+    // future question — "what do first birthdays order here?" — can actually be asked of.
+    // See migration 043 and plans/order-signals.md.
+    occasion, recipient, celebration, cakeNumber,
+    // The cake's FORM (migration 045). tier_count is asked or comes from a template; shape is only
+    // ever derived from one, so it is usually null on a flavour-only enquiry.
+    tierCount, shape,
   } = body;
 
-  const thumbnailUrl = designThumbnailKey ?? null;
+  // A manual order has no design — its picture is the primary reference photo. The
+  // thumbnail mirror (design_thumbnail_url) holds whichever picture exists, so list/
+  // detail/email render unchanged.
+  const refKeys = Array.isArray(referenceKeys) ? referenceKeys : [];
+  const thumbnailUrl = designThumbnailKey ?? refKeys[0] ?? null;
 
   const { data: order, error: orderError } = await supabase
     .from('orders')
     .insert({
       baker_id:             baker.id,
       customer_id:          customerId,
-      design_snapshot:      designSnapshot,
+      design_snapshot:      designSnapshot,          // null for a manual (no-designer) order
       design_thumbnail_url: thumbnailUrl,
       weight_kg:            weightKg ?? null,
       flavours:             flavours ?? null,
@@ -105,6 +285,14 @@ async function insertOrderAndNotify({ baker, customerId, customerContact, body, 
       delivery_time:        deliveryTime ?? null,
       delivery_mode:        deliveryMode,
       delivery_address:     deliveryAddress ?? null,
+      occasion:             occasion    ?? null,
+      recipient:            recipient   ?? null,
+      // The KIND of celebration, not anybody's age — see migration 046.
+      celebration:          celebration ?? null,
+      // NOT an age. 25 on an anniversary cake is years married — see 043.
+      cake_number:          Number.isInteger(cakeNumber) ? cakeNumber : null,
+      tier_count:           Number.isInteger(tierCount) ? tierCount : null,
+      shape:                shape ?? null,
       // Both the customer request and the baker walk-in start at 'requested'; the
       // baker advances from there. (status_id is a surrogate FK — set it explicitly,
       // there's no literal DB default for it.)
@@ -115,8 +303,34 @@ async function insertOrderAndNotify({ baker, customerId, customerContact, body, 
 
   if (orderError) throw new Error(orderError.message);
 
-  // Seed version 1 of the design (append-only history starts here).
-  await appendDesignVersion({ orderId: order.id, designSnapshot, thumbnailKey: thumbnailUrl, authoredBy });
+  // Seed version 1 of the design (append-only history starts here) — ONLY when there
+  // is a design. A manual order has none, so the version table (design_snapshot NOT
+  // NULL) is correctly left empty and X-Ray/Edit-in-3D stay off (they gate on the
+  // snapshot).
+  if (designSnapshot) {
+    await appendDesignVersion({ orderId: order.id, designSnapshot, thumbnailKey: thumbnailUrl, authoredBy });
+  }
+
+  // Dietary requirements (eggless / allergen). Written HERE rather than in each route
+  // because all three intake paths — the public designer, the storefront customer, and
+  // the baker's manual order — funnel through this function, so one write covers every
+  // way an order can be created and none can silently skip it.
+  //
+  // `authoredBy` already distinguishes those paths ('customer' by default, 'baker' for
+  // a manual order), and that is exactly the assertion source the column records: the
+  // customer stating their own requirement, or the baker writing down what a customer
+  // told them on the phone. Keys were validated by the caller (validateDietaryKeys)
+  // before we got here, so an unknown key is already a 400 rather than a silent drop.
+  if (Array.isArray(dietaryRequirementKeys) && dietaryRequirementKeys.length) {
+    await setOrderDietaryRequirements(order.id, dietaryRequirementKeys, authoredBy);
+  }
+
+  // Reference-photo gallery (manual orders only; ≤3, validated by the caller).
+  if (refKeys.length) {
+    const rows = refKeys.map((key, i) => ({ order_id: order.id, key, sort_order: i, uploaded_by: uploadedBy }));
+    const { error: refErr } = await supabase.from('order_reference_photos').insert(rows);
+    if (refErr) throw new Error(refErr.message);
+  }
 
   // Insert notifications and enqueue — fire and forget, non-blocking
   notifyOrderPlaced({
@@ -185,6 +399,16 @@ const router = Router();
 // ── GET /api/flavours?bakerSlug=xxx ──────────────────────────────────────────
 // Public. Returns effective flavour list for a baker:
 //   active global flavours (minus exclusions) + baker's custom flavours
+//
+// Each flavour also carries `conflicts_with: ['nut_free', ...]` — the requirements this
+// baker's version of that flavour is declared NOT to satisfy (global baseline, overridden
+// per baker). It rides along on a list the order form already fetches rather than being a
+// second endpoint the client joins against, for the same reason the order's dietary embed
+// carries label+kind: a join per surface is a chance per surface to get it wrong.
+//
+// `conflicts_with: []` means NOTHING WAS DECLARED — it does NOT mean "verified suitable".
+// Consumers may warn and point the customer at the baker; they must not disable a flavour
+// or reject an order on it (ToS §3.4 / B5.9 / C2.3). See lib/flavourDietary.js.
 
 router.get('/flavours', async (req, res) => {
   try {
@@ -192,53 +416,116 @@ router.get('/flavours', async (req, res) => {
     if (!bakerSlug) return res.status(400).json({ error: 'bakerSlug is required' });
 
     const { data: baker } = await supabase
-      .from('bakers').select('id').eq('slug', bakerSlug).eq('is_active', true).maybeSingle();
+      .from('bakers')
+      .select('id, price_visibility')
+      .eq('slug', bakerSlug).eq('is_active', true).maybeSingle();
     if (!baker) return res.status(404).json({ error: 'Baker not found' });
 
-    // Excluded global flavour IDs for this baker
-    const { data: exclusions } = await supabase
-      .from('baker_flavour_exclusions')
-      .select('flavour_id')
-      .eq('baker_id', baker.id);
-    const excludedIds = (exclusions ?? []).map(e => e.flavour_id);
+    // The union, the exclusion resolution and the dietary map all moved to
+    // lib/flavourList.js, because the baker's own settings screen has to resolve the same
+    // list and two copies of "what does this baker offer" would drift the first time one
+    // of them learned about prices — which is exactly what happened here.
+    //
+    // `verified` is where a customer who has proved a phone/email will be recognised, so
+    // a baker on price_visibility:'verified' shows them rates. Wired to false until that
+    // storefront login lands; a baker on 'public' works today either way.
+    const flavours = await flavoursForCustomer(baker, { verified: false });
 
-    // Active global flavours minus exclusions
-    let globalQuery = supabase
-      .from('flavours')
-      .select('id, name, description, sort_order')
-      .eq('is_active', true)
-      .order('sort_order').order('name');
-    if (excludedIds.length) globalQuery = globalQuery.not('id', 'in', `(${excludedIds.join(',')})`);
-    const { data: globals } = await globalQuery;
-
-    // Baker's custom flavours
-    const { data: custom } = await supabase
-      .from('baker_flavours')
-      .select('id, name, description, sort_order')
-      .eq('baker_id', baker.id).eq('is_active', true)
-      .order('sort_order').order('name');
-
-    const result = [
-      ...(globals ?? []).map(f => ({ ...f, source: 'global' })),
-      ...(custom  ?? []).map(f => ({ ...f, source: 'baker'  })),
-    ];
-
-    res.json(result);
+    res.json(flavours);
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    serverError(req, res, err);
   }
 });
 
-router.post('/orders', async (req, res) => {
+// ── admin: the GLOBAL dietary baseline for flavours ───────────────────────────
+// Kept beside GET /flavours rather than in a new routes file, so every flavour endpoint
+// stays in one place a reader can find. (That this is `orders.js` at all is pre-existing
+// — the flavour list has always lived here.)
+//
+// The baseline is what is true of a flavour for EVERY baker ("hazelnut praline contains
+// nuts"). It is a DEFAULT, not a verified ingredient claim: any baker can overturn any
+// row via PUT /api/baker/flavours/dietary-conflicts, which is what keeps it compatible
+// with ToS §3.4. Per-kitchen facts ("we don't do eggless tiramisu") do NOT belong here.
+
+// GET /api/admin/flavours/dietary-conflicts → { [flavourId]: ['nut_free', ...] }
+// Whole baseline in one response: it is bounded (flavours × requirements) and the admin
+// screen lists every flavour anyway, so paging it would cost a round trip per row.
+router.get('/admin/flavours/dietary-conflicts', requireAuth, requireCapability('catalog:admin'), async (req, res) => {
   try {
-    const { bakerSlug, customer } = req.body;
+    res.json(await baselineConflictKeys());
+  } catch (err) {
+    serverError(req, res, err);
+  }
+});
+
+// PUT /api/admin/flavours/:flavourId/dietary-conflicts  Body: { requirementKeys: [...] }
+// Replace-set for ONE flavour, so editing chocolate cannot blank vanilla.
+router.put('/admin/flavours/:flavourId/dietary-conflicts', requireAuth, requireCapability('catalog:admin'), async (req, res) => {
+  try {
+    const { flavourId } = req.params;
+    const keys = req.body?.requirementKeys;
+    if (!Array.isArray(keys)) return res.status(400).json({ error: 'requirementKeys must be an array' });
+
+    const keyErr = await validateDietaryKeys(keys);
+    if (keyErr) return res.status(400).json({ error: keyErr });
+
+    // The flavour must exist, or a typo'd id would write rows nothing can ever read.
+    const { data: flavour } = await supabase
+      .from('flavours').select('id').eq('id', flavourId).maybeSingle();
+    if (!flavour) return res.status(404).json({ error: 'Flavour not found' });
+
+    const ids = await setBaselineConflicts(flavourId, keys);
+    res.json({ ok: true, conflict_count: ids.length });
+  } catch (err) {
+    serverError(req, res, err);
+  }
+});
+
+// ── POST /api/orders ──────────────────────────────────────────────────────────
+// An order placed AGAINST a baker's slug. Two callers, and the difference decides whose word is
+// taken for the customer's contact details:
+//
+//   a baker's own app   — placing an order for a customer they are talking to. The body's contact
+//                         is trusted, because a baker typing their customer's number is the point.
+//   a storefront visitor — an anonymous stranger. The contact is taken FROM THE TOKEN, which means
+//                         from the number they just proved they can receive on.
+//
+// ── WHY THIS NOW REQUIRES A TOKEN ────────────────────────────────────────────────────────────────
+// This route was public. That was survivable while it was hard to reach, but the storefront's
+// enquiry facets point anonymous traffic straight at it, and a public order-creating endpoint with
+// no proof of contact is two problems at once: anyone can fill a baker's order list with junk, and
+// every enquiry that DOES arrive may carry a number that was never real. The baker's next action on
+// an enquiry is always to phone the customer, so an unverifiable number makes the record worthless.
+//
+// A code the customer must actually receive answers both, and it answers them better than a rate
+// limit could — a limit slows a spammer down, a verified contact stops them.
+//
+// The verification itself is POST /api/storefront/:slug/send-otp + /verify-otp, asked at SUBMIT
+// rather than on the way in; see the comment there for why that placement is deliberate.
+//
+// ── THE SUPPRESSION SWITCH ───────────────────────────────────────────────────────────────────────
+// STOREFRONT_OTP_REQUIRED=false reopens the anonymous path, for the window where SMS delivery is not
+// available. It is a real weakening and it is why the flag is loud: with it set, this route is again
+// a public order-creating endpoint with nothing standing behind it. See config.js.
+async function requireVerifiedContact(req, res, next) {
+  // A token is honoured whenever one is presented, suppressed or not — the baker app always sends
+  // one, and there is no reason to stop trusting it just because storefront OTP is off.
+  if (req.headers.authorization) return requireAuth(req, res, next);
+  if (!config.storefront.otpRequired) return next();
+  return res.status(401).json({ error: 'Unauthorized' });
+}
+
+router.post('/orders', requireVerifiedContact, async (req, res) => {
+  try {
+    const { bakerSlug } = req.body;
 
     // ── Validate required fields ────────────────────────────────────────────
-    if (!bakerSlug)                         return res.status(400).json({ error: 'bakerSlug is required' });
-    if (!customer?.firstName)               return res.status(400).json({ error: 'customer.firstName is required' });
-    if (!customer?.phone && !customer?.email) return res.status(400).json({ error: 'customer.phone or customer.email is required' });
-    const bodyErr = validateOrderBody(req.body);
+    if (!bakerSlug) return res.status(400).json({ error: 'bakerSlug is required' });
+    // An enquiry may carry a design, reference photos, or neither — see validateOrderBody.
+    const bodyErr = validateOrderBody(req.body, { requireDesign: false });
     if (bodyErr) return res.status(400).json({ error: bodyErr });
+    const dietErr = await validateDietaryKeys(req.body.dietaryRequirementKeys);
+    if (dietErr) return res.status(400).json({ error: dietErr });
 
     // ── Resolve baker ───────────────────────────────────────────────────────
     const { data: baker, error: bakerError } = await supabase
@@ -248,53 +535,136 @@ router.post('/orders', async (req, res) => {
       .eq('is_active', true)
       .maybeSingle();
 
-    if (bakerError) return res.status(500).json({ error: bakerError.message });
+    if (bakerError) return serverError(req, res, bakerError);
     if (!baker)     return res.status(404).json({ error: 'Baker not found' });
 
     const bakerId = baker.id;
 
-    // ── Upsert customer ─────────────────────────────────────────────────────
-    // Look up by email if provided, otherwise by phone.
-    const emailNorm = customer.email?.toLowerCase().trim() || null;
-    const phoneNorm = customer.phone?.trim() || null;
+    // ── Whose contact do we believe? ────────────────────────────────────────
+    const { data: appUser } = req.user
+      ? await supabase.from('baker_appusers').select('baker_id')
+          .eq('auth_user_id', req.user.id).maybeSingle()
+      : { data: null };
 
-    let lookupQuery = supabase.from('customers').select('id').eq('baker_id', bakerId);
-    if (emailNorm) {
-      lookupQuery = lookupQuery.eq('email', emailNorm);
+    let customer;
+    if (!req.user || appUser) {
+      // The body is the source in two cases, and they are the same case in the end: a baker typing
+      // their customer's number (the point of the baker app), or — only with
+      // STOREFRONT_OTP_REQUIRED=false — an anonymous visitor whose number nothing has proved.
+      //
+      // A baker may post only to THEIR OWN slug. Otherwise any signed-in baker could inject orders
+      // into a competitor's list by naming a different one; the route resolved the baker from the
+      // body long before it knew who was calling, so this is the first point it can be checked.
+      if (appUser && appUser.baker_id !== bakerId) return res.status(403).json({ error: 'Not your bakery' });
+      customer = req.body.customer;
+      if (!customer?.firstName)                 return res.status(400).json({ error: 'customer.firstName is required' });
+      if (!customer?.phone && !customer?.email) return res.status(400).json({ error: 'customer.phone or customer.email is required' });
     } else {
-      lookupQuery = lookupQuery.eq('phone', phoneNorm);
+      // A verified storefront visitor. The name is read from the body — it is not a security claim,
+      // and nothing but the customer can supply it — but the CONTACT comes from the token, so an
+      // enquiry can never carry a number its sender did not prove they can receive on.
+      //
+      // Supabase stores the phone without a leading '+'; restored here so what lands in customers
+      // matches the E.164 every other write path produces.
+      const verifiedPhone = req.user.phone ? (req.user.phone.startsWith('+') ? req.user.phone : `+${req.user.phone}`) : null;
+      const verifiedEmail = req.user.email ?? null;
+      if (!verifiedPhone && !verifiedEmail) return res.status(403).json({ error: 'Verify a phone number or email before ordering' });
+      customer = {
+        firstName: req.body.customer?.firstName,
+        lastName:  req.body.customer?.lastName,
+        phone:     verifiedPhone,
+        email:     verifiedEmail,
+      };
+      if (!customer.firstName) return res.status(400).json({ error: 'customer.firstName is required' });
     }
 
-    let { data: existingCustomer } = await lookupQuery.maybeSingle();
+    // ── Trial / order-cap gate (block before creating anything) ─────────────
+    const intakeBlock = await orderIntakeBlock(bakerId);
+    if (intakeBlock) return res.status(403).json(intakeBlock);
 
-    if (!existingCustomer) {
-      const { data: newCustomer, error: customerError } = await supabase
-        .from('customers')
-        .insert({
-          baker_id:   bakerId,
-          email:      emailNorm,
-          first_name: customer.firstName,
-          last_name:  customer.lastName ?? null,
-          phone:      phoneNorm,
-          source:     'online_order',
-        })
-        .select('id')
-        .single();
-
-      if (customerError) return res.status(500).json({ error: customerError.message });
-      existingCustomer = newCustomer;
-    }
+    // ── Upsert customer (find-or-create by email/phone) ─────────────────────
+    const { customerId, emailNorm, phoneNorm } = await upsertCustomer(bakerId, customer);
 
     const order = await insertOrderAndNotify({
       baker,
-      customerId:      existingCustomer.id,
+      customerId,
       customerContact: { first_name: customer.firstName, last_name: customer.lastName, email: emailNorm, phone: phoneNorm },
       body:            req.body,
     });
 
     res.status(201).json({ orderId: order.id, createdAt: order.created_at });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    serverError(req, res, err);
+  }
+});
+
+// ── POST /api/orders/manual ───────────────────────────────────────────────────
+// A baker creates an order WITHOUT the 3D designer — the existing-workflow path: take
+// a reference photo from the customer (or nothing) and bake it. Authenticated
+// (order:manage), baker resolved FROM THE TOKEN (not a slug), so it can't be spoofed
+// like the public POST /orders.
+//
+// No designSnapshot: the order has design_snapshot = null → no design version is
+// seeded, and X-Ray / Edit-in-3D stay off (they gate on the snapshot). Up to 3
+// reference photos (pre-uploaded to orders/reference/) form the gallery; the primary
+// is mirrored into design_thumbnail_url so the order shows its picture everywhere.
+//
+// Body: { customer:{firstName,lastName?,phone?,email?} (required),
+//         referenceKeys?:[uuid…] (≤3, under orders/reference/),
+//         weightKg?, flavours?, specialInstructions?,
+//         deliveryDate?, deliveryTime?, deliveryMode?, deliveryAddress? }
+router.post('/orders/manual', requireAuth, requireCapability('order:manage'), async (req, res) => {
+  try {
+    const { data: appUser } = await supabase
+      .from('baker_appusers').select('baker_id, id')
+      .eq('auth_user_id', req.user.id).maybeSingle();
+    if (!appUser) return res.status(403).json({ error: 'Not a baker account' });
+
+    const { customer, referenceKeys, deliveryMode = 'pickup', deliveryAddress } = req.body ?? {};
+
+    // Customer is required — the quote, delivery and notifications all address someone.
+    if (!customer?.firstName)                 return res.status(400).json({ error: 'customer.firstName is required' });
+    if (!customer?.phone && !customer?.email) return res.status(400).json({ error: 'customer.phone or customer.email is required' });
+    if (!['pickup', 'home_delivery'].includes(deliveryMode)) return res.status(400).json({ error: 'deliveryMode must be pickup or home_delivery' });
+    if (deliveryMode === 'home_delivery' && !deliveryAddress) return res.status(400).json({ error: 'deliveryAddress is required for home_delivery' });
+    const dietErr = await validateDietaryKeys(req.body?.dietaryRequirementKeys);
+    if (dietErr) return res.status(400).json({ error: dietErr });
+    // A baker's own order carries the same signals as an enquiry, and needs the same check — this
+    // route has its own validation rather than validateOrderBody (a manual order has no design and
+    // never did), so the signals had to be added here explicitly. Without it a bad value reaches the
+    // CHECK constraint from 043 and surfaces as an unreadable 500.
+    const signalErr = validateOrderSignals(req.body ?? {});
+    if (signalErr) return res.status(400).json({ error: signalErr });
+
+    // Reference photos: optional, ≤3, must be under the reference folder (they were
+    // signed-uploaded there). An order with zero reference photos is allowed.
+    const keys = Array.isArray(referenceKeys) ? referenceKeys.map(k => String(k).replace(/^\/+/, '')) : [];
+    if (keys.length > MAX_ORDER_PHOTOS) return res.status(400).json({ error: `At most ${MAX_ORDER_PHOTOS} reference photos` });
+    if (keys.some(k => !k.startsWith('orders/reference/'))) {
+      return res.status(400).json({ error: 'reference keys must be under orders/reference/' });
+    }
+
+    const { data: baker } = await supabase
+      .from('bakers').select('id, name, email').eq('id', appUser.baker_id).maybeSingle();
+    if (!baker) return res.status(404).json({ error: 'Baker not found' });
+
+    const intakeBlock = await orderIntakeBlock(baker.id);
+    if (intakeBlock) return res.status(403).json(intakeBlock);
+
+    const { customerId, emailNorm, phoneNorm } = await upsertCustomer(baker.id, customer, { source: 'manual' });
+
+    const order = await insertOrderAndNotify({
+      baker,
+      customerId,
+      customerContact: { first_name: customer.firstName, last_name: customer.lastName, email: emailNorm, phone: phoneNorm },
+      body:            { ...req.body, designSnapshot: null, referenceKeys: keys },
+      authoredBy:      'baker',
+      uploadedBy:      appUser.id,
+    });
+
+    res.status(201).json({ orderId: order.id, createdAt: order.created_at });
+  } catch (err) {
+    serverError(req, res, err);
   }
 });
 
@@ -314,6 +684,8 @@ router.post('/customer/orders', requireAuth, async (req, res) => {
 
     const bodyErr = validateOrderBody(req.body);
     if (bodyErr) return res.status(400).json({ error: bodyErr });
+    const dietErr = await validateDietaryKeys(req.body.dietaryRequirementKeys);
+    if (dietErr) return res.status(400).json({ error: dietErr });
 
     // ── Resolve baker ───────────────────────────────────────────────────────
     const { data: baker, error: bakerError } = await supabase
@@ -322,8 +694,12 @@ router.post('/customer/orders', requireAuth, async (req, res) => {
       .eq('slug', bakerSlug)
       .eq('is_active', true)
       .maybeSingle();
-    if (bakerError) return res.status(500).json({ error: bakerError.message });
+    if (bakerError) return serverError(req, res, bakerError);
     if (!baker)     return res.status(404).json({ error: 'Baker not found' });
+
+    // ── Trial / order-cap gate (block before creating anything) ─────────────
+    const intakeBlock = await orderIntakeBlock(baker.id);
+    if (intakeBlock) return res.status(403).json(intakeBlock);
 
     // ── Resolve the customer FROM THE TOKEN, scoped to this baker ────────────
     // No bound customer row for (this baker, this auth user) → the caller isn't a
@@ -334,7 +710,7 @@ router.post('/customer/orders', requireAuth, async (req, res) => {
       .eq('baker_id', baker.id)
       .eq('auth_user_id', req.user.id)
       .maybeSingle();
-    if (custErr) return res.status(500).json({ error: custErr.message });
+    if (custErr) return serverError(req, res, custErr);
     if (!customer || customer.is_active === false) {
       return res.status(403).json({ error: 'Not a customer of this baker' });
     }
@@ -346,9 +722,29 @@ router.post('/customer/orders', requireAuth, async (req, res) => {
       body:            req.body,
     });
 
+    // ── Customer consent (DPDP "Layer 2", source 'quote') ───────────────────
+    // Requesting a quote IS the affirmative act — the designer shows "By requesting a quote you
+    // agree to the Terms of Service and Privacy Policy" directly above this button. Recorded HERE,
+    // server-side, rather than by a client call the browser could skip: this is the ONLY moment a
+    // storefront customer accepts anything, and it is what makes the ToS content warranties
+    // (6.3/6.4 — "you have the right to use this image") actually bind them. It is also why we do
+    // NOT prompt on every photo upload: ask once, prove it forever.
+    //
+    // Idempotent per (subject, current version), so re-quoting never duplicates a row, and a no-op
+    // while the docs are still draft. Deliberately NON-FATAL: the order is the customer's, and an
+    // audit write must not lose them their cake. A failure is logged, not surfaced.
+    recordConsent({
+      subjectType: CONSENT_SUBJECT_TYPE.CUSTOMER,
+      subjectId:   req.user.id,
+      docKeys:     [...CONSENT_REQUIRED_DOC_KEYS],
+      source:      CONSENT_SOURCE.QUOTE,
+      ip:          req.ip,
+      userAgent:   req.headers['user-agent'] ?? null,
+    }).catch(err => logError(err, req));
+
     res.status(201).json({ orderId: order.id, createdAt: order.created_at });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    serverError(req, res, err);
   }
 });
 
@@ -372,11 +768,11 @@ router.get('/customer/orders', requireAuth, async (req, res) => {
       .from('orders').select(CUSTOMER_ORDER_FIELDS)
       .eq('baker_id', baker.id).eq('customer_id', customer.id)
       .order('created_at', { ascending: false });
-    if (error) return res.status(500).json({ error: error.message });
+    if (error) return serverError(req, res, error);
 
     res.json((data ?? []).map(toCustomerOrder));
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    serverError(req, res, err);
   }
 });
 
@@ -387,7 +783,7 @@ router.get('/customer/orders/:id', requireAuth, async (req, res) => {
     if (error) return res.status(status).json({ error });
     res.json(toCustomerOrder(order));
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    serverError(req, res, err);
   }
 });
 
@@ -412,7 +808,7 @@ router.post('/customer/orders/:id/accept', requireAuth, async (req, res) => {
       .eq('id', order.id)
       .select(CUSTOMER_ORDER_FIELDS)
       .maybeSingle();
-    if (uErr) return res.status(500).json({ error: uErr.message });
+    if (uErr) return serverError(req, res, uErr);
 
     await supabase.from('order_audit_log').insert({
       order_id: order.id, baker_id: order.baker_id,
@@ -431,7 +827,7 @@ router.post('/customer/orders/:id/accept', requireAuth, async (req, res) => {
 
     res.json(toCustomerOrder(updated));
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    serverError(req, res, err);
   }
 });
 
@@ -452,7 +848,7 @@ router.post('/customer/orders/:id/decline', requireAuth, async (req, res) => {
     const { data: updated, error: uErr } = await supabase
       .from('orders').update({ status_id: await idForKey('cancelled') })
       .eq('id', order.id).select(CUSTOMER_ORDER_FIELDS).maybeSingle();
-    if (uErr) return res.status(500).json({ error: uErr.message });
+    if (uErr) return serverError(req, res, uErr);
 
     await supabase.from('order_audit_log').insert({
       order_id: order.id, baker_id: order.baker_id,
@@ -463,7 +859,7 @@ router.post('/customer/orders/:id/decline', requireAuth, async (req, res) => {
 
     res.json(toCustomerOrder(updated));
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    serverError(req, res, err);
   }
 });
 
@@ -493,10 +889,38 @@ router.post('/customer/orders/:id/message', requireAuth, async (req, res) => {
 
     res.json({ ok: true });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    serverError(req, res, err);
   }
 });
 
+
+// Has the reference photo changed since we read it?
+//
+// A build guide is generated once and cached on the order (xray_spec). If the baker then replaces
+// the reference photo — uploads a clearer one, or the customer sends a different cake — the cached
+// guide silently describes the OLD picture. Nothing about the sheet would look wrong; it would just
+// be about a different cake.
+//
+// Costs nothing to detect: design_thumbnail_url is the primary reference photo's key (mirrored at
+// create/edit time — see supabase/order_reference_photos.sql), and xray_spec_meta.source_photo_key
+// records which photo we actually read. Both are bare keys here, before toPublicUrl expands one of
+// them, so it is a string comparison rather than a join.
+//
+// Only ever true for photo orders: a designed order has no xray_spec, so the check short-circuits
+// before design_thumbnail_url (which for those is a 3D render, not a photo) is ever compared.
+// Stage images are stored as R2 KEYS inside xray_spec (the public base is deployment config and
+// would rot every stored row if it were baked in), so the API expands them on the way out — the
+// same contract every other asset column has. spattoo-core never learns the bucket.
+//
+// Returns a COPY. Mutating the row in place would write the expanded URL back into whatever the
+// caller does with it next, and an expanded URL round-tripping into storage is exactly the rot the
+// key was chosen to avoid.
+
+function xraySpecStale(o) {
+  const readKey = o?.xray_spec_meta?.source_photo_key;
+  if (!o?.xray_spec || !readKey || !o?.design_thumbnail_url) return false;
+  return readKey !== o.design_thumbnail_url;
+}
 
 // ── GET /api/orders ───────────────────────────────────────────────────────────
 // Baker-facing: list orders for the authenticated baker's account.
@@ -504,13 +928,7 @@ router.post('/customer/orders/:id/message', requireAuth, async (req, res) => {
 
 router.get('/orders', requireAuth, requireCapability('order:view'), async (req, res) => {
   try {
-    const { data: appUser } = await supabase
-      .from('baker_appusers')
-      .select('baker_id')
-      .eq('auth_user_id', req.user.id)
-      .maybeSingle();
-
-    if (!appUser) return res.status(403).json({ error: 'Not a baker account' });
+    if (!req.bakerId) return res.status(403).json({ error: 'Not a baker account' });
 
     const { status, from, to } = req.query;
 
@@ -520,11 +938,13 @@ router.get('/orders', requireAuth, requireCapability('order:view'), async (req, 
         id, status_id, order_statuses ( key ), weight_kg, delivery_date, delivery_time,
         delivery_mode, delivery_address, flavours,
         special_instructions, design_thumbnail_url, design_snapshot,
+        xray_spec, xray_spec_edited, xray_spec_meta,
         approved_at, created_at, updated_at,
         quoted_price, quote_valid_until, current_version_id, quoted_version_id,
+        ${DIETARY_EMBED},
         customers ( id, email, first_name, last_name, phone )
       `)
-      .eq('baker_id', appUser.baker_id)
+      .eq('baker_id', req.bakerId)
       .order('created_at', { ascending: false });
 
     if (status)               query = query.eq('status_id', await idForKey(status));
@@ -534,11 +954,80 @@ router.get('/orders', requireAuth, requireCapability('order:view'), async (req, 
     if (req.query.customer_id)   query = query.eq('customer_id', req.query.customer_id);
 
     const { data, error } = await query;
-    if (error) return res.status(500).json({ error: error.message });
+    if (error) return serverError(req, res, error);
 
-    res.json(data.map(o => ({ ...withStatusKey(o), design_thumbnail_url: toPublicUrl(o.design_thumbnail_url), quote_stale: quoteStale(o) })));
+    // The order detail is rendered straight from THIS row (the panel has no per-order fetch), so
+    // an order's design has to travel with it — including the estimate columns a photo order keeps
+    // it in, or X-Ray on a photo order is unreachable no matter what the client does.
+    //
+    // But never ship BOTH readings of the same photo. Once the baker has corrected an estimate,
+    // resolveDesign.js reads only the corrected copy; the raw one exists to be diffed against it,
+    // which is our analysis, not the browser's business. Sending both would double the heaviest
+    // field in the response for exactly the orders most likely to have one.
+    res.json(data.map(o => {
+      const { xray_spec, ...rest } = o;
+      const row = o.xray_spec_edited ? rest : o;
+      return {
+        ...withDietaryKeys(withStatusKey(withOrderStageUrls(row))),
+        design_thumbnail_url: toPublicUrl(o.design_thumbnail_url),
+        xray_spec_stale: xraySpecStale(o),
+        quote_stale: quoteStale(o),
+      };
+    }));
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    serverError(req, res, err);
+  }
+});
+
+// ── GET /api/orders/calendar ──────────────────────────────────────────────────
+// Per-day order counts for the baker's Orders → Calendar month view:
+//   [{ date: '2026-07-04', count: 2, by_status: { pending: 1, confirmed: 1 } }, …]
+//
+// Deliberately does NOT return the orders themselves. The grid only needs a number per
+// day, and fetching a month of order rows to count them in the browser is O(orders) and
+// grows without bound; this response is O(days) — at most ~31 entries — however big the
+// bakery gets. Counting happens in the DB via orders_calendar_counts (migration 021),
+// with an in-Node fallback so the endpoint works before that function is applied.
+//
+// MUST stay registered ahead of GET /orders/:id — otherwise 'calendar' is captured as an
+// order id by the :id route below.
+router.get('/orders/calendar', requireAuth, requireCapability('order:view'), async (req, res) => {
+  try {
+    if (!req.bakerId) return res.status(403).json({ error: 'Not a baker account' });
+
+    const { from, to } = req.query;
+    if (!ISO_DATE_RE.test(from ?? '') || !ISO_DATE_RE.test(to ?? '')) {
+      return res.status(400).json({ error: 'from and to are required, as YYYY-MM-DD' });
+    }
+    const spanDays = (Date.parse(`${to}T00:00:00Z`) - Date.parse(`${from}T00:00:00Z`)) / 86400000;
+    if (Number.isNaN(spanDays)) return res.status(400).json({ error: 'from and to must be real dates' });
+    if (spanDays < 0)           return res.status(400).json({ error: 'to must not be before from' });
+    // Bounds the work a single request can ask for: the UI only ever draws one month.
+    if (spanDays > CALENDAR_MAX_SPAN_DAYS) {
+      return res.status(400).json({ error: `Range too large (max ${CALENDAR_MAX_SPAN_DAYS} days)` });
+    }
+
+    const rows = await calendarCounts(req.bakerId, from, to);
+
+    // Fold to one entry per day, translating the compact status_id back to a readable
+    // key at the HTTP boundary — the surrogate never leaves the server.
+    const byId = new Map((await getOrderStatuses()).map(s => [s.id, s]));
+    const byDate = new Map();
+    for (const r of rows) {
+      if (!r.delivery_date) continue;
+      const key = byId.get(r.status_id)?.key ?? 'unknown';
+      const n   = Number(r.order_count) || 0;
+      let day = byDate.get(r.delivery_date);
+      if (!day) { day = { date: r.delivery_date, count: 0, by_status: {} }; byDate.set(r.delivery_date, day); }
+      day.by_status[key] = (day.by_status[key] ?? 0) + n;
+      // `count` is the headline "cakes to bake that day" number, so a cancelled order
+      // doesn't inflate it — it stays visible in by_status for anyone who wants it.
+      if (key !== 'cancelled') day.count += n;
+    }
+
+    res.json([...byDate.values()].sort((a, b) => (a.date < b.date ? -1 : 1)));
+  } catch (err) {
+    serverError(req, res, err);
   }
 });
 
@@ -547,31 +1036,23 @@ router.get('/orders', requireAuth, requireCapability('order:view'), async (req, 
 
 router.get('/orders/:id', requireAuth, requireCapability('order:view'), async (req, res) => {
   try {
-    const { data: appUser } = await supabase
-      .from('baker_appusers')
-      .select('baker_id')
-      .eq('auth_user_id', req.user.id)
-      .maybeSingle();
+    if (!req.bakerId) return res.status(403).json({ error: 'Not a baker account' });
 
-    if (!appUser) return res.status(403).json({ error: 'Not a baker account' });
-
-    const { data: order, error } = await supabase
-      .from('orders')
-      .select(`
+    const order = await assertBakerOwns(req, 'orders', req.params.id, { select: `
         *,
         order_statuses ( key ),
+        ${DIETARY_EMBED},
         customers ( id, email, first_name, last_name, phone )
-      `)
-      .eq('id', req.params.id)
-      .eq('baker_id', appUser.baker_id)
-      .maybeSingle();
-
-    if (error)  return res.status(500).json({ error: error.message });
+      ` });
     if (!order) return res.status(404).json({ error: 'Order not found' });
 
-    res.json({ ...withStatusKey(order), quote_stale: quoteStale(order) });
+    res.json({
+      ...withDietaryKeys(withStatusKey(withOrderStageUrls(order))),
+      xray_spec_stale:  xraySpecStale(order),
+      quote_stale:      quoteStale(order),
+    });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    serverError(req, res, err);
   }
 });
 
@@ -583,7 +1064,35 @@ router.get('/order-statuses', async (req, res) => {
   try {
     res.json(await getOrderStatuses());
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    serverError(req, res, err);
+  }
+});
+
+// ── GET /api/dietary-requirements ─────────────────────────────────────────────
+// The pickable requirement vocabulary (key/label/kind/order), served from the DB so
+// the order form, the baker UI and the print sheet render the same set we store —
+// instead of each repo hardcoding its own copy. Public: the customer-facing order
+// form needs it before anyone is authenticated, and it is reference data, not a
+// tenant's data. Same reasoning (and shape) as GET /api/order-statuses above.
+//
+// With ?bakerSlug= each row also carries `offered` — whether that bakery deals in it at
+// all. The full vocabulary comes back either way, annotated rather than filtered: the
+// two kinds must act differently (a diet option is hidden, an allergen never is — see
+// supabase/baker_dietary_options.sql), and that is a rendering rule. Filtering here
+// would make an un-offered allergen indistinguishable from one that doesn't exist,
+// which is the single confusion capable of losing an allergy.
+router.get('/dietary-requirements', async (req, res) => {
+  try {
+    const { bakerSlug } = req.query;
+    if (!bakerSlug) return res.json(await getDietaryRequirements());
+
+    const { data: baker } = await supabase
+      .from('bakers').select('id').eq('slug', bakerSlug).eq('is_active', true).maybeSingle();
+    if (!baker) return res.status(404).json({ error: 'Baker not found' });
+
+    res.json(await requirementsForBaker(baker.id));
+  } catch (err) {
+    serverError(req, res, err);
   }
 });
 
@@ -604,8 +1113,7 @@ router.patch('/orders/:id/status', requireAuth, requireCapability('order:manage'
       .eq('auth_user_id', req.user.id).maybeSingle();
     if (!appUser) return res.status(403).json({ error: 'Not a baker account' });
 
-    const { data: existingRow } = await supabase
-      .from('orders').select('status_id, current_version_id, order_statuses ( key )').eq('id', req.params.id).eq('baker_id', appUser.baker_id).maybeSingle();
+    const existingRow = await assertBakerOwns(req, 'orders', req.params.id, { select: 'status_id, current_version_id, order_statuses ( key )' });
     if (!existingRow) return res.status(404).json({ error: 'Order not found' });
     const existing = withStatusKey(existingRow);
 
@@ -624,7 +1132,7 @@ router.patch('/orders/:id/status', requireAuth, requireCapability('order:manage'
     const { data: order, error } = await supabase
       .from('orders').update(updates).eq('id', req.params.id).eq('baker_id', appUser.baker_id)
       .select('id, status_id, order_statuses ( key ), approved_at, priced_at, quoted_version_id, current_version_id').maybeSingle();
-    if (error) return res.status(500).json({ error: error.message });
+    if (error) return serverError(req, res, error);
 
     await supabase.from('order_audit_log').insert({
       order_id: req.params.id, baker_id: appUser.baker_id,
@@ -646,12 +1154,18 @@ router.patch('/orders/:id/status', requireAuth, requireCapability('order:manage'
     }
 
     // Baker marked it ready → tell the customer it's ready for pickup/delivery.
+    // Finished-cake photos (optional, ≤3) the baker uploaded before flipping to ready
+    // ride along in the email — read them here so they're embedded inline. Ordered by
+    // sort_order so the email matches the baker's chosen sequence.
     if (status === 'ready') {
       const { data: ctx } = await supabase.from('orders')
         .select('id, delivery_mode, delivery_date, delivery_time, design_thumbnail_url, bakers(name, slug), customers(email, first_name)')
         .eq('id', req.params.id).maybeSingle();
+      const { data: photoRows } = await supabase.from('order_finished_photos')
+        .select('key').eq('order_id', req.params.id).order('sort_order', { ascending: true });
+      const photoUrls = (photoRows ?? []).map(p => toPublicUrl(p.key)).filter(Boolean);
       notifyOrderReady({
-        order:    { id: req.params.id, delivery_mode: ctx?.delivery_mode, delivery_date: ctx?.delivery_date, delivery_time: ctx?.delivery_time, design_thumbnail_url: toPublicUrl(ctx?.design_thumbnail_url) },
+        order:    { id: req.params.id, delivery_mode: ctx?.delivery_mode, delivery_date: ctx?.delivery_date, delivery_time: ctx?.delivery_time, design_thumbnail_url: toPublicUrl(ctx?.design_thumbnail_url), photoUrls },
         baker:    ctx?.bakers ?? {},
         customer: ctx?.customers ?? {},
       }).catch(err => console.error('[notifications] order ready failed:', err.message));
@@ -671,9 +1185,128 @@ router.patch('/orders/:id/status', requireAuth, requireCapability('order:manage'
 
     res.json(withStatusKey(order));
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    serverError(req, res, err);
   }
 });
+
+// ── Finished-cake photos ──────────────────────────────────────────────────────
+// Optional (≤3) photos of the finished cake the baker uploads — typically right
+// before marking the order 'ready', so they ride along in the order-ready email
+// (see the ready branch above). Stored as bare R2 keys under orders/photos/ in
+// order_finished_photos; served back as public URLs. Baker-scoped: every route
+// verifies the order belongs to the caller's bakery.
+
+// Resolve the caller's baker_appuser (for appUser.id, used to stamp uploads) + assert the order is
+// theirs (SEC-14 assertBakerOwns — server-resolved req.bakerId). Returns { appUser } or
+// { status, error } for the route to return.
+async function loadBakerOrder(req, orderId) {
+  const { data: appUser } = await supabase
+    .from('baker_appusers').select('baker_id, id')
+    .eq('auth_user_id', req.user.id).maybeSingle();
+  if (!appUser) return { status: 403, error: 'Not a baker account' };
+  const order = await assertBakerOwns(req, 'orders', orderId);
+  if (!order) return { status: 404, error: 'Order not found' };
+  return { appUser };
+}
+
+// One factory registers the GET/POST(replace)/DELETE trio for an order photo SET, so
+// the finished-cake photos and the manual-order reference photos share identical
+// handlers (they differ only by table + R2 folder). `mirrorThumbnail` maintains
+// orders.design_thumbnail_url from the PRIMARY photo — used by the reference set so a
+// manual order's picture stays in sync on edit (guarded to design-less orders so it
+// can never clobber a real design thumbnail).
+function registerOrderPhotoRoutes({ path, table, folder, mirrorThumbnail = false }) {
+  // GET — list the set (ordered), as public URLs for display.
+  router.get(`/orders/:id/${path}`, requireAuth, requireCapability('order:manage'), async (req, res) => {
+    try {
+      const ctx = await loadBakerOrder(req, req.params.id);
+      if (ctx.error) return res.status(ctx.status).json({ error: ctx.error });
+      const { data: rows, error } = await supabase
+        .from(table).select('id, key, sort_order')
+        .eq('order_id', req.params.id).order('sort_order', { ascending: true });
+      if (error) return serverError(req, res, error);
+      res.json((rows ?? []).map(r => ({ id: r.id, sort_order: r.sort_order, url: toPublicUrl(r.key) })));
+    } catch (err) {
+      serverError(req, res, err);
+    }
+  });
+
+  // POST — replace the set with `keys` (≤3, ordered by position). Replace (not append)
+  // is idempotent; the prior set's R2 objects are pruned so they don't leak. Keys must
+  // live under this set's folder (the upload allow-list folder).
+  router.post(`/orders/:id/${path}`, requireAuth, requireCapability('order:manage'), async (req, res) => {
+    try {
+      const ctx = await loadBakerOrder(req, req.params.id);
+      if (ctx.error) return res.status(ctx.status).json({ error: ctx.error });
+
+      const keys = Array.isArray(req.body?.keys) ? req.body.keys.map(k => String(k).replace(/^\/+/, '')) : null;
+      if (!keys) return res.status(400).json({ error: 'keys must be an array' });
+      if (keys.length > MAX_ORDER_PHOTOS) return res.status(400).json({ error: `At most ${MAX_ORDER_PHOTOS} photos` });
+      if (keys.some(k => !k.startsWith(`${folder}/`))) {
+        return res.status(400).json({ error: `keys must be under ${folder}/` });
+      }
+
+      // Prune the previous set's R2 objects (fresh uuid filenames ⇒ no overlap with `keys`).
+      const { data: prior } = await supabase.from(table).select('key').eq('order_id', req.params.id);
+      await supabase.from(table).delete().eq('order_id', req.params.id);
+      await Promise.allSettled((prior ?? []).map(p => deleteObject(p.key)));
+
+      let inserted = [];
+      if (keys.length) {
+        const rows = keys.map((key, i) => ({
+          order_id: req.params.id, key, sort_order: i, uploaded_by: ctx.appUser.id,
+        }));
+        const { data, error } = await supabase.from(table).insert(rows).select('id, key, sort_order');
+        if (error) return serverError(req, res, error);
+        inserted = data ?? [];
+      }
+
+      // Keep the denormalised picture mirror in step with the primary reference photo,
+      // but only for a design-less order (never overwrite a rendered design thumbnail).
+      if (mirrorThumbnail) {
+        await supabase.from('orders')
+          .update({ design_thumbnail_url: keys[0] ?? null })
+          .eq('id', req.params.id).is('design_snapshot', null);
+      }
+
+      res.json(inserted.map(r => ({ id: r.id, sort_order: r.sort_order, url: toPublicUrl(r.key) })));
+    } catch (err) {
+      serverError(req, res, err);
+    }
+  });
+
+  // DELETE — remove one photo (row + its R2 object).
+  router.delete(`/orders/:id/${path}/:photoId`, requireAuth, requireCapability('order:manage'), async (req, res) => {
+    try {
+      const ctx = await loadBakerOrder(req, req.params.id);
+      if (ctx.error) return res.status(ctx.status).json({ error: ctx.error });
+      const { data: row } = await supabase
+        .from(table).select('id, key')
+        .eq('id', req.params.photoId).eq('order_id', req.params.id).maybeSingle();
+      if (!row) return res.status(404).json({ error: 'Photo not found' });
+      await supabase.from(table).delete().eq('id', row.id);
+      await deleteObject(row.key).catch(err => console.error('[orders] photo object delete failed:', err.message));
+
+      if (mirrorThumbnail) {
+        // Re-point the mirror at the new primary (lowest sort_order), or clear it.
+        const { data: rest } = await supabase.from(table)
+          .select('key').eq('order_id', req.params.id).order('sort_order', { ascending: true }).limit(1);
+        await supabase.from('orders')
+          .update({ design_thumbnail_url: rest?.[0]?.key ?? null })
+          .eq('id', req.params.id).is('design_snapshot', null);
+      }
+
+      res.json({ ok: true });
+    } catch (err) {
+      serverError(req, res, err);
+    }
+  });
+}
+
+// Finished-cake photos (delivery) and manual-order reference photos (intake) — same
+// trio of routes, different set. Paths/clients unchanged for the finished set.
+registerOrderPhotoRoutes({ path: 'photos',           table: 'order_finished_photos',  folder: 'orders/photos' });
+registerOrderPhotoRoutes({ path: 'reference-photos', table: 'order_reference_photos', folder: 'orders/reference', mirrorThumbnail: true });
 
 // ── POST /api/orders/:id/quote ────────────────────────────────────────────────
 // Baker issues (or re-issues) the quote: captures the price + optional line items,
@@ -697,10 +1330,7 @@ router.post('/orders/:id/quote', requireAuth, requireCapability('order:manage'),
       .eq('auth_user_id', req.user.id).maybeSingle();
     if (!appUser) return res.status(403).json({ error: 'Not a baker account' });
 
-    const { data: existingRow } = await supabase
-      .from('orders')
-      .select('status_id, current_version_id, order_statuses ( key ), bakers(name, slug), customers(email, first_name)')
-      .eq('id', req.params.id).eq('baker_id', appUser.baker_id).maybeSingle();
+    const existingRow = await assertBakerOwns(req, 'orders', req.params.id, { select: 'status_id, current_version_id, order_statuses ( key ), bakers(name, slug), customers(email, first_name)' });
     if (!existingRow) return res.status(404).json({ error: 'Order not found' });
     const existing = withStatusKey(existingRow);
 
@@ -724,7 +1354,7 @@ router.post('/orders/:id/quote', requireAuth, requireCapability('order:manage'),
       .eq('id', req.params.id).eq('baker_id', appUser.baker_id)
       .select('id, status_id, order_statuses ( key ), quoted_price, quote_line_items, quote_valid_until, advance_amount, quote_note, priced_at, quoted_version_id, current_version_id')
       .maybeSingle();
-    if (error) return res.status(500).json({ error: error.message });
+    if (error) return serverError(req, res, error);
 
     const noteVal = (note ?? '').toString().trim() || null;
     await supabase.from('order_audit_log').insert({
@@ -747,7 +1377,7 @@ router.post('/orders/:id/quote', requireAuth, requireCapability('order:manage'),
     // Freshly pinned to the current version → never stale right after issuing.
     res.json({ ...withStatusKey(order), quote_stale: false });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    serverError(req, res, err);
   }
 });
 
@@ -770,9 +1400,7 @@ router.patch('/orders/:id', requireAuth, requireCapability('order:manage'), asyn
       .eq('auth_user_id', req.user.id).maybeSingle();
     if (!appUser) return res.status(403).json({ error: 'Not a baker account' });
 
-    const { data: existingRow } = await supabase
-      .from('orders').select(['status_id', 'order_statuses ( key )', ...EDITABLE_FIELDS].join(', '))
-      .eq('id', req.params.id).eq('baker_id', appUser.baker_id).maybeSingle();
+    const existingRow = await assertBakerOwns(req, 'orders', req.params.id, { select: ['status_id', 'order_statuses ( key )', ...EDITABLE_FIELDS].join(', ') });
     if (!existingRow) return res.status(404).json({ error: 'Order not found' });
     const existing = withStatusKey(existingRow);
 
@@ -812,13 +1440,57 @@ router.patch('/orders/:id', requireAuth, requireCapability('order:manage'), asyn
       }
     }
 
-    if (Object.keys(updates).length === 0) return res.status(400).json({ error: 'No changes detected' });
+    // Dietary requirements are a child-table SET, not a column, so they sit outside the
+    // field loop above — but they are edited from the same form and must land in the
+    // same audit entry, because "who changed the eggless flag, when, and why" is
+    // exactly the question anyone will ask afterwards.
+    //
+    // Locked with the cake, not with logistics: the requirement determines what gets
+    // baked, so it belongs with weight_kg/flavours in the quote phase. Once the order
+    // is confirmed the honest answer is a conversation (and a cancel + recreate), not a
+    // silent update to a cake that may already be in the oven. Change-Freeze — knowing
+    // per-attribute what is still physically changeable — is the feature that would
+    // relax this properly; until it exists, refusing is the safe default.
+    let dietaryChange = null;
+    if ('dietary_requirements' in fields) {
+      if (!allowedFields.includes('flavours')) {
+        return res.status(409).json({ error: 'Once the order is confirmed, dietary requirements cannot be changed here — cancel and recreate the order.' });
+      }
+      const requested = Array.isArray(fields.dietary_requirements) ? fields.dietary_requirements : [];
+      const dietErr = await validateDietaryKeys(requested);
+      if (dietErr) return res.status(400).json({ error: dietErr });
 
-    const { data: order, error } = await supabase
-      .from('orders').update(updates).eq('id', req.params.id).eq('baker_id', appUser.baker_id)
-      .select('id, ' + EDITABLE_FIELDS.join(', ')).maybeSingle();
-    if (error) return res.status(500).json({ error: `Update failed: ${error.message}` });
+      const { data: currentRows } = await supabase
+        .from('order_dietary_requirements')
+        .select('dietary_requirements ( key )')
+        .eq('order_id', req.params.id);
+      const current = (currentRows ?? []).map(r => r.dietary_requirements?.key).filter(Boolean).sort();
+      const next = [...new Set(requested)].sort();
+
+      if (JSON.stringify(current) !== JSON.stringify(next)) {
+        dietaryChange = { from: current, to: next };
+        changes.dietary_requirements = dietaryChange;
+      }
+    }
+
+    if (Object.keys(updates).length === 0 && !dietaryChange) return res.status(400).json({ error: 'No changes detected' });
+
+    // `updates` can legitimately be empty when the ONLY change is the requirement set
+    // (a child table), so read the row back rather than issuing an empty UPDATE.
+    const selection = 'id, ' + EDITABLE_FIELDS.join(', ');
+    const scoped = Object.keys(updates).length
+      ? supabase.from('orders').update(updates).eq('id', req.params.id).eq('baker_id', appUser.baker_id).select(selection)
+      : supabase.from('orders').select(selection).eq('id', req.params.id).eq('baker_id', appUser.baker_id);
+    const { data: order, error } = await scoped.maybeSingle();
+    if (error) return serverError(req, res, error);
     if (!order) return res.status(404).json({ error: 'Order not found after update' });
+
+    // After the row write, so a failed column update never leaves the set half-applied.
+    // 'baker' as the source: this endpoint is baker-authenticated, so whoever is typing
+    // is recording what the customer told them — Spattoo still asserts nothing.
+    if (dietaryChange) {
+      await setOrderDietaryRequirements(req.params.id, dietaryChange.to, 'baker');
+    }
 
     const { error: auditError } = await supabase.from('order_audit_log').insert({
       order_id: req.params.id, baker_id: appUser.baker_id,
@@ -827,9 +1499,9 @@ router.patch('/orders/:id', requireAuth, requireCapability('order:manage'), asyn
     });
     if (auditError) console.error('Audit log insert failed:', auditError.message);
 
-    res.json(order);
+    res.json(dietaryChange ? { ...order, dietary_requirements: dietaryChange.to } : order);
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    serverError(req, res, err);
   }
 });
 
@@ -852,10 +1524,7 @@ router.patch('/orders/:id/design', requireAuth, requireCapability('order:manage'
     if (!appUser) return res.status(403).json({ error: 'Not a baker account' });
 
     // Pull status + baker/customer contact (for the lock guard + customer email).
-    const { data: existingRow } = await supabase
-      .from('orders')
-      .select('id, status_id, order_statuses ( key ), bakers(name, slug), customers(email, first_name, last_name)')
-      .eq('id', req.params.id).eq('baker_id', appUser.baker_id).maybeSingle();
+    const existingRow = await assertBakerOwns(req, 'orders', req.params.id, { select: 'id, status_id, order_statuses ( key ), bakers(name, slug), customers(email, first_name, last_name)' });
     if (!existingRow) return res.status(404).json({ error: 'Order not found' });
     const existing = withStatusKey(existingRow);
 
@@ -889,7 +1558,7 @@ router.patch('/orders/:id/design', requireAuth, requireCapability('order:manage'
 
     res.json({ orderId: req.params.id, versionNo: version.version_no, designThumbnailUrl: toPublicUrl(thumbnailKey) });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    serverError(req, res, err);
   }
 });
 
@@ -897,12 +1566,8 @@ router.patch('/orders/:id/design', requireAuth, requireCapability('order:manage'
 // The design's append-only version history (newest first).
 router.get('/orders/:id/versions', requireAuth, requireCapability('order:view'), async (req, res) => {
   try {
-    const { data: appUser } = await supabase
-      .from('baker_appusers').select('baker_id').eq('auth_user_id', req.user.id).maybeSingle();
-    if (!appUser) return res.status(403).json({ error: 'Not a baker account' });
-
-    const { data: order } = await supabase
-      .from('orders').select('id').eq('id', req.params.id).eq('baker_id', appUser.baker_id).maybeSingle();
+    if (!req.bakerId) return res.status(403).json({ error: 'Not a baker account' });
+    const order = await assertBakerOwns(req, 'orders', req.params.id);
     if (!order) return res.status(404).json({ error: 'Order not found' });
 
     const { data, error } = await supabase
@@ -910,11 +1575,11 @@ router.get('/orders/:id/versions', requireAuth, requireCapability('order:view'),
       .select('id, version_no, design_thumbnail_url, authored_by, created_at')
       .eq('order_id', req.params.id)
       .order('version_no', { ascending: false });
-    if (error) return res.status(500).json({ error: error.message });
+    if (error) return serverError(req, res, error);
 
     res.json((data ?? []).map(v => ({ ...v, design_thumbnail_url: toPublicUrl(v.design_thumbnail_url) })));
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    serverError(req, res, err);
   }
 });
 
@@ -922,23 +1587,18 @@ router.get('/orders/:id/versions', requireAuth, requireCapability('order:view'),
 
 router.get('/orders/:id/audit', requireAuth, requireCapability('order:view'), async (req, res) => {
   try {
-    const { data: appUser } = await supabase
-      .from('baker_appusers').select('baker_id')
-      .eq('auth_user_id', req.user.id).maybeSingle();
-    if (!appUser) return res.status(403).json({ error: 'Not a baker account' });
-
-    const { data: order } = await supabase
-      .from('orders').select('id').eq('id', req.params.id).eq('baker_id', appUser.baker_id).maybeSingle();
+    if (!req.bakerId) return res.status(403).json({ error: 'Not a baker account' });
+    const order = await assertBakerOwns(req, 'orders', req.params.id);
     if (!order) return res.status(404).json({ error: 'Order not found' });
 
     const { data, error } = await supabase
       .from('order_audit_log').select('id, event, comment, changes, changed_by_name, changed_at')
       .eq('order_id', req.params.id).order('changed_at', { ascending: false });
-    if (error) return res.status(500).json({ error: error.message });
+    if (error) return serverError(req, res, error);
 
     res.json(data);
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    serverError(req, res, err);
   }
 });
 

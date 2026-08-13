@@ -1,4 +1,5 @@
 import { Router } from 'express';
+import { serverError } from '../lib/httpError.js';
 import { randomUUID } from 'crypto';
 import { supabase } from '../services/supabase.js';
 import { putObject } from '../services/r2.js';
@@ -101,11 +102,11 @@ router.post('/admin/meshy/generate', requireAuth, requireCapability('catalog:adm
       })
       .select('*')
       .single();
-    if (error) return res.status(500).json({ error: error.message });
+    if (error) return serverError(req, res, error);
 
     res.json({ ok: true, ...present(data) });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    serverError(req, res, err);
   }
 });
 
@@ -130,7 +131,7 @@ router.get('/admin/meshy/:id', requireAuth, requireCapability('catalog:admin'), 
     }
     res.json(present(row));
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    serverError(req, res, err);
   }
 });
 

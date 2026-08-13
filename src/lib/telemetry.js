@@ -114,7 +114,17 @@ async function sentryTransport() {
         });
         if (ctx.extra) scope.setContext('extra', ctx.extra);
         if (ctx.severity) scope.setLevel(ctx.severity === 'fatal' ? 'fatal' : 'error');
-        Sentry.captureException(error instanceof Error ? error : new Error(String(error)));
+        // A caller may pass a non-Error (e.g. a Supabase/PostgREST error is a plain
+        // { message, code, details, hint } object). new Error(String(obj)) would capture
+        // "[object Object]" and lose the message, so build the Error from `.message` and
+        // carry the DB fields as context — otherwise every DB error groups as one useless issue.
+        let ex = error;
+        if (!(error instanceof Error)) {
+          ex = new Error(error?.message || String(error));
+          if (error?.code) ex.code = error.code;
+          scope.setContext('cause', { code: error?.code, details: error?.details, hint: error?.hint });
+        }
+        Sentry.captureException(ex);
       });
     },
   };

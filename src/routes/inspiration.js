@@ -1,4 +1,5 @@
 import { Router } from 'express';
+import { serverError } from '../lib/httpError.js';
 import { validateCakeImage, analyzeCake } from '../services/openai.js';
 import { matchAnalysis } from '../services/inspirationMatch.js';
 import { requireAuth } from '../middleware/auth.js';
@@ -21,10 +22,10 @@ router.post('/admin/inspiration/analyze', requireAuth, requireCapability('catalo
     const verdict = await validateCakeImage(dataUri);
     if (!verdict.ok) return res.json({ ok: false, reason: verdict.reason, category: verdict.category });
 
-    const analysis = await analyzeCake(dataUri);
+    const { analysis } = await analyzeCake(dataUri);
     res.json({ ok: true, analysis });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    serverError(req, res, err);
   }
 });
 
@@ -40,7 +41,7 @@ router.post('/admin/inspiration/match', requireAuth, requireCapability('catalog:
     const result = await matchAnalysis(analysis);
     res.json({ ok: true, ...result });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    serverError(req, res, err);
   }
 });
 

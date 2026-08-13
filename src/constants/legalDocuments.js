@@ -1,0 +1,75 @@
+// Legal documents + consent-log enums (DPDP "Layer 2"). See docs/CONSENT_CAPTURE_PLAN.md.
+// The doc_key values MUST match `docKey` in spattoo-web/apps/marketing/lib/legal.ts — the
+// stable key a consent record references. NEVER rename one (it would orphan past consents).
+
+export const LEGAL_DOC_KEYS = ['tos', 'privacy', 'refund', 'grievance'];
+
+// Documents a baker must actively AGREE to (checkbox / first-login gate). The others are
+// informational (surfaced, not gated).
+export const CONSENT_REQUIRED_DOC_KEYS = ['tos', 'privacy'];
+
+// ── Content-rights attestation (IP / copyright) ────────────────────────────────
+// The short sentence a baker affirms when PUBLISHING a template or storefront photo
+// ("I have the right to publish this…"). It is a published, versioned, hashed text like any
+// other legal doc, so it is stored in legal_document_versions and registered through the same
+// POST /api/admin/legal/versions — no parallel machinery. See supabase/content_attestations.sql.
+//
+// It is deliberately NOT in LEGAL_DOC_KEYS: that list is what POST /api/legal/consent accepts,
+// and an attestation is not a DPDP consent (it is per-item, and not withdrawable). Keeping it
+// out is what stops it polluting the consent trail / "Your agreements" list.
+export const ATTESTATION_DOC_KEY = 'content-rights';
+
+// Everything registerable + publicly readable as a versioned document. Used by the admin
+// register route and GET /api/legal/:docKey — NOT by the consent route.
+export const PUBLISHABLE_DOC_KEYS = [...LEGAL_DOC_KEYS, ATTESTATION_DOC_KEY];
+
+// What the baker attested about. Compact smallint on content_attestations.target_type.
+//
+// ONE target today: the STOREFRONT, attested when the baker clicks Publish — the only moment
+// content becomes visible to the WORLD (until storefront_published, /api/storefront/:slug 404s).
+// Templates, shared designs, quotes and customer uploads are baker<->customer and already the
+// baker's responsibility under the ToS, so they are deliberately NOT attested — see the header of
+// supabase/content_attestations.sql. A future public surface (custom domain, marketplace listing)
+// is a NEW target_type here, not a new column.
+// WHAT was vouched for. Each value is a surface on which a baker exposes content to people who are
+// not him — the only moments an attestation is worth taking.
+//
+//   storefront  the world (until published, GET /api/storefront/:slug 404s)
+//   decoration  every customer of that bakery: promoting an upload puts it in the picker they design
+//               from. It is not world-visible, but it IS republication to an audience the baker does
+//               not know individually, and it is the exact act most likely to carry someone else's
+//               IP — a baker uploads a cartoon character or a brand logo and releases it for reuse.
+//               A takedown notice will name that image, so we must be able to say who released it.
+export const ATTESTATION_TARGET_TYPE = {
+  STOREFRONT: 1,
+  DECORATION: 2,
+  NAME_BY_ID: { 1: 'storefront', 2: 'decoration' },
+};
+
+// Who is consenting. Compact smallint stored on consent_events.subject_type.
+export const CONSENT_SUBJECT_TYPE = {
+  BAKER_APPUSER: 1,
+  CUSTOMER:      2,
+  NAME_BY_ID: { 1: 'baker_appuser', 2: 'customer' },
+};
+
+// Accept vs withdraw. A withdrawal is a NEW append-only row, never an update.
+export const CONSENT_ACTION = {
+  ACCEPTED:  1,
+  WITHDRAWN: 2,
+  NAME_BY_ID: { 1: 'accepted', 2: 'withdrawn' },
+};
+
+// Where the consent event was captured. `ID_BY_NAME` maps an API string → the stored smallint.
+// Applies to withdrawals too (action=2): SETTINGS = the Privacy & Data screen toggle,
+// ACCOUNT_CLOSURE = the WITHDRAWN row appended when a baker requests account deletion.
+export const CONSENT_SOURCE = {
+  SIGNUP:          1,   // self-signup checkbox
+  GATE:            2,   // first-login acceptance gate
+  RECONSENT:       3,   // re-prompt after a version bump
+  QUOTE:           4,   // customer, at storefront quote submission (future)
+  SETTINGS:        5,   // withdraw an optional consent from the Privacy & Data screen
+  ACCOUNT_CLOSURE: 6,   // withdrawal recorded as part of account deletion
+  ID_BY_NAME: { signup: 1, gate: 2, reconsent: 3, quote: 4, settings: 5, account_closure: 6 },
+  NAME_BY_ID: { 1: 'signup', 2: 'gate', 3: 'reconsent', 4: 'quote', 5: 'settings', 6: 'account_closure' },
+};

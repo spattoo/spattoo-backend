@@ -1,4 +1,5 @@
 import { Router } from 'express';
+import { serverError } from '../lib/httpError.js';
 import { supabase } from '../services/supabase.js';
 import { requireAuth } from '../middleware/auth.js';
 import { requireCapability } from '../middleware/rbac.js';
@@ -168,7 +169,7 @@ router.get('/baker/dashboard', requireAuth, requireCapability('order:view'), asy
       newCustomers,
     });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    serverError(req, res, err);
   }
 });
 
@@ -198,7 +199,7 @@ router.get('/baker/dashboard/breakdown', requireAuth, requireCapability('order:v
     }
 
     const { data, error } = await query;
-    if (error) return res.status(500).json({ error: error.message });
+    if (error) return serverError(req, res, error);
 
     const statusMap = {};
     (data ?? []).forEach(o => { const k = o.order_statuses?.key; if (k) statusMap[k] = (statusMap[k] ?? 0) + 1; });
@@ -214,7 +215,7 @@ router.get('/baker/dashboard/breakdown', requireAuth, requireCapability('order:v
       deliverySplit: { pickup: pickupCount, homeDelivery: deliveryCount },
     });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    serverError(req, res, err);
   }
 });
 

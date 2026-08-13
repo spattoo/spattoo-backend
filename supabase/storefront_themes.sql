@@ -12,6 +12,10 @@ CREATE TABLE IF NOT EXISTS storefront_themes (
   name        text        NOT NULL,                 -- display name ('Spotlight')
   description text,                                  -- short blurb for the picker
   is_active   boolean     NOT NULL DEFAULT true,    -- false = coming soon
+  -- Needs the `premium_themes` entitlement (Blaze+). Checked when a theme is CHOSEN, never
+  -- when a storefront is rendered. Added by migration 054 for databases that already have
+  -- this table — a CREATE TABLE IF NOT EXISTS cannot add a column to an existing one.
+  is_premium  boolean     NOT NULL DEFAULT false,
   sort_order  smallint    NOT NULL DEFAULT 0
 );
 
@@ -19,6 +23,9 @@ INSERT INTO storefront_themes (id, key, name, description, is_active, sort_order
   (1, 'spotlight',  'Spotlight',  'A dramatic dark hero with a spotlit, rotating 3D cake. Bold and modern.', true,  1),
   (2, 'patisserie', 'Patisserie', 'A light, elegant editorial layout that lets your cakes lead.',           false, 2),
   (3, 'aurora',     'Aurora',     'Soft, airy and colourful — a bright, welcoming storefront.',              false, 3)
+-- is_premium is deliberately NOT in the DO UPDATE list: re-running this file must not reset
+-- a flag set later. The three rows above are all basic, and that is the decision — premium
+-- starts with themes added from here on.
 ON CONFLICT (id) DO UPDATE
   SET key = EXCLUDED.key, name = EXCLUDED.name, description = EXCLUDED.description,
       is_active = EXCLUDED.is_active, sort_order = EXCLUDED.sort_order;

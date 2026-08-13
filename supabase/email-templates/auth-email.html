@@ -1,0 +1,71 @@
+<!--
+  Supabase Auth email template (branded) — DUAL AUDIENCE via {{ .Data.role }}.
+  Paste into the Supabase template slot(s) that hold this conditional (Confirm signup for the
+  baker link flow, and/or Magic Link for the customer OTP flow). This file is the versioned
+  source of truth; the live template lives in Supabase config (dashboard), not code.
+
+  Subjects (set per slot in the dashboard):
+    baker    → "Verify your email for Spattoo"   (verification only — the WELCOME is a
+               separate app email sent AFTER confirmation, not this expiring OTP link)
+    customer → "Your Spattoo sign-in code"
+
+  Branches:
+    role == "baker"  → email verification link ({{ .ConfirmationURL }}) — signup activation.
+    else (customer)  → OTP code ({{ .Token }}) for the storefront cake designer login.
+
+  Only auth-level vars + {{ .Data }} (user_metadata) are available — no rich per-baker branding,
+  so this is SPATTOO-branded. (To baker-brand the CUSTOMER OTP email would need the Send Email
+  Hook to route it through the app pipeline with the baker's logo/colours — separate change.)
+  Email-client-safe: shared card chrome, table layout, inline styles, web-safe fonts, no external
+  CSS, no emoji. Optional: swap the wordmark <div> for a hosted <img> Spattoo logo.
+-->
+<!DOCTYPE html>
+<html><body style="margin:0;padding:0;background:#EDEAE2;">
+  <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:#EDEAE2;padding:32px 12px;">
+    <tr><td align="center">
+      <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="max-width:480px;background:#ffffff;border-radius:16px;overflow:hidden;font-family:'Helvetica Neue',Arial,sans-serif;">
+        <tr><td style="padding:36px 36px 8px;text-align:center;">
+          <div style="font-size:24px;font-weight:800;letter-spacing:0.5px;color:#2C4433;font-family:'Helvetica Neue',Arial,sans-serif;">Spattoo</div>
+        </td></tr>
+
+        {{ if eq .Data.role "baker" }}
+        <!-- ── Baker: email VERIFICATION only (welcome is a separate post-confirm email) ── -->
+        <tr><td style="padding:14px 36px 0;text-align:center;">
+          <h1 style="margin:0;font-size:22px;color:#2C4433;font-weight:800;">Verify your email</h1>
+        </td></tr>
+        <tr><td style="padding:18px 36px 0;color:#3C4A40;font-size:15px;line-height:1.6;text-align:center;">
+          <p style="margin:0;">Confirm your email address to finish setting up your Spattoo account.</p>
+        </td></tr>
+        <tr><td style="padding:24px 36px 8px;text-align:center;">
+          <a href="{{ .ConfirmationURL }}" style="display:inline-block;background:#2C4433;color:#ffffff;text-decoration:none;font-size:16px;font-weight:700;padding:14px 34px;border-radius:12px;">Verify email &rarr;</a>
+        </td></tr>
+        <tr><td style="padding:12px 36px 4px;color:#9aa;font-size:12px;line-height:1.6;text-align:center;">
+          <p style="margin:0;">If this link expires before you use it, you can request a new one from the sign-in screen.</p>
+        </td></tr>
+        <tr><td style="padding:8px 36px 32px;text-align:center;color:#9aa;font-size:12px;line-height:1.6;">
+          <p style="margin:0 0 6px;">If the button doesn't work, copy and paste this link into your browser:<br/>
+            <a href="{{ .ConfirmationURL }}" style="color:#2C4433;word-break:break-all;">{{ .ConfirmationURL }}</a></p>
+          <p style="margin:0;">If you didn't create a Spattoo account, you can safely ignore this email.</p>
+        </td></tr>
+
+        {{ else }}
+        <!-- ── Customer: OTP sign-in code (storefront designer login) ──────────── -->
+        <tr><td style="padding:14px 36px 0;text-align:center;">
+          <h1 style="margin:0;font-size:22px;color:#2C4433;font-weight:800;">Your sign-in code</h1>
+        </td></tr>
+        <tr><td style="padding:18px 36px 0;color:#3C4A40;font-size:15px;line-height:1.6;text-align:center;">
+          <p style="margin:0 0 4px;">Enter this code to start designing your cake:</p>
+        </td></tr>
+        <tr><td style="padding:20px 36px 4px;text-align:center;">
+          <div style="display:inline-block;background:#F7F5F0;border-radius:12px;padding:16px 28px;font-size:30px;font-weight:800;letter-spacing:8px;color:#2C4433;font-family:'Helvetica Neue',Arial,sans-serif;">{{ .Token }}</div>
+        </td></tr>
+        <tr><td style="padding:14px 36px 32px;text-align:center;color:#9aa;font-size:12px;line-height:1.6;">
+          <p style="margin:0;">This code expires shortly. If you didn't request it, you can safely ignore this email.</p>
+        </td></tr>
+        {{ end }}
+
+      </table>
+      <p style="max-width:480px;margin:16px auto 0;color:#9aa;font-size:11px;font-family:Arial,sans-serif;text-align:center;">Spattoo — the 3D cake designer for bakeries</p>
+    </td></tr>
+  </table>
+</body></html>

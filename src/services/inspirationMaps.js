@@ -91,3 +91,43 @@ export function decorationQueryText(d) {
   return [d.type, d.subtype, d.technique, d.material]
     .filter(Boolean).map(s => String(s).replace(/_/g, ' ')).join(', ');
 }
+
+// ── Confidence gates ────────────────────────────────────────────────────────────────
+// Lives here, with the other knobs, and NOT in inspirationMatch.js — that module imports supabase
+// and therefore the whole config, which a policy this small should not need in order to be tested.
+export const CONFIDENCE_MIN = 0.35;  // best COMPOSITE below this -> reported as a coverage gap
+
+// The semantic floor, and why the composite floor was not enough.
+//
+// CONFIDENCE_MIN alone could be cleared WITHOUT THE MODEL RECOGNISING THE OBJECT. The non-semantic
+// terms sum to 0.60 (zone .25 + type .15 + mode .08 + colour .12), so a candidate that merely sits
+// in the same place, in the same medium, in a similar colour scores ~0.59 with a semantic
+// similarity of ZERO -- comfortably above 0.35.
+//
+// Not theoretical: on a real order a pink fondant bow on a top surface matched "Fondant doll 1".
+// Both fondant, both top-surface, both pink, agreeing on everything except what the object
+// actually IS -- the one thing only the semantic term can see. The baker was shown a faithful,
+// detailed guide to a doll, at high reported confidence, with nothing to distrust.
+//
+// So identity is a PRECONDITION rather than a contributor.
+//
+// FAILING HERE IS SAFE, which is why a conservative value is the right default. A rejected match
+// becomes a coverage GAP -- the decoration is listed as "not identified" and travels to the sheet
+// as such. The X-Ray still renders; the baker sees an honest "we could not place this" instead of
+// a confident wrong answer. Too high a floor costs coverage; too low costs trust. Not symmetric.
+//
+// CALIBRATION PENDING. 0.45 is reasoned, not measured: both sides of the comparison are short
+// comma-separated keyword strings ("bow, fondant" against "Fondant doll 1, fondant, figure,
+// girl"), where text-embedding-3-small puts merely-adjacent pairs well below a genuine name match.
+// `semantic` is recorded on every rejected decoration so this can be tuned from real orders
+// rather than re-argued from first principles.
+export const SEMANTIC_MIN = 0.45;
+
+// BOTH gates. The composite says "this is a plausible fit"; the semantic floor says "and it is
+// actually this object". A candidate needs both. Fails CLOSED on a missing breakdown -- failing
+// open would reintroduce the defect through the back door.
+export function isConfidentMatch(best) {
+  return !!best
+    && best.score >= CONFIDENCE_MIN
+    && (best.breakdown?.semantic ?? 0) >= SEMANTIC_MIN;
+}
