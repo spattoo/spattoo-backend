@@ -193,7 +193,14 @@ export const config = {
   // (Sentry-API-compatible) or a self-hosted sink is a one-file change there.
   telemetry: {
     dsn:         process.env.SENTRY_DSN,
-    environment: process.env.NODE_ENV || 'development',
+    // NOT NODE_ENV alone. Both Render services run NODE_ENV=production — the dev one deliberately,
+    // because it is a production build — so deriving the Sentry environment from it labels every
+    // dev error `production`. Sharing one Sentry project would then make dev noise
+    // indistinguishable from a real incident, and even in a separate project every event reads as
+    // production, which is worse than useless when you are trying to tell them apart at 2am.
+    //
+    // SENTRY_ENVIRONMENT is the override. Unset, behaviour is exactly as before.
+    environment: process.env.SENTRY_ENVIRONMENT || process.env.NODE_ENV || 'development',
     // Release = git SHA for "which deploy introduced this error" + suspect-commits.
     // Render auto-provides RENDER_GIT_COMMIT, so no manual env needed in prod.
     release:     process.env.RELEASE_VERSION || process.env.RENDER_GIT_COMMIT,
