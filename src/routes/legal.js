@@ -87,22 +87,36 @@ router.get('/legal/current', async (req, res) => {
   }
 });
 
-// ── GET /api/legal/:docKey ── current published full text (for an in-app modal). Public.
+// ── GET /api/legal/:docKey ── published full text (for an in-app modal). Public.
 // Declared AFTER /legal/current so that literal path wins.
+//
+// ?version=1.0 returns THAT version instead of the current one. Without it, a baker whose record
+// says "you accepted tos v1.0" has no way to read v1.0 once v1.1 is current — the page would show
+// them a document they never agreed to. The text is already frozen in the row; this is the only
+// thing that was missing to hand it back.
+//
+// Any published version is fetchable, not only ones the caller consented to. These are published
+// legal documents: the current one is world-readable at /terms, and an old one is no more private.
+// Gating it would also mean this endpoint could no longer serve the unauthenticated storefront.
 router.get('/legal/:docKey', async (req, res) => {
   try {
     const { docKey } = req.params;
+    const { version } = req.query;
     // PUBLISHABLE_ — this is also how the designer fetches the current content-rights statement
     // to SHOW the baker the exact sentence they are about to affirm at publish time.
     if (!PUBLISHABLE_DOC_KEYS.includes(docKey)) return res.status(404).json({ error: 'Unknown document' });
-    const { data, error } = await supabase
+    let q = supabase
       .from('legal_document_versions')
       .select('doc_key, version, effective_at, content, content_hash')
-      .eq('doc_key', docKey)
-      .eq('is_current', true)
-      .maybeSingle();
+      .eq('doc_key', docKey);
+    q = version ? q.eq('version', String(version)) : q.eq('is_current', true);
+    const { data, error } = await q.maybeSingle();
     if (error) throw error;
-    if (!data) return res.status(404).json({ error: 'Not published yet' });
+    if (!data) {
+      return res.status(404).json({
+        error: version ? `No version ${version} of ${docKey}` : 'Not published yet',
+      });
+    }
     res.json({
       docKey: data.doc_key,
       version: data.version,
