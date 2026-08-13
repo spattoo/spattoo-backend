@@ -84,6 +84,28 @@ export const PLAN = [
     parents:  { template_id: 'cake_templates' } },
 ];
 
+// ── Assets referenced by CODE, not by a row ──────────────────────────────────────────────────────
+// This migration is row-driven: it deep-walks every migrated row and copies the objects those rows
+// name. That is the right design for a catalogue, and structurally blind to an asset the CODE asks
+// for by URL — no row mentions it, so the walk cannot find it, and `code/` is not in ALLOWED_FOLDERS
+// so `assetKeysIn` would not recognise it even if one did.
+//
+// Found the hard way on 2026-08-13, after the first prod migration: the HDRI environment map was
+// missing and had to be copied by hand.
+//
+// Missing it is not a broken image. `CakeCanvas.jsx` builds this URL from the host's assets base and
+// falls back to a drei preset when it fails — a public CDN the comment there records as something
+// that "503s/400s and, on failure, poisoned the shared loader cache → dimmed the studio". So the
+// symptom is the whole designer lit wrongly, which reads as a rendering bug rather than a missing
+// file.
+//
+// Keep in step with `ENV_HDR_PATH` in spattoo-core `src/designer/canvas/CakeCanvas.jsx`. If a second
+// hardcoded asset path is ever added there, it belongs here too — there is no automatic link
+// between the two repos, which is exactly why the first one was missed.
+const STATIC_ASSETS = [
+  'code/env/lebombo_1k.hdr',      // image-based lighting for the 3D canvas
+];
+
 // ── Env resolution ────────────────────────────────────────────────────────────
 const DEV = {
   supaUrl: process.env.DEV_SUPABASE_URL         || process.env.SUPABASE_URL,
@@ -190,6 +212,18 @@ async function main() {
   const allKeys = new Set();
   const objStats = { copied: 0, skipped: 0 };
   let totalRows = 0, insertedRows = 0, urlsRewritten = 0;
+
+  // Code-referenced assets first — they belong to no table, so there is no step that would carry
+  // them, and doing them up front means a credentials problem surfaces on one small file rather
+  // than 300 rows in.
+  if (STATIC_ASSETS.length) {
+    console.log(`\n• static assets (referenced by CODE, not by any row): ${STATIC_ASSETS.length}`);
+    for (const k of STATIC_ASSETS) {
+      allKeys.add(k);
+      console.log(`    ${k}`);
+      if (!DRY_RUN) await copyObject(devS3, prodS3, k, objStats);
+    }
+  }
 
   for (const step of PLAN) {
     // 1. Read GLOBAL rows from dev

@@ -632,6 +632,17 @@ COMMENT ON COLUMN public.baker_appusers.tour_seen_at IS 'When this person was fi
 
 
 --
+-- Name: baker_dietary_exclusions; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.baker_dietary_exclusions (
+    baker_id uuid NOT NULL,
+    requirement_id smallint NOT NULL,
+    created_at timestamp with time zone DEFAULT now() NOT NULL
+);
+
+
+--
 -- Name: baker_element_exclusions; Type: TABLE; Schema: public; Owner: -
 --
 
@@ -2616,6 +2627,14 @@ ALTER TABLE ONLY public.baker_appusers
 
 
 --
+-- Name: baker_dietary_exclusions baker_dietary_exclusions_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.baker_dietary_exclusions
+    ADD CONSTRAINT baker_dietary_exclusions_pkey PRIMARY KEY (baker_id, requirement_id);
+
+
+--
 -- Name: baker_element_exclusions baker_element_exclusions_pkey; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -4128,6 +4147,22 @@ ALTER TABLE ONLY public.baker_appusers
 
 
 --
+-- Name: baker_dietary_exclusions baker_dietary_exclusions_baker_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.baker_dietary_exclusions
+    ADD CONSTRAINT baker_dietary_exclusions_baker_id_fkey FOREIGN KEY (baker_id) REFERENCES public.bakers(id) ON DELETE CASCADE;
+
+
+--
+-- Name: baker_dietary_exclusions baker_dietary_exclusions_requirement_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.baker_dietary_exclusions
+    ADD CONSTRAINT baker_dietary_exclusions_requirement_id_fkey FOREIGN KEY (requirement_id) REFERENCES public.dietary_requirements(id);
+
+
+--
 -- Name: baker_element_exclusions baker_element_exclusions_baker_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -5077,6 +5112,12 @@ CREATE POLICY "baker customers can read baker patterns" ON public.patterns FOR S
 --
 
 ALTER TABLE public.baker_appusers ENABLE ROW LEVEL SECURITY;
+
+--
+-- Name: baker_dietary_exclusions; Type: ROW SECURITY; Schema: public; Owner: -
+--
+
+ALTER TABLE public.baker_dietary_exclusions ENABLE ROW LEVEL SECURITY;
 
 --
 -- Name: baker_element_exclusions; Type: ROW SECURITY; Schema: public; Owner: -
