@@ -36,7 +36,8 @@
     "db:schema:check": "node scripts/dump-schema.mjs --check",
     "db:seed-lookups": "node scripts/seed-lookups.mjs",
     "db:seed-lookups:sql": "node scripts/seed-lookups-sql.mjs",
-    "db:verify-library": "node scripts/verify-prod-library.mjs"
+    "db:verify-library": "node scripts/verify-prod-library.mjs",
+    "verify:razorpay-plans": "node scripts/verify-razorpay-plans.mjs"
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.1036.0",
