@@ -456,23 +456,72 @@ Return ONLY JSON: { "description": "<comma-separated keywords>" }`;
 //
 // Returns a PNG Buffer (GPT image models ALWAYS return base64 — `response_format` is a DALL·E-only
 // param and there is no `url` to read).
-export async function generateDecorationImage(referenceBuffer, prompt, size = '1024x1024') {
+// ── Generation RECIPES, by what the element will BECOME ───────────────────────────────────────
+// One prompt used to serve every element: "photorealistic, shot straight on, no shadow". That is
+// right for a printed sticker and wrong for the other two, in opposite directions.
+//
+//   sticker — printed on edible paper and stuck on. Flat is not a compromise, it is what the baker
+//             actually makes. A bold outline helps the cut.
+//
+//   relief  — a fondant cut-out (placement_config.relief). Here the image stops being a picture:
+//             `buildSolidReliefGeometry` traces the ALPHA into a silhouette and extrudes it, and
+//             LUMINANCE bakes the normal map. So shading becomes bumps, a dark outline paints a
+//             halo on the extruded wall (which is why the wall sampler already insets 2% inward),
+//             thin protrusions poke off the wall (hence bake.flattenThin), and interior holes are
+//             not cut at all in v1. Every one of those is a prompt instruction, not a bug to fix
+//             downstream.
+//
+//   model   — the input to image-to-3D (Meshy). The exact OPPOSITE of the other two: a straight-on,
+//             evenly-lit, flat image gives a reconstruction model ZERO depth cues, so it invents
+//             all of them — which is what "it gets the details wrong" actually is. Three-quarter
+//             view, soft studio light and a matte surface are what carry shape information.
+//
+// Shared by all three: complete and whole in frame. A tall subject sent to a square frame came back
+// with its legs cut off; composeReference now matches the frame to the crop, and the prompt backs
+// that up rather than relying on it alone.
+const FRAMING =
+  'Show the decoration COMPLETE and WHOLE, entirely within the frame with a small margin around it — ' +
+  'never crop, cut off or run any part of it past the edge. ' +
+  'Show ONLY the decoration — remove the cake, the frosting behind it, any board, hands or props.';
+
+export const GENERATION_INTENTS = ['sticker', 'relief', 'model'];
+
+const RECIPES = {
+  sticker:
+    `${FRAMING} Fully transparent background, no shadow, soft even studio lighting, ` +
+    'photorealistic, shot straight on.',
+
+  relief:
+    `${FRAMING} Fully transparent background with a CRISP HARD EDGE — no soft or feathered ` +
+    'transparency. Flat even lighting with NO shadows and no directional shading anywhere on the ' +
+    'subject. NO dark outline or stroke around the silhouette. One solid connected shape: no ' +
+    'holes, gaps or see-through areas inside it, and no thin spikes, whiskers, stems or antennae ' +
+    'on the outline. Shot straight on, flat to the camera.',
+
+  model:
+    `${FRAMING} Plain light grey background. THREE-QUARTER view from a slightly raised camera, so ` +
+    'the form reads as solid and its depth is visible. Soft even studio lighting with no harsh ' +
+    'shadows. Matte, clay-like, non-reflective surface. A single object, sitting upright, ' +
+    'photographed sharply from front to back.',
+};
+
+export async function generateDecorationImage(referenceBuffer, prompt, size = '1024x1024', intent = 'sticker') {
   const form = new FormData();
   form.append('model', config.openai.imageModel);
   form.append('image', new Blob([referenceBuffer], { type: 'image/png' }), 'reference.png');
+  // Unknown intent falls back to `sticker` rather than throwing — a bad value should produce the
+  // previous behaviour, not lose a generation the caller has already paid for.
+  const recipe = RECIPES[intent] ?? RECIPES.sticker;
   form.append('prompt',
     `Recreate the decoration shown in the reference image as an isolated product photo: ${prompt}. ` +
-    'Keep its exact shape, colour, texture and craft. Show ONLY the decoration — remove the cake, ' +
-    'the frosting behind it, any board, hands or props. ' +
-    // Say this explicitly. A tall subject sent to a square frame came back with its legs cut off; the
-    // frame is now matched to the crop (services/imageCrop.js composeReference), and the prompt backs
-    // that up rather than relying on it alone.
-    'Show the decoration COMPLETE and WHOLE, entirely within the frame with a small margin around it — ' +
-    'never crop, cut off or run any part of it past the edge. ' +
-    'Fully transparent background, no shadow, soft even studio lighting, photorealistic, shot straight on.');
+    `Keep its exact shape, colour, texture and craft. ${recipe}`);
   form.append('size', size);
   form.append('quality', config.openai.imageQuality);
-  form.append('background', 'transparent');   // native cut-out; remove.bg is the fallback if ignored
+  // Transparent for the two FLAT intents — a native cut-out, with remove.bg as the fallback if the
+  // model ignores it. NOT for `model`: image-to-3D wants a plain backdrop it can separate the
+  // subject from, and an alpha channel there just becomes a hard silhouette with no depth behind
+  // it — the opposite of the shading cue the recipe is asking for.
+  if (intent !== 'model') form.append('background', 'transparent');
   form.append('output_format', 'png');        // must be png/webp — jpeg cannot carry alpha
   form.append('input_fidelity', 'high');      // preserve the reference decoration's identity
   form.append('n', '1');

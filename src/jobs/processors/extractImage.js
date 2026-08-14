@@ -74,7 +74,10 @@ export async function extractImage({ jobId }) {
         // cut a hanging monkey's legs off — the frame, not the crop, was wrong.
         const crop = await getObjectBuffer(c.crop_key || c.source_key);
         const { buffer: reference, size } = await composeReference(crop);
-        const generated = await generateDecorationImage(reference, c.prompt || c.label || 'a cake decoration', size);
+        // The recipe follows the candidate's INTENT (migration 062). Absent → 'sticker', which is
+        // what every candidate generated before this was, so old rows keep their meaning.
+        const generated = await generateDecorationImage(
+          reference, c.prompt || c.label || 'a cake decoration', size, c.intent || 'sticker');
 
         const outputKey = `elements/candidates/outputs/${randomUUID()}.png`;
         await putObject(outputKey, generated, 'image/png');

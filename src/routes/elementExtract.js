@@ -2,7 +2,7 @@ import { Router } from 'express';
 import { randomUUID } from 'crypto';
 import { serverError } from '../lib/httpError.js';
 import { supabase } from '../services/supabase.js';
-import { validateCakeImage, identifyElements } from '../services/openai.js';
+import { validateCakeImage, identifyElements, GENERATION_INTENTS } from '../services/openai.js';
 import { cropRegion } from '../services/imageCrop.js';
 import { getObjectBuffer, putObject } from '../services/r2.js';
 import { enqueueExtractImage } from '../jobs/processors/extractImage.js';
@@ -24,6 +24,7 @@ const toDto = (c) => ({
   elementKind: c.element_kind,
   colorHex: c.color_hex,
   material: c.material,
+  intent: c.intent ?? 'sticker',
   bbox: c.bbox,
   error: c.error,
   elementId: c.element_id,
@@ -193,14 +194,25 @@ router.get('/admin/element-extract/candidates/:id', requireAuth, requireCapabili
 });
 
 // ── Provenance ───────────────────────────────────────────────────────────────────────────────────
-// PATCH /admin/element-extract/candidates/:id  { status?, elementId? }
-// Called when the admin rejects a result, or when AddElement saves an element that came from a
-// candidate — that stamp is what later answers "did any of this GPT output actually get used?".
+// PATCH /admin/element-extract/candidates/:id  { status?, elementId?, intent? }
+// Called when the admin rejects a result, when AddElement saves an element that came from a
+// candidate — that stamp is what later answers "did any of this GPT output actually get used?" —
+// and when the admin sets what the image is FOR before generating it.
 router.patch('/admin/element-extract/candidates/:id', requireAuth, requireCapability('catalog:admin'), async (req, res) => {
   try {
-    const { status, elementId } = req.body ?? {};
+    const { status, elementId, intent } = req.body ?? {};
     const patch = { updated_at: new Date().toISOString() };
     if (elementId) patch.element_id = elementId;
+
+    // What the image is FOR (migration 062) — it selects the prompt recipe. Settable BEFORE
+    // generation, which is the only time it can matter: a generated image cannot be re-purposed by
+    // relabelling it, because the recipe shaped how it was drawn.
+    if (intent !== undefined) {
+      if (!GENERATION_INTENTS.includes(intent)) {
+        return res.status(400).json({ error: `intent must be one of: ${GENERATION_INTENTS.join(', ')}` });
+      }
+      patch.intent = intent;
+    }
     // Only the admin's own verdict is settable here — lifecycle states ('generating'/'ready') are
     // the worker's to write, and letting a client set them would let the UI lie about a job.
     if (status) {
