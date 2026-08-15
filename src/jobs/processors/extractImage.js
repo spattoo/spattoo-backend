@@ -72,12 +72,19 @@ export async function extractImage({ jobId }) {
         // Compose the crop into a properly-framed reference: an output aspect that matches the
         // subject, and margin around it. Sending a tall crop with a square output request is what
         // cut a hanging monkey's legs off — the frame, not the crop, was wrong.
-        const crop = await getObjectBuffer(c.crop_key || c.source_key);
-        const { buffer: reference, size } = await composeReference(crop);
+        // `fresh` sends nothing of the source, so there is no crop to fetch or frame — and no
+        // subject aspect to match the output to, so it takes the square default.
+        const fresh = c.fidelity === 'fresh';
+        let reference = null, size = '1024x1024';
+        if (!fresh) {
+          const crop = await getObjectBuffer(c.crop_key || c.source_key);
+          ({ buffer: reference, size } = await composeReference(crop));
+        }
         // The recipe follows the candidate's INTENT (migration 062). Absent → 'sticker', which is
         // what every candidate generated before this was, so old rows keep their meaning.
         const generated = await generateDecorationImage(
-          reference, c.prompt || c.label || 'a cake decoration', size, c.intent || 'sticker');
+          reference, c.prompt || c.label || 'a cake decoration', size,
+          c.intent || 'sticker', c.fidelity || 'reference');
 
         const outputKey = `elements/candidates/outputs/${randomUUID()}.png`;
         await putObject(outputKey, generated, 'image/png');

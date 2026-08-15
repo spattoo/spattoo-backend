@@ -2,7 +2,7 @@ import { Router } from 'express';
 import { randomUUID } from 'crypto';
 import { serverError } from '../lib/httpError.js';
 import { supabase } from '../services/supabase.js';
-import { validateCakeImage, identifyElements, GENERATION_INTENTS } from '../services/openai.js';
+import { validateCakeImage, identifyElements, GENERATION_INTENTS, GENERATION_FIDELITIES } from '../services/openai.js';
 import { cropRegion } from '../services/imageCrop.js';
 import { getObjectBuffer, putObject } from '../services/r2.js';
 import { enqueueExtractImage } from '../jobs/processors/extractImage.js';
@@ -25,6 +25,7 @@ const toDto = (c) => ({
   colorHex: c.color_hex,
   material: c.material,
   intent: c.intent ?? 'sticker',
+  fidelity: c.fidelity ?? 'reference',
   bbox: c.bbox,
   error: c.error,
   elementId: c.element_id,
@@ -200,7 +201,7 @@ router.get('/admin/element-extract/candidates/:id', requireAuth, requireCapabili
 // and when the admin sets what the image is FOR before generating it.
 router.patch('/admin/element-extract/candidates/:id', requireAuth, requireCapability('catalog:admin'), async (req, res) => {
   try {
-    const { status, elementId, intent } = req.body ?? {};
+    const { status, elementId, intent, fidelity } = req.body ?? {};
     const patch = { updated_at: new Date().toISOString() };
     if (elementId) patch.element_id = elementId;
 
@@ -212,6 +213,15 @@ router.patch('/admin/element-extract/candidates/:id', requireAuth, requireCapabi
         return res.status(400).json({ error: `intent must be one of: ${GENERATION_INTENTS.join(', ')}` });
       }
       patch.intent = intent;
+    }
+
+    // How closely to copy the reference (migration 063). Like `intent`, only meaningful before
+    // generation — it decides which endpoint the image comes from.
+    if (fidelity !== undefined) {
+      if (!GENERATION_FIDELITIES.includes(fidelity)) {
+        return res.status(400).json({ error: `fidelity must be one of: ${GENERATION_FIDELITIES.join(', ')}` });
+      }
+      patch.fidelity = fidelity;
     }
     // Only the admin's own verdict is settable here — lifecycle states ('generating'/'ready') are
     // the worker's to write, and letting a client set them would let the UI lie about a job.

@@ -530,6 +530,17 @@ const FRAMING =
 
 export const GENERATION_INTENTS = ['sticker', 'relief', 'model'];
 
+// How closely the output copies the reference crop.
+//
+//   reference  images/edits, input_fidelity high — reproduce THAT object. Right when rebuilding a
+//              cake you have seen: the gold cap, the exact shade.
+//   fresh      images/generations from the description alone. Nothing of the source photo is sent,
+//              so the asset inherits none of its angle, wonk or branding — and there is no input
+//              image to tokenise, so it costs less. Usually the better catalogue asset, because a
+//              faithful copy of one baker's lopsided fondant is not more reusable for being
+//              faithful.
+export const GENERATION_FIDELITIES = ['reference', 'fresh'];
+
 const RECIPES = {
   sticker:
     `${FRAMING} Fully transparent background, no shadow, soft even studio lighting, ` +
@@ -549,23 +560,57 @@ const RECIPES = {
     'photographed sharply from front to back.',
 };
 
-export async function generateDecorationImage(referenceBuffer, prompt, size = '1024x1024', intent = 'sticker') {
+export async function generateDecorationImage(
+  referenceBuffer, prompt, size = '1024x1024', intent = 'sticker', fidelity = 'reference',
+) {
+  // Unknown values fall back rather than throwing — a bad one should produce the previous
+  // behaviour, not lose a generation the caller has already paid for.
+  const recipe = RECIPES[intent] ?? RECIPES.sticker;
+  // `fresh` needs a reference to be ABSENT, so a missing buffer selects it rather than crashing.
+  const fresh  = fidelity === 'fresh' || !referenceBuffer;
+
+  // Transparent for the two FLAT intents — a native cut-out, with remove.bg as the fallback if the
+  // model ignores it. NOT for `model`: image-to-3D wants a plain backdrop it can separate the
+  // subject from, and an alpha channel there is a hard silhouette with nothing behind it — the
+  // opposite of the shading cue that recipe asks for.
+  const wantsTransparent = intent !== 'model';
+
+  // ── fresh: generate from the description, send nothing of the source ───────────────────────────
+  // A different ENDPOINT, not a flag. images/edits always conditions on the image it is given, so
+  // "ignore the reference" is not something a prompt can ask for — the only way not to copy the
+  // photo is not to send it. That also means no input image to tokenise, which is where the saving
+  // comes from.
+  if (fresh) {
+    const res = await fetch('https://api.openai.com/v1/images/generations', {
+      method: 'POST',
+      headers: { 'Authorization': `Bearer ${config.openai.apiKey}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        model: config.openai.imageModel,
+        prompt: `An isolated product photo of a single cake decoration: ${prompt}. ${recipe}`,
+        size,
+        quality: config.openai.imageQuality,
+        output_format: 'png',
+        n: 1,
+        ...(wantsTransparent ? { background: 'transparent' } : {}),
+      }),
+    });
+    if (!res.ok) throw new Error(`${config.openai.imageModel} generation failed: ${await res.text()}`);
+    const data = await res.json();
+    const b64 = data?.data?.[0]?.b64_json;
+    if (!b64) throw new Error(`${config.openai.imageModel} returned no image data`);
+    return Buffer.from(b64, 'base64');
+  }
+
+  // ── reference: reproduce THAT object ───────────────────────────────────────────────────────────
   const form = new FormData();
   form.append('model', config.openai.imageModel);
   form.append('image', new Blob([referenceBuffer], { type: 'image/png' }), 'reference.png');
-  // Unknown intent falls back to `sticker` rather than throwing — a bad value should produce the
-  // previous behaviour, not lose a generation the caller has already paid for.
-  const recipe = RECIPES[intent] ?? RECIPES.sticker;
   form.append('prompt',
     `Recreate the decoration shown in the reference image as an isolated product photo: ${prompt}. ` +
     `Keep its exact shape, colour, texture and craft. ${recipe}`);
   form.append('size', size);
   form.append('quality', config.openai.imageQuality);
-  // Transparent for the two FLAT intents — a native cut-out, with remove.bg as the fallback if the
-  // model ignores it. NOT for `model`: image-to-3D wants a plain backdrop it can separate the
-  // subject from, and an alpha channel there just becomes a hard silhouette with no depth behind
-  // it — the opposite of the shading cue the recipe is asking for.
-  if (intent !== 'model') form.append('background', 'transparent');
+  if (wantsTransparent) form.append('background', 'transparent');
   form.append('output_format', 'png');        // must be png/webp — jpeg cannot carry alpha
   form.append('input_fidelity', 'high');      // preserve the reference decoration's identity
   form.append('n', '1');
