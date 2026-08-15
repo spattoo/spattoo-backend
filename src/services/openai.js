@@ -178,8 +178,20 @@ Return ONLY valid JSON, no explanation:
 // PASS only a single cake or single cake component on a plain-ish background; REJECT
 // humans, scenes, and multi-object photos (they produce a fused, un-segmentable mesh).
 //   returns: { ok: boolean, category: string, reason: string }
-export async function validateCakeImage(imageUrl) {
-  const prompt = `You are a quality gate for a 2D-image → 3D-model pipeline. The 3D model will later be
+// ── Two gates, because two pipelines want opposite things ─────────────────────────────────────
+//
+//   'single_subject' (default) — Image → 3D. Meshy reconstructs ONE object and the result is split
+//                    into recolourable parts, so anything beside the subject becomes geometry that
+//                    should not be there. A decorated cake is correctly turned away here.
+//
+//   'decorated_cake' — Extract Elements and Build from Inspiration. The whole point is a cake with
+//                    things ON it: the model lists the decorations so each can be regenerated.
+//                    Under the single-subject prompt a busy makeup cake reads as `multiple_objects`
+//                    and is rejected — which turns away exactly the references worth using.
+//
+// The difference is not strictness. It is what counts as ONE thing: an object, or a cake.
+export async function validateCakeImage(imageUrl, purpose = 'single_subject') {
+  const SINGLE = `You are a quality gate for a 2D-image → 3D-model pipeline. The 3D model will later be
 split into recolourable parts, so the input image must depict ONE clean subject on a plain background.
 
 Decide if THIS image qualifies. Return ONLY a JSON object, no explanation:
@@ -197,6 +209,29 @@ REJECT (ok:false) when ANY of these is true:
 - a busy scene, room, table spread, or several distinct objects → category "scene" or "multiple_objects"
 - the subject is not a cake / cake component / edible decoration → category "other"
 Keep "reason" friendly and specific (e.g. "This photo has a person in it — upload just the cake").`;
+
+  const DECORATED = `You are a quality gate for a pipeline that reads the DECORATIONS off a reference
+cake. A heavily decorated cake is the IDEAL input — the decorations are the entire reason we are
+looking at it.
+
+Decide if THIS image qualifies. Return ONLY a JSON object, no explanation:
+{
+  "ok": <true|false>,
+  "category": "<cake|cake_component|topper|multiple_objects|person|scene|other>",
+  "reason": "<one short sentence the user will read>"
+}
+
+PASS (ok:true) whenever ONE cake is the clear subject, NO MATTER HOW MANY DECORATIONS ARE ON IT.
+A cake carrying ten separate items — figures, toppers, objects modelled in fondant — PASSES.
+Things sitting ON the cake are part of the cake; they are never "multiple objects".
+
+REJECT (ok:false) ONLY when:
+- a person, human face, hands or body is present → category "person"
+- there is no cake at all → category "other"
+- several SEPARATE cakes, or a table spread where no single cake is the subject → category "scene"
+Keep "reason" friendly and specific (e.g. "This photo has a person in it — upload just the cake").`;
+
+  const prompt = purpose === 'decorated_cake' ? DECORATED : SINGLE;
 
   const payload = JSON.stringify({
     model: 'gpt-4o',

@@ -46,7 +46,7 @@ router.post('/admin/element-extract/identify', requireAuth, requireCapability('c
 
     // Same gate Meshy and Build-from-Inspiration use: reject people/scenes/non-cakes up front. A
     // 200 with ok:false (not an error) so the UI can just explain why.
-    const verdict = await validateCakeImage(publicUrl(sourceKey));
+    const verdict = await validateCakeImage(publicUrl(sourceKey), 'decorated_cake');
     if (!verdict.ok) return res.json({ ok: false, reason: verdict.reason, category: verdict.category });
 
     const { cake, elements } = await identifyElements(publicUrl(sourceKey));

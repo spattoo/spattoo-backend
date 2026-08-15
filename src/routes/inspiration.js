@@ -19,7 +19,7 @@ router.post('/admin/inspiration/analyze', requireAuth, requireCapability('catalo
     }
     const dataUri = `data:${mimeType};base64,${imageBase64}`;
 
-    const verdict = await validateCakeImage(dataUri);
+    const verdict = await validateCakeImage(dataUri, 'decorated_cake');
     if (!verdict.ok) return res.json({ ok: false, reason: verdict.reason, category: verdict.category });
 
     const { analysis } = await analyzeCake(dataUri);
