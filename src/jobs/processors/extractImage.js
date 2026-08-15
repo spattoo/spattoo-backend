@@ -82,15 +82,23 @@ export async function extractImage({ jobId }) {
         }
         // The recipe follows the candidate's INTENT (migration 062). Absent → 'sticker', which is
         // what every candidate generated before this was, so old rows keep their meaning.
-        const generated = await generateDecorationImage(
+        // `variants` comes from the RUN, not the candidate — it is a decision about this attempt
+        // ("give me four to choose from"), not a property of the decoration.
+        const images = await generateDecorationImage(
           reference, c.prompt || c.label || 'a cake decoration', size,
-          c.intent || 'sticker', c.fidelity || 'reference');
+          c.intent || 'sticker', c.fidelity || 'reference', job.payload?.variants ?? 1);
 
-        const outputKey = `elements/candidates/outputs/${randomUUID()}.png`;
-        await putObject(outputKey, generated, 'image/png');
+        const outputKeys = [];
+        for (const img of images) {
+          const key = `elements/candidates/outputs/${randomUUID()}.png`;
+          await putObject(key, img, 'image/png');
+          outputKeys.push(key);
+        }
 
         await supabase.from('element_candidates').update({
-          output_key: outputKey,
+          // output_key stays the FIRST, so every existing reader keeps working untouched.
+          output_key:  outputKeys[0],
+          output_keys: outputKeys,
           status:     'ready',
           error:      null,
           updated_at: new Date().toISOString(),

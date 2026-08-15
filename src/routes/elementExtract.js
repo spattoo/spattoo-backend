@@ -31,6 +31,9 @@ const toDto = (c) => ({
   elementId: c.element_id,
   cropUrl:   c.crop_key   ? publicUrl(c.crop_key)   : null,
   outputUrl: c.output_key ? publicUrl(c.output_key) : null,
+  // Every attempt from the latest run. Falls back to the single key so a row generated before
+  // migration 064 still shows its one image rather than none.
+  outputUrls: (c.output_keys?.length ? c.output_keys : [c.output_key].filter(Boolean)).map(publicUrl),
   outputKey: c.output_key,   // the AddElement deep-link carries the KEY, not the URL
 });
 
@@ -110,16 +113,21 @@ router.post('/admin/element-extract/identify', requireAuth, requireCapability('c
 });
 
 // ── Phase 2: generate ────────────────────────────────────────────────────────────────────────────
-// POST /admin/element-extract/generate  { candidateIds: [] }  → { jobId }
+// POST /admin/element-extract/generate  { candidateIds: [], variants?: 1..4 }  → { jobId }
 //
 // The expensive half — one image generation per candidate, tens of seconds each — so it's a BullMQ
 // job, never the request path. Returns immediately; the UI polls GET :jobId below.
 router.post('/admin/element-extract/generate', requireAuth, requireCapability('catalog:admin'), async (req, res) => {
   try {
-    const { candidateIds } = req.body ?? {};
+    const { candidateIds, variants } = req.body ?? {};
     if (!Array.isArray(candidateIds) || candidateIds.length === 0) {
       return res.status(400).json({ error: 'candidateIds (non-empty array) is required' });
     }
+    // How many attempts per candidate. A property of THIS RUN, not of the decoration — 'give me
+    // four to choose from' is a decision about now. Clamped rather than rejected: an out-of-range
+    // number is a caller bug, and failing the whole run over it helps nobody. 4 is the ceiling
+    // because the point is choosing, and past four you are browsing.
+    const n = Math.max(1, Math.min(4, Number(variants) || 1));
 
     // Only ever (re)generate candidates actually waiting for it. An id the caller invented, one
     // already mid-flight, or one BLOCKED as licensed IP must not enqueue work — the allowlist below
@@ -140,7 +148,7 @@ router.post('/admin/element-extract/generate', requireAuth, requireCapability('c
     // baker_id NULL = a global catalog job with no owning baker (the established convention).
     const { data: job, error: jobErr } = await supabase
       .from('jobs')
-      .insert({ type: 'extract_image', payload: { candidateIds: ids }, baker_id: null })
+      .insert({ type: 'extract_image', payload: { candidateIds: ids, variants: n }, baker_id: null })
       .select('id')
       .single();
     if (jobErr) return serverError(req, res, jobErr);
@@ -151,7 +159,7 @@ router.post('/admin/element-extract/generate', requireAuth, requireCapability('c
       .in('id', ids);
 
     await enqueueExtractImage(job.id);
-    res.json({ jobId: job.id, count: ids.length });
+    res.json({ jobId: job.id, count: ids.length, variants: n });
   } catch (err) {
     serverError(req, res, err);
   }

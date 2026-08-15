@@ -567,9 +567,14 @@ const RECIPES = {
     'photographed sharply from front to back.',
 };
 
+// Returns an ARRAY of PNG buffers, one per variant. `variants` asks the API for n images in ONE
+// call rather than n calls: the rate limit counts IMAGES per minute either way, so looping would
+// buy nothing and cost n round trips.
 export async function generateDecorationImage(
   referenceBuffer, prompt, size = '1024x1024', intent = 'sticker', fidelity = 'reference',
+  variants = 1,
 ) {
+  const n = Math.max(1, Math.min(4, Number(variants) || 1));
   // Unknown values fall back rather than throwing — a bad one should produce the previous
   // behaviour, not lose a generation the caller has already paid for.
   const recipe = RECIPES[intent] ?? RECIPES.sticker;
@@ -597,15 +602,12 @@ export async function generateDecorationImage(
         size,
         quality: config.openai.imageQuality,
         output_format: 'png',
-        n: 1,
+        n,
         ...(wantsTransparent ? { background: 'transparent' } : {}),
       }),
     });
     if (!res.ok) throw new Error(`${config.openai.imageModel} generation failed: ${await res.text()}`);
-    const data = await res.json();
-    const b64 = data?.data?.[0]?.b64_json;
-    if (!b64) throw new Error(`${config.openai.imageModel} returned no image data`);
-    return Buffer.from(b64, 'base64');
+    return decodeImages(await res.json());
   }
 
   // ── reference: reproduce THAT object ───────────────────────────────────────────────────────────
@@ -620,7 +622,7 @@ export async function generateDecorationImage(
   if (wantsTransparent) form.append('background', 'transparent');
   form.append('output_format', 'png');        // must be png/webp — jpeg cannot carry alpha
   form.append('input_fidelity', 'high');      // preserve the reference decoration's identity
-  form.append('n', '1');
+  form.append('n', String(n));
 
   const res = await fetch('https://api.openai.com/v1/images/edits', {
     method: 'POST',
@@ -629,10 +631,16 @@ export async function generateDecorationImage(
   });
 
   if (!res.ok) throw new Error(`${config.openai.imageModel} edit failed: ${await res.text()}`);
-  const data = await res.json();
-  const b64 = data?.data?.[0]?.b64_json;
-  if (!b64) throw new Error(`${config.openai.imageModel} returned no image data`);
-  return Buffer.from(b64, 'base64');
+  return decodeImages(await res.json());
+}
+
+// GPT image models always return base64 — `response_format` is a DALL·E-only param and there is no
+// url to read. Throws on an empty set rather than returning [], so a caller cannot mistake "the API
+// gave us nothing" for "no variants were asked for".
+function decodeImages(data) {
+  const out = (data?.data ?? []).map(d => d?.b64_json).filter(Boolean).map(b => Buffer.from(b, 'base64'));
+  if (!out.length) throw new Error(`${config.openai.imageModel} returned no image data`);
+  return out;
 }
 
 // Read a decoration's image and write a step-by-step BUILD GUIDE for making it by hand — the
