@@ -234,8 +234,15 @@ PASS (ok:true) whenever ONE cake is the clear subject, NO MATTER HOW MANY DECORA
 A cake carrying ten separate items — figures, toppers, objects modelled in fondant — PASSES.
 Things sitting ON the cake are part of the cake; they are never "multiple objects".
 
+A MODELLED FIGURE IS A DECORATION, NOT A PERSON. A doll, character or human figure sculpted in
+fondant, sugar, icing, marzipan or plastic is one of the decorations we are cataloguing — it is
+craft, not a photograph of anybody. Judge the MATERIAL, not the subject: if it is modelled, it
+passes.
+
 REJECT (ok:false) ONLY when:
-- a person, human face, hands or body is present → category "person"
+- a REAL human being appears in the photograph — an actual person's face, hands or body, e.g. someone
+  holding or standing behind the cake → category "person"
+- a PRINTED PHOTOGRAPH of a real person appears on the cake (an edible photo print) → category "person"
 - there is no cake at all → category "other"
 - several SEPARATE cakes, or a table spread where no single cake is the subject → category "scene"
 Keep "reason" friendly and specific (e.g. "This photo has a person in it — upload just the cake").`;
