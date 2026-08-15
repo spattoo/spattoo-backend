@@ -31,6 +31,10 @@ export async function identifyElements(imageUrl) {
             text: `You are a professional cake decorator cataloguing the decorations on this cake so each
 one can be recreated as a reusable library asset.
 
+Each asset is placed INDIVIDUALLY by someone designing their own cake — they pick a lipstick and put
+it where they want it. So the unit is the single object a person would place, never a scene or a
+grouping of several objects.
+
 Return ONLY a JSON object, no explanation:
 {
   "cake": {
@@ -67,8 +71,13 @@ wrongly flagged is a worse outcome than a licensed one slipping through, because
 these anyway.
 
 Rules:
-- Max 5 elements.
-- Each PHYSICAL decoration gets its own entry, even if several are the same type in different places.
+- List up to 12 decorations. Do NOT bundle things together to fit a smaller number.
+- ONE OBJECT PER ENTRY. Never a group, set, collection, pair, arrangement or "assortment".
+  A cake with a lipstick, a nail polish bottle and a compact mirror is THREE entries — never one
+  "makeup set". If you are about to write a plural or a collective noun in "prompt", you are
+  grouping: split it instead.
+- One entry per DISTINCT decoration. Three identical lipsticks are ONE entry, not three — each
+  entry becomes a reusable library asset that gets placed as many times as wanted.
 - Ignore the cake base, the board, plain frosting, sprinkles and pearls — they aren't standalone assets.
 - Pick decorations that would actually be reusable on another cake.
 - STILL list a licensed decoration (flagged), don't silently omit it — the human wants to see it was seen.`,
