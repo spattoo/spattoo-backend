@@ -26,6 +26,9 @@ const toDto = (c) => ({
   material: c.material,
   intent: c.intent ?? 'sticker',
   fidelity: c.fidelity ?? 'reference',
+  // The sentence the image is generated FROM. Exposed because it is the strongest control the admin
+  // has — stronger than intent or fidelity — and it was previously invisible to them.
+  prompt: c.prompt,
   bbox: c.bbox,
   error: c.error,
   elementId: c.element_id,
@@ -134,11 +137,16 @@ router.post('/admin/element-extract/generate', requireAuth, requireCapability('c
     // is the enforcement point, so a client that ignores the disabled tick box still can't spend our
     // money on a generation the model will refuse. ('failed' is included on purpose: a transient
     // failure is worth retrying.)
+    //
+    // 'ready' is included too, and that is the point of the allowlist being a list rather than "not
+    // generating": the admin edits the prompt precisely BECAUSE the first result was wrong, so
+    // refusing to re-run a finished candidate would make the prompt box useless. The new attempts
+    // replace `output_keys` wholesale — these are tries to choose between, not a history.
     const { data: pending, error: readErr } = await supabase
       .from('element_candidates')
       .select('id')
       .in('id', candidateIds)
-      .in('status', ['identified', 'failed', 'rejected']);
+      .in('status', ['identified', 'failed', 'rejected', 'ready']);
     if (readErr) return serverError(req, res, readErr);
     if (!pending?.length) return res.status(400).json({ error: 'No generatable candidates in that list' });
 
@@ -209,9 +217,19 @@ router.get('/admin/element-extract/candidates/:id', requireAuth, requireCapabili
 // and when the admin sets what the image is FOR before generating it.
 router.patch('/admin/element-extract/candidates/:id', requireAuth, requireCapability('catalog:admin'), async (req, res) => {
   try {
-    const { status, elementId, intent, fidelity } = req.body ?? {};
+    const { status, elementId, intent, fidelity, prompt } = req.body ?? {};
     const patch = { updated_at: new Date().toISOString() };
     if (elementId) patch.element_id = elementId;
+
+    // The description the image is drawn from. GPT wrote the first one from the photo; the admin
+    // overrides it when that reading was wrong — "makeup palette" on a busy cake pulling in the
+    // nail polish beside it is the case this exists for. Bounded because it lands in a prompt, and
+    // trimmed-empty means "leave the original alone" rather than "generate from nothing".
+    if (prompt !== undefined) {
+      const text = String(prompt).trim();
+      if (text.length > 600) return res.status(400).json({ error: 'prompt must be 600 characters or fewer' });
+      if (text) patch.prompt = text;
+    }
 
     // What the image is FOR (migration 062) — it selects the prompt recipe. Settable BEFORE
     // generation, which is the only time it can matter: a generated image cannot be re-purposed by

@@ -530,10 +530,19 @@ Return ONLY JSON: { "description": "<comma-separated keywords>" }`;
 // Shared by all three: complete and whole in frame. A tall subject sent to a square frame came back
 // with its legs cut off; composeReference now matches the frame to the crop, and the prompt backs
 // that up rather than relying on it alone.
+// "Show ONLY the decoration" used to list the cake, board, hands and props. That covers everything
+// EXCEPT the thing that actually goes wrong: on a busy cake the neighbouring DECORATIONS come along
+// too. A makeup palette asked for as a `model` came back with the nail polish and brush that sat
+// beside it — the crop had all three, and nothing here said otherwise. The bbox prompt deliberately
+// errs LARGER (clipping a subject is worse than including some cake), composeReference adds more
+// margin on top, so a tight crop is not something to rely on. The exclusion has to be stated.
 const FRAMING =
   'Show the decoration COMPLETE and WHOLE, entirely within the frame with a small margin around it — ' +
   'never crop, cut off or run any part of it past the edge. ' +
-  'Show ONLY the decoration — remove the cake, the frosting behind it, any board, hands or props.';
+  'EXACTLY ONE OBJECT in the output — never a set, pair, group, collection or arrangement, and no ' +
+  'second item placed beside or behind it. ' +
+  'Show ONLY that one decoration — remove the cake, the frosting behind it, any board, hands or ' +
+  'props, and any OTHER decoration that happens to be nearby.';
 
 export const GENERATION_INTENTS = ['sticker', 'relief', 'model'];
 
@@ -614,9 +623,14 @@ export async function generateDecorationImage(
   const form = new FormData();
   form.append('model', config.openai.imageModel);
   form.append('image', new Blob([referenceBuffer], { type: 'image/png' }), 'reference.png');
+  // "the decoration shown in the reference image" is ambiguous the moment the crop holds more than
+  // one — and with input_fidelity high, ambiguity resolves as "copy all of it". Name the single
+  // subject, then say plainly that anything else in the frame is not wanted.
   form.append('prompt',
-    `Recreate the decoration shown in the reference image as an isolated product photo: ${prompt}. ` +
-    `Keep its exact shape, colour, texture and craft. ${recipe}`);
+    `Recreate ONE decoration from the reference image as an isolated product photo: ${prompt}. ` +
+    'That description names the ONLY subject. The reference may also show other decorations or ' +
+    'objects around it — reproduce NONE of them, however prominent they are. ' +
+    `Keep the subject's exact shape, colour, texture and craft. ${recipe}`);
   form.append('size', size);
   form.append('quality', config.openai.imageQuality);
   if (wantsTransparent) form.append('background', 'transparent');
