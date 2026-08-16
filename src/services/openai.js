@@ -31,6 +31,10 @@ export async function identifyElements(imageUrl) {
             text: `You are a professional cake decorator cataloguing the decorations on this cake so each
 one can be recreated as a reusable library asset.
 
+Each asset is placed INDIVIDUALLY by someone designing their own cake — they pick a lipstick and put
+it where they want it. So the unit is the single object a person would place, never a scene or a
+grouping of several objects.
+
 Return ONLY a JSON object, no explanation:
 {
   "cake": {
@@ -67,8 +71,13 @@ wrongly flagged is a worse outcome than a licensed one slipping through, because
 these anyway.
 
 Rules:
-- Max 5 elements.
-- Each PHYSICAL decoration gets its own entry, even if several are the same type in different places.
+- List up to 12 decorations. Do NOT bundle things together to fit a smaller number.
+- ONE OBJECT PER ENTRY. Never a group, set, collection, pair, arrangement or "assortment".
+  A cake with a lipstick, a nail polish bottle and a compact mirror is THREE entries — never one
+  "makeup set". If you are about to write a plural or a collective noun in "prompt", you are
+  grouping: split it instead.
+- One entry per DISTINCT decoration. Three identical lipsticks are ONE entry, not three — each
+  entry becomes a reusable library asset that gets placed as many times as wanted.
 - Ignore the cake base, the board, plain frosting, sprinkles and pearls — they aren't standalone assets.
 - Pick decorations that would actually be reusable on another cake.
 - STILL list a licensed decoration (flagged), don't silently omit it — the human wants to see it was seen.`,
@@ -178,8 +187,20 @@ Return ONLY valid JSON, no explanation:
 // PASS only a single cake or single cake component on a plain-ish background; REJECT
 // humans, scenes, and multi-object photos (they produce a fused, un-segmentable mesh).
 //   returns: { ok: boolean, category: string, reason: string }
-export async function validateCakeImage(imageUrl) {
-  const prompt = `You are a quality gate for a 2D-image → 3D-model pipeline. The 3D model will later be
+// ── Two gates, because two pipelines want opposite things ─────────────────────────────────────
+//
+//   'single_subject' (default) — Image → 3D. Meshy reconstructs ONE object and the result is split
+//                    into recolourable parts, so anything beside the subject becomes geometry that
+//                    should not be there. A decorated cake is correctly turned away here.
+//
+//   'decorated_cake' — Extract Elements and Build from Inspiration. The whole point is a cake with
+//                    things ON it: the model lists the decorations so each can be regenerated.
+//                    Under the single-subject prompt a busy makeup cake reads as `multiple_objects`
+//                    and is rejected — which turns away exactly the references worth using.
+//
+// The difference is not strictness. It is what counts as ONE thing: an object, or a cake.
+export async function validateCakeImage(imageUrl, purpose = 'single_subject') {
+  const SINGLE = `You are a quality gate for a 2D-image → 3D-model pipeline. The 3D model will later be
 split into recolourable parts, so the input image must depict ONE clean subject on a plain background.
 
 Decide if THIS image qualifies. Return ONLY a JSON object, no explanation:
@@ -197,6 +218,36 @@ REJECT (ok:false) when ANY of these is true:
 - a busy scene, room, table spread, or several distinct objects → category "scene" or "multiple_objects"
 - the subject is not a cake / cake component / edible decoration → category "other"
 Keep "reason" friendly and specific (e.g. "This photo has a person in it — upload just the cake").`;
+
+  const DECORATED = `You are a quality gate for a pipeline that reads the DECORATIONS off a reference
+cake. A heavily decorated cake is the IDEAL input — the decorations are the entire reason we are
+looking at it.
+
+Decide if THIS image qualifies. Return ONLY a JSON object, no explanation:
+{
+  "ok": <true|false>,
+  "category": "<cake|cake_component|topper|multiple_objects|person|scene|other>",
+  "reason": "<one short sentence the user will read>"
+}
+
+PASS (ok:true) whenever ONE cake is the clear subject, NO MATTER HOW MANY DECORATIONS ARE ON IT.
+A cake carrying ten separate items — figures, toppers, objects modelled in fondant — PASSES.
+Things sitting ON the cake are part of the cake; they are never "multiple objects".
+
+A MODELLED FIGURE IS A DECORATION, NOT A PERSON. A doll, character or human figure sculpted in
+fondant, sugar, icing, marzipan or plastic is one of the decorations we are cataloguing — it is
+craft, not a photograph of anybody. Judge the MATERIAL, not the subject: if it is modelled, it
+passes.
+
+REJECT (ok:false) ONLY when:
+- a REAL human being appears in the photograph — an actual person's face, hands or body, e.g. someone
+  holding or standing behind the cake → category "person"
+- a PRINTED PHOTOGRAPH of a real person appears on the cake (an edible photo print) → category "person"
+- there is no cake at all → category "other"
+- several SEPARATE cakes, or a table spread where no single cake is the subject → category "scene"
+Keep "reason" friendly and specific (e.g. "This photo has a person in it — upload just the cake").`;
+
+  const prompt = purpose === 'decorated_cake' ? DECORATED : SINGLE;
 
   const payload = JSON.stringify({
     model: 'gpt-4o',
@@ -456,26 +507,136 @@ Return ONLY JSON: { "description": "<comma-separated keywords>" }`;
 //
 // Returns a PNG Buffer (GPT image models ALWAYS return base64 — `response_format` is a DALL·E-only
 // param and there is no `url` to read).
-export async function generateDecorationImage(referenceBuffer, prompt, size = '1024x1024') {
+// ── Generation RECIPES, by what the element will BECOME ───────────────────────────────────────
+// One prompt used to serve every element: "photorealistic, shot straight on, no shadow". That is
+// right for a printed sticker and wrong for the other two, in opposite directions.
+//
+//   sticker — printed on edible paper and stuck on. Flat is not a compromise, it is what the baker
+//             actually makes. A bold outline helps the cut.
+//
+//   relief  — a fondant cut-out (placement_config.relief). Here the image stops being a picture:
+//             `buildSolidReliefGeometry` traces the ALPHA into a silhouette and extrudes it, and
+//             LUMINANCE bakes the normal map. So shading becomes bumps, a dark outline paints a
+//             halo on the extruded wall (which is why the wall sampler already insets 2% inward),
+//             thin protrusions poke off the wall (hence bake.flattenThin), and interior holes are
+//             not cut at all in v1. Every one of those is a prompt instruction, not a bug to fix
+//             downstream.
+//
+//   model   — the input to image-to-3D (Meshy). The exact OPPOSITE of the other two: a straight-on,
+//             evenly-lit, flat image gives a reconstruction model ZERO depth cues, so it invents
+//             all of them — which is what "it gets the details wrong" actually is. Three-quarter
+//             view, soft studio light and a matte surface are what carry shape information.
+//
+// Shared by all three: complete and whole in frame. A tall subject sent to a square frame came back
+// with its legs cut off; composeReference now matches the frame to the crop, and the prompt backs
+// that up rather than relying on it alone.
+// "Show ONLY the decoration" used to list the cake, board, hands and props. That covers everything
+// EXCEPT the thing that actually goes wrong: on a busy cake the neighbouring DECORATIONS come along
+// too. A makeup palette asked for as a `model` came back with the nail polish and brush that sat
+// beside it — the crop had all three, and nothing here said otherwise. The bbox prompt deliberately
+// errs LARGER (clipping a subject is worse than including some cake), composeReference adds more
+// margin on top, so a tight crop is not something to rely on. The exclusion has to be stated.
+const FRAMING =
+  'Show the decoration COMPLETE and WHOLE, entirely within the frame with a small margin around it — ' +
+  'never crop, cut off or run any part of it past the edge. ' +
+  'EXACTLY ONE OBJECT in the output — never a set, pair, group, collection or arrangement, and no ' +
+  'second item placed beside or behind it. ' +
+  'Show ONLY that one decoration — remove the cake, the frosting behind it, any board, hands or ' +
+  'props, and any OTHER decoration that happens to be nearby.';
+
+export const GENERATION_INTENTS = ['sticker', 'relief', 'model'];
+
+// How closely the output copies the reference crop.
+//
+//   reference  images/edits, input_fidelity high — reproduce THAT object. Right when rebuilding a
+//              cake you have seen: the gold cap, the exact shade.
+//   fresh      images/generations from the description alone. Nothing of the source photo is sent,
+//              so the asset inherits none of its angle, wonk or branding — and there is no input
+//              image to tokenise, so it costs less. Usually the better catalogue asset, because a
+//              faithful copy of one baker's lopsided fondant is not more reusable for being
+//              faithful.
+export const GENERATION_FIDELITIES = ['reference', 'fresh'];
+
+const RECIPES = {
+  sticker:
+    `${FRAMING} Fully transparent background, no shadow, soft even studio lighting, ` +
+    'photorealistic, shot straight on.',
+
+  relief:
+    `${FRAMING} Fully transparent background with a CRISP HARD EDGE — no soft or feathered ` +
+    'transparency. Flat even lighting with NO shadows and no directional shading anywhere on the ' +
+    'subject. NO dark outline or stroke around the silhouette. One solid connected shape: no ' +
+    'holes, gaps or see-through areas inside it, and no thin spikes, whiskers, stems or antennae ' +
+    'on the outline. Shot straight on, flat to the camera.',
+
+  model:
+    `${FRAMING} Plain light grey background. THREE-QUARTER view from a slightly raised camera, so ` +
+    'the form reads as solid and its depth is visible. Soft even studio lighting with no harsh ' +
+    'shadows. Matte, clay-like, non-reflective surface. A single object, sitting upright, ' +
+    'photographed sharply from front to back.',
+};
+
+// Returns an ARRAY of PNG buffers, one per variant. `variants` asks the API for n images in ONE
+// call rather than n calls: the rate limit counts IMAGES per minute either way, so looping would
+// buy nothing and cost n round trips.
+export async function generateDecorationImage(
+  referenceBuffer, prompt, size = '1024x1024', intent = 'sticker', fidelity = 'reference',
+  variants = 1,
+) {
+  const n = Math.max(1, Math.min(4, Number(variants) || 1));
+  // Unknown values fall back rather than throwing — a bad one should produce the previous
+  // behaviour, not lose a generation the caller has already paid for.
+  const recipe = RECIPES[intent] ?? RECIPES.sticker;
+  // `fresh` needs a reference to be ABSENT, so a missing buffer selects it rather than crashing.
+  const fresh  = fidelity === 'fresh' || !referenceBuffer;
+
+  // Transparent for the two FLAT intents — a native cut-out, with remove.bg as the fallback if the
+  // model ignores it. NOT for `model`: image-to-3D wants a plain backdrop it can separate the
+  // subject from, and an alpha channel there is a hard silhouette with nothing behind it — the
+  // opposite of the shading cue that recipe asks for.
+  const wantsTransparent = intent !== 'model';
+
+  // ── fresh: generate from the description, send nothing of the source ───────────────────────────
+  // A different ENDPOINT, not a flag. images/edits always conditions on the image it is given, so
+  // "ignore the reference" is not something a prompt can ask for — the only way not to copy the
+  // photo is not to send it. That also means no input image to tokenise, which is where the saving
+  // comes from.
+  if (fresh) {
+    const res = await fetch('https://api.openai.com/v1/images/generations', {
+      method: 'POST',
+      headers: { 'Authorization': `Bearer ${config.openai.apiKey}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        model: config.openai.imageModel,
+        prompt: `An isolated product photo of a single cake decoration: ${prompt}. ${recipe}`,
+        size,
+        quality: config.openai.imageQuality,
+        output_format: 'png',
+        n,
+        ...(wantsTransparent ? { background: 'transparent' } : {}),
+      }),
+    });
+    if (!res.ok) throw new Error(`${config.openai.imageModel} generation failed: ${await res.text()}`);
+    return decodeImages(await res.json());
+  }
+
+  // ── reference: reproduce THAT object ───────────────────────────────────────────────────────────
   const form = new FormData();
   form.append('model', config.openai.imageModel);
   form.append('image', new Blob([referenceBuffer], { type: 'image/png' }), 'reference.png');
+  // "the decoration shown in the reference image" is ambiguous the moment the crop holds more than
+  // one — and with input_fidelity high, ambiguity resolves as "copy all of it". Name the single
+  // subject, then say plainly that anything else in the frame is not wanted.
   form.append('prompt',
-    `Recreate the decoration shown in the reference image as an isolated product photo: ${prompt}. ` +
-    'Keep its exact shape, colour, texture and craft. Show ONLY the decoration — remove the cake, ' +
-    'the frosting behind it, any board, hands or props. ' +
-    // Say this explicitly. A tall subject sent to a square frame came back with its legs cut off; the
-    // frame is now matched to the crop (services/imageCrop.js composeReference), and the prompt backs
-    // that up rather than relying on it alone.
-    'Show the decoration COMPLETE and WHOLE, entirely within the frame with a small margin around it — ' +
-    'never crop, cut off or run any part of it past the edge. ' +
-    'Fully transparent background, no shadow, soft even studio lighting, photorealistic, shot straight on.');
+    `Recreate ONE decoration from the reference image as an isolated product photo: ${prompt}. ` +
+    'That description names the ONLY subject. The reference may also show other decorations or ' +
+    'objects around it — reproduce NONE of them, however prominent they are. ' +
+    `Keep the subject's exact shape, colour, texture and craft. ${recipe}`);
   form.append('size', size);
   form.append('quality', config.openai.imageQuality);
-  form.append('background', 'transparent');   // native cut-out; remove.bg is the fallback if ignored
+  if (wantsTransparent) form.append('background', 'transparent');
   form.append('output_format', 'png');        // must be png/webp — jpeg cannot carry alpha
   form.append('input_fidelity', 'high');      // preserve the reference decoration's identity
-  form.append('n', '1');
+  form.append('n', String(n));
 
   const res = await fetch('https://api.openai.com/v1/images/edits', {
     method: 'POST',
@@ -484,10 +645,16 @@ export async function generateDecorationImage(referenceBuffer, prompt, size = '1
   });
 
   if (!res.ok) throw new Error(`${config.openai.imageModel} edit failed: ${await res.text()}`);
-  const data = await res.json();
-  const b64 = data?.data?.[0]?.b64_json;
-  if (!b64) throw new Error(`${config.openai.imageModel} returned no image data`);
-  return Buffer.from(b64, 'base64');
+  return decodeImages(await res.json());
+}
+
+// GPT image models always return base64 — `response_format` is a DALL·E-only param and there is no
+// url to read. Throws on an empty set rather than returning [], so a caller cannot mistake "the API
+// gave us nothing" for "no variants were asked for".
+function decodeImages(data) {
+  const out = (data?.data ?? []).map(d => d?.b64_json).filter(Boolean).map(b => Buffer.from(b, 'base64'));
+  if (!out.length) throw new Error(`${config.openai.imageModel} returned no image data`);
+  return out;
 }
 
 // Read a decoration's image and write a step-by-step BUILD GUIDE for making it by hand — the

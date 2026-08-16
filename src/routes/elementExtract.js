@@ -2,7 +2,7 @@ import { Router } from 'express';
 import { randomUUID } from 'crypto';
 import { serverError } from '../lib/httpError.js';
 import { supabase } from '../services/supabase.js';
-import { validateCakeImage, identifyElements } from '../services/openai.js';
+import { validateCakeImage, identifyElements, GENERATION_INTENTS, GENERATION_FIDELITIES } from '../services/openai.js';
 import { cropRegion } from '../services/imageCrop.js';
 import { getObjectBuffer, putObject } from '../services/r2.js';
 import { enqueueExtractImage } from '../jobs/processors/extractImage.js';
@@ -24,11 +24,19 @@ const toDto = (c) => ({
   elementKind: c.element_kind,
   colorHex: c.color_hex,
   material: c.material,
+  intent: c.intent ?? 'sticker',
+  fidelity: c.fidelity ?? 'reference',
+  // The sentence the image is generated FROM. Exposed because it is the strongest control the admin
+  // has — stronger than intent or fidelity — and it was previously invisible to them.
+  prompt: c.prompt,
   bbox: c.bbox,
   error: c.error,
   elementId: c.element_id,
   cropUrl:   c.crop_key   ? publicUrl(c.crop_key)   : null,
   outputUrl: c.output_key ? publicUrl(c.output_key) : null,
+  // Every attempt from the latest run. Falls back to the single key so a row generated before
+  // migration 064 still shows its one image rather than none.
+  outputUrls: (c.output_keys?.length ? c.output_keys : [c.output_key].filter(Boolean)).map(publicUrl),
   outputKey: c.output_key,   // the AddElement deep-link carries the KEY, not the URL
 });
 
@@ -45,7 +53,7 @@ router.post('/admin/element-extract/identify', requireAuth, requireCapability('c
 
     // Same gate Meshy and Build-from-Inspiration use: reject people/scenes/non-cakes up front. A
     // 200 with ok:false (not an error) so the UI can just explain why.
-    const verdict = await validateCakeImage(publicUrl(sourceKey));
+    const verdict = await validateCakeImage(publicUrl(sourceKey), 'decorated_cake');
     if (!verdict.ok) return res.json({ ok: false, reason: verdict.reason, category: verdict.category });
 
     const { cake, elements } = await identifyElements(publicUrl(sourceKey));
@@ -108,27 +116,37 @@ router.post('/admin/element-extract/identify', requireAuth, requireCapability('c
 });
 
 // ── Phase 2: generate ────────────────────────────────────────────────────────────────────────────
-// POST /admin/element-extract/generate  { candidateIds: [] }  → { jobId }
+// POST /admin/element-extract/generate  { candidateIds: [], variants?: 1..4 }  → { jobId }
 //
 // The expensive half — one image generation per candidate, tens of seconds each — so it's a BullMQ
 // job, never the request path. Returns immediately; the UI polls GET :jobId below.
 router.post('/admin/element-extract/generate', requireAuth, requireCapability('catalog:admin'), async (req, res) => {
   try {
-    const { candidateIds } = req.body ?? {};
+    const { candidateIds, variants } = req.body ?? {};
     if (!Array.isArray(candidateIds) || candidateIds.length === 0) {
       return res.status(400).json({ error: 'candidateIds (non-empty array) is required' });
     }
+    // How many attempts per candidate. A property of THIS RUN, not of the decoration — 'give me
+    // four to choose from' is a decision about now. Clamped rather than rejected: an out-of-range
+    // number is a caller bug, and failing the whole run over it helps nobody. 4 is the ceiling
+    // because the point is choosing, and past four you are browsing.
+    const n = Math.max(1, Math.min(4, Number(variants) || 1));
 
     // Only ever (re)generate candidates actually waiting for it. An id the caller invented, one
     // already mid-flight, or one BLOCKED as licensed IP must not enqueue work — the allowlist below
     // is the enforcement point, so a client that ignores the disabled tick box still can't spend our
     // money on a generation the model will refuse. ('failed' is included on purpose: a transient
     // failure is worth retrying.)
+    //
+    // 'ready' is included too, and that is the point of the allowlist being a list rather than "not
+    // generating": the admin edits the prompt precisely BECAUSE the first result was wrong, so
+    // refusing to re-run a finished candidate would make the prompt box useless. The new attempts
+    // replace `output_keys` wholesale — these are tries to choose between, not a history.
     const { data: pending, error: readErr } = await supabase
       .from('element_candidates')
       .select('id')
       .in('id', candidateIds)
-      .in('status', ['identified', 'failed', 'rejected']);
+      .in('status', ['identified', 'failed', 'rejected', 'ready']);
     if (readErr) return serverError(req, res, readErr);
     if (!pending?.length) return res.status(400).json({ error: 'No generatable candidates in that list' });
 
@@ -138,7 +156,7 @@ router.post('/admin/element-extract/generate', requireAuth, requireCapability('c
     // baker_id NULL = a global catalog job with no owning baker (the established convention).
     const { data: job, error: jobErr } = await supabase
       .from('jobs')
-      .insert({ type: 'extract_image', payload: { candidateIds: ids }, baker_id: null })
+      .insert({ type: 'extract_image', payload: { candidateIds: ids, variants: n }, baker_id: null })
       .select('id')
       .single();
     if (jobErr) return serverError(req, res, jobErr);
@@ -149,7 +167,7 @@ router.post('/admin/element-extract/generate', requireAuth, requireCapability('c
       .in('id', ids);
 
     await enqueueExtractImage(job.id);
-    res.json({ jobId: job.id, count: ids.length });
+    res.json({ jobId: job.id, count: ids.length, variants: n });
   } catch (err) {
     serverError(req, res, err);
   }
@@ -193,14 +211,44 @@ router.get('/admin/element-extract/candidates/:id', requireAuth, requireCapabili
 });
 
 // ── Provenance ───────────────────────────────────────────────────────────────────────────────────
-// PATCH /admin/element-extract/candidates/:id  { status?, elementId? }
-// Called when the admin rejects a result, or when AddElement saves an element that came from a
-// candidate — that stamp is what later answers "did any of this GPT output actually get used?".
+// PATCH /admin/element-extract/candidates/:id  { status?, elementId?, intent? }
+// Called when the admin rejects a result, when AddElement saves an element that came from a
+// candidate — that stamp is what later answers "did any of this GPT output actually get used?" —
+// and when the admin sets what the image is FOR before generating it.
 router.patch('/admin/element-extract/candidates/:id', requireAuth, requireCapability('catalog:admin'), async (req, res) => {
   try {
-    const { status, elementId } = req.body ?? {};
+    const { status, elementId, intent, fidelity, prompt } = req.body ?? {};
     const patch = { updated_at: new Date().toISOString() };
     if (elementId) patch.element_id = elementId;
+
+    // The description the image is drawn from. GPT wrote the first one from the photo; the admin
+    // overrides it when that reading was wrong — "makeup palette" on a busy cake pulling in the
+    // nail polish beside it is the case this exists for. Bounded because it lands in a prompt, and
+    // trimmed-empty means "leave the original alone" rather than "generate from nothing".
+    if (prompt !== undefined) {
+      const text = String(prompt).trim();
+      if (text.length > 600) return res.status(400).json({ error: 'prompt must be 600 characters or fewer' });
+      if (text) patch.prompt = text;
+    }
+
+    // What the image is FOR (migration 062) — it selects the prompt recipe. Settable BEFORE
+    // generation, which is the only time it can matter: a generated image cannot be re-purposed by
+    // relabelling it, because the recipe shaped how it was drawn.
+    if (intent !== undefined) {
+      if (!GENERATION_INTENTS.includes(intent)) {
+        return res.status(400).json({ error: `intent must be one of: ${GENERATION_INTENTS.join(', ')}` });
+      }
+      patch.intent = intent;
+    }
+
+    // How closely to copy the reference (migration 063). Like `intent`, only meaningful before
+    // generation — it decides which endpoint the image comes from.
+    if (fidelity !== undefined) {
+      if (!GENERATION_FIDELITIES.includes(fidelity)) {
+        return res.status(400).json({ error: `fidelity must be one of: ${GENERATION_FIDELITIES.join(', ')}` });
+      }
+      patch.fidelity = fidelity;
+    }
     // Only the admin's own verdict is settable here — lifecycle states ('generating'/'ready') are
     // the worker's to write, and letting a client set them would let the UI lie about a job.
     if (status) {
