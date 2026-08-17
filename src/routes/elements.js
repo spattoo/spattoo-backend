@@ -205,6 +205,70 @@ router.get('/admin/element-types', requireAuth, requireCapability('catalog:admin
   }
 });
 
+// Slug from the name, so the admin types one thing. A category is created mid-task — you are
+// filing a new decoration and there is no home for it — and asking for a slug at that moment is a
+// second decision about a field nobody sees.
+const slugify = (s) => String(s).toLowerCase().trim().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
+
+router.post('/admin/element-categories', requireAuth, requireCapability('catalog:admin'), async (req, res) => {
+  try {
+    const { name, sort_order } = req.body ?? {};
+    if (!name?.trim()) return res.status(400).json({ error: 'name is required' });
+
+    const slug = slugify(name);
+    if (!slug) return res.status(400).json({ error: 'name must contain letters or numbers' });
+
+    // Default to the END of the menu rather than 0. A new category landing at the top — above
+    // Animals, which holds twelve decorations — would quietly reorder the customer's menu as a side
+    // effect of filing one element. Order is a deliberate choice, so it is made deliberately.
+    let order = sort_order;
+    if (order == null) {
+      const { data: last } = await supabase
+        .from('element_categories').select('sort_order').order('sort_order', { ascending: false }).limit(1).maybeSingle();
+      order = (last?.sort_order ?? 0) + 10;
+    }
+
+    const { data, error } = await supabase
+      .from('element_categories')
+      .insert({ name: name.trim(), slug, sort_order: order, is_active: true })
+      .select('id, slug, name, sort_order, is_active')
+      .single();
+
+    // 23505 = the slug already exists. "Animals" and "animals" collide, and a raw Postgres error
+    // reads as a crash rather than "you already have that one".
+    if (error?.code === '23505') return res.status(409).json({ error: `A category called "${name.trim()}" already exists.` });
+    if (error) return serverError(req, res, error);
+    res.status(201).json(data);
+  } catch (err) {
+    serverError(req, res, err);
+  }
+});
+
+// Rename, reorder, retire. The SLUG is deliberately not editable: nothing user-facing reads it, and
+// changing it would break any link or saved filter that does.
+router.patch('/admin/element-categories/:id', requireAuth, requireCapability('catalog:admin'), async (req, res) => {
+  try {
+    const { name, sort_order, is_active } = req.body ?? {};
+    const patch = {};
+    if (name != null)        patch.name       = String(name).trim();
+    if (sort_order != null)  patch.sort_order = sort_order;
+    // Retiring hides the category from the customer menu; the elements in it keep their category_id
+    // and come straight back if it is re-activated. Deleting is not offered here for that reason —
+    // the FK is ON DELETE SET NULL, so a delete would silently strip the category off every element
+    // it held, and there would be no way back.
+    if (is_active != null)   patch.is_active  = is_active;
+    if (!Object.keys(patch).length) return res.status(400).json({ error: 'nothing to update' });
+
+    const { data, error } = await supabase
+      .from('element_categories').update(patch).eq('id', req.params.id)
+      .select('id, slug, name, sort_order, is_active').single();
+    if (error) return serverError(req, res, error);
+    res.json(data);
+  } catch (err) {
+    serverError(req, res, err);
+  }
+});
+
 router.post('/admin/element-types', requireAuth, requireCapability('catalog:admin'), async (req, res) => {
   try {
     const { name, slug, description, placement_rules, sort_order } = req.body;

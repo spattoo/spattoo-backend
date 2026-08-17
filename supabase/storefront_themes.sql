@@ -19,13 +19,20 @@ CREATE TABLE IF NOT EXISTS storefront_themes (
   sort_order  smallint    NOT NULL DEFAULT 0
 );
 
-INSERT INTO storefront_themes (id, key, name, description, is_active, sort_order) VALUES
-  (1, 'spotlight',  'Spotlight',  'A dramatic dark hero with a spotlit, rotating 3D cake. Bold and modern.', true,  1),
-  (2, 'patisserie', 'Patisserie', 'A light, elegant editorial layout that lets your cakes lead.',           false, 2),
-  (3, 'aurora',     'Aurora',     'Soft, airy and colourful — a bright, welcoming storefront.',              false, 3)
--- is_premium is deliberately NOT in the DO UPDATE list: re-running this file must not reset
--- a flag set later. The three rows above are all basic, and that is the decision — premium
--- starts with themes added from here on.
+-- ⚠️ THE is_active VALUES HERE ARE LIVE-DANGEROUS. The DO UPDATE below sets is_active =
+-- EXCLUDED.is_active, so whatever this list says WINS on a re-run. It used to say Patisserie and
+-- Aurora were false ("coming soon") long after both went live, which meant re-running this file on
+-- a real database would have switched off two shipped themes — including the only premium one.
+-- They are corrected to match production. Treat this list as a statement about the live system, not
+-- as the historical seed it started out as.
+INSERT INTO storefront_themes (id, key, name, description, is_active, is_premium, sort_order) VALUES
+  (1, 'spotlight',  'Spotlight',  'A dramatic dark hero with a spotlit, rotating 3D cake. Bold and modern.', true,  false, 1),
+  (2, 'patisserie', 'Patisserie', 'A light, elegant editorial layout that lets your cakes lead.',            true,  true,  2),
+  (3, 'aurora',     'Aurora',     'Soft, airy and colourful — a bright, welcoming storefront.',              true,  false, 3),
+  (4, 'ink',        'Ink',        'Hand-drawn, on paper. Your name large, a drawn cake beneath it, and nothing else competing.', true, true, 4)
+-- is_premium is deliberately NOT in the DO UPDATE list: re-running this file must not reset a flag
+-- set later. It IS in the INSERT column list now, so a FRESH install gets Patisserie and Ink priced
+-- correctly from the first row — the gap that made this file disagree with production.
 ON CONFLICT (id) DO UPDATE
   SET key = EXCLUDED.key, name = EXCLUDED.name, description = EXCLUDED.description,
       is_active = EXCLUDED.is_active, sort_order = EXCLUDED.sort_order;
