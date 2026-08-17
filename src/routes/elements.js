@@ -138,6 +138,59 @@ router.get('/element-types', requireAuth, requireCapability('design:create'), as
   }
 });
 
+// ── Browsing categories (migration 065) ──────────────────────────────────────────────────────────
+// The decorations MENU, which is a different question from /element-types: that one says how a
+// decoration behaves, this one says what it is. A customer hunting for a lion does not care that
+// toppers and picks are placed differently.
+//
+// `count` is the reason this is not just a SELECT. The menu shows categories BEFORE any element is
+// fetched, so it has to know a category is worth opening without opening it — and an empty heading
+// that turns out to hold nothing is the one thing a category-first menu must not do. Categories
+// with no elements are dropped here rather than in the client, so every surface agrees.
+router.get('/element-categories', requireAuth, requireCapability('design:create'), async (req, res) => {
+  try {
+    const { data: cats, error } = await supabase
+      .from('element_categories')
+      .select('id, slug, name, sort_order')
+      .eq('is_active', true)
+      .order('sort_order');
+    if (error) return serverError(req, res, error);
+
+    // Counted over the SAME scope the element list uses — active, top-level, global + this tenant.
+    // A count taken over a wider set would promise elements the next request then filters away.
+    const { data: rows, error: cErr } = await scopeCatalogRead(
+      supabase
+        .from('cake_elements')
+        .select('category_id')
+        .eq('is_active', true)
+        .is('parent_id', null)
+        .not('category_id', 'is', null),
+      req,
+    );
+    if (cErr) return serverError(req, res, cErr);
+
+    const counts = rows.reduce((m, r) => m.set(r.category_id, (m.get(r.category_id) ?? 0) + 1), new Map());
+    res.json(cats.map(c => ({ ...c, count: counts.get(c.id) ?? 0 })).filter(c => c.count > 0));
+  } catch (err) {
+    serverError(req, res, err);
+  }
+});
+
+router.get('/admin/element-categories', requireAuth, requireCapability('catalog:admin'), async (req, res) => {
+  try {
+    // Unfiltered, unlike the customer list: admin picks from every category including the empty and
+    // the retired ones — an element has to be assignable to a category before that category has any.
+    const { data, error } = await supabase
+      .from('element_categories')
+      .select('id, slug, name, sort_order, is_active')
+      .order('sort_order');
+    if (error) return serverError(req, res, error);
+    res.json(data);
+  } catch (err) {
+    serverError(req, res, err);
+  }
+});
+
 router.get('/admin/element-types', requireAuth, requireCapability('catalog:admin'), async (req, res) => {
   try {
     const { data, error } = await supabase
@@ -208,9 +261,9 @@ router.patch('/admin/element-types/:id', requireAuth, requireCapability('catalog
 
 router.get('/elements', requireAuth, requireCapability('design:create'), async (req, res) => {
   try {
-    const { element_type_id, parents_only } = req.query;
+    const { element_type_id, category_id, parents_only } = req.query;
 
-    const ELEM_FIELDS = 'id, name, description, image_url, thumbnail_url, thumb_key, element_type_id, allowed_zones, placement_config, allowed_actions, default_color, sort_order';
+    const ELEM_FIELDS = 'id, name, description, image_url, thumbnail_url, thumb_key, element_type_id, category_id, allowed_zones, placement_config, allowed_actions, default_color, sort_order';
 
     if (parents_only === 'true') {
       // SEC-7: global elements + the caller's own tenant only (never another baker's private lib).
@@ -225,6 +278,9 @@ router.get('/elements', requireAuth, requireCapability('design:create'), async (
       );
 
       if (element_type_id) query = query.eq('element_type_id', element_type_id);
+      // Migration 065 — the decorations menu asks for ONE category at a time, which is the whole
+      // point: 86 elements and 430 KB of thumbnails become a dozen and 60 KB.
+      if (category_id) query = query.eq('category_id', category_id);
 
       const { data, error } = await query;
       if (error) return serverError(req, res, error);
@@ -248,6 +304,7 @@ router.get('/elements', requireAuth, requireCapability('design:create'), async (
     );
 
     if (element_type_id) query = query.eq('element_type_id', element_type_id);
+    if (category_id)     query = query.eq('category_id', category_id);
 
     const { data, error } = await query;
     if (error) return serverError(req, res, error);
@@ -291,7 +348,7 @@ router.post(
 // invisible in the worst way: the filter simply matched nothing, which reads as "you added nothing
 // today" rather than "this column never arrived". A hand-maintained field list drops columns
 // silently — the reason the export below uses select('*') instead.
-const ADMIN_ELEM_FIELDS = 'id, created_at, name, description, image_url, thumbnail_url, thumb_key, element_type_id, parent_id, allowed_zones, placement_config, allowed_actions, default_color, sort_order, is_active, baker_id, file_size, asset_class, tri_count, texture_max_dim, decoded_mem_kb, optimized_size_kb, over_cap, medium';
+const ADMIN_ELEM_FIELDS = 'id, created_at, name, description, image_url, thumbnail_url, thumb_key, element_type_id, category_id, parent_id, allowed_zones, placement_config, allowed_actions, default_color, sort_order, is_active, baker_id, file_size, asset_class, tri_count, texture_max_dim, decoded_mem_kb, optimized_size_kb, over_cap, medium';
 
 // asset_class is a compact surrogate in the DB; admin clients speak the readable key (schema-scale rule).
 const toAdminElement = el => ({ ...withPublicUrls(el), asset_class: ASSET_CLASS_KEY[el.asset_class] ?? null });
@@ -571,7 +628,7 @@ router.get('/admin/elements/:id', requireAuth, requireCapability('catalog:admin'
 router.patch('/admin/elements/:id', requireAuth, requireCapability('catalog:admin'), async (req, res) => {
   try {
     const { id } = req.params;
-    const { name, description, image_url, thumbnail_url, element_type_id, parent_id, allowed_zones, placement_config, allowed_actions, default_color, sort_order, is_active, file_size, medium } = req.body;
+    const { name, description, image_url, thumbnail_url, element_type_id, category_id, parent_id, allowed_zones, placement_config, allowed_actions, default_color, sort_order, is_active, file_size, medium } = req.body;
 
     const updates = {};
     if (name            != null)      updates.name             = name;
@@ -579,6 +636,10 @@ router.patch('/admin/elements/:id', requireAuth, requireCapability('catalog:admi
     if (image_url       !== undefined) updates.image_url        = image_url;
     if (thumbnail_url   !== undefined) updates.thumbnail_url    = thumbnail_url;
     if (element_type_id != null)      updates.element_type_id  = element_type_id;
+    // Browsing category (migration 065). `!== undefined`, not `!= null`, so an explicit null CLEARS
+    // it — an element pulled out of a category is a real edit, and the alternative would be that a
+    // wrong category can be changed but never removed.
+    if (category_id     !== undefined) updates.category_id      = category_id;
     if (parent_id       !== undefined) updates.parent_id        = parent_id;
     if (allowed_zones   != null)      updates.allowed_zones    = allowed_zones;
     if (placement_config!= null)      updates.placement_config = placement_config;
@@ -646,7 +707,7 @@ async function ensureDecorationGuide(elementId) {
 
 router.post('/admin/elements', requireAuth, requireCapability('catalog:admin'), async (req, res) => {
   try {
-    const { name, description, image_url, thumbnail_url, element_type_id, parent_id, allowed_zones, placement_config, allowed_actions, default_color, sort_order, file_size, medium } = req.body;
+    const { name, description, image_url, thumbnail_url, element_type_id, category_id, parent_id, allowed_zones, placement_config, allowed_actions, default_color, sort_order, file_size, medium } = req.body;
     if (!name || !element_type_id) {
       return res.status(400).json({ error: 'name and element_type_id are required' });
     }
@@ -659,6 +720,10 @@ router.post('/admin/elements', requireAuth, requireCapability('catalog:admin'), 
         image_url,
         thumbnail_url,
         element_type_id,
+        // NOT required, unlike element_type_id. A decoration without a type cannot be placed at
+        // all; one without a category simply has no home in the browsing menu yet, and forcing the
+        // choice at create time would only produce a habit of picking the first option.
+        category_id:      category_id ?? null,
         parent_id:        parent_id ?? null,
         allowed_zones,
         placement_config: placement_config ?? {},
