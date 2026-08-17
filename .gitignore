@@ -4,3 +4,4 @@ node_modules/
 dist/
 .claude/
 supabase/pending-migrations.sql
+tmp/
