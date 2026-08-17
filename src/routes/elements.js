@@ -158,19 +158,37 @@ router.get('/element-categories', requireAuth, requireCapability('design:create'
 
     // Counted over the SAME scope the element list uses — active, top-level, global + this tenant.
     // A count taken over a wider set would promise elements the next request then filters away.
+    //
+    // The thumbnails come from this same read. A menu of eleven words is a poor door into a library
+    // of pictures — people recognise a lion far faster than they read "Animals" — and one preview
+    // per category is ~5 KB, so all eleven cost about an eighth of what the flat list did.
     const { data: rows, error: cErr } = await scopeCatalogRead(
       supabase
         .from('cake_elements')
-        .select('category_id')
+        .select('category_id, thumbnail_url, thumb_key, sort_order')
         .eq('is_active', true)
         .is('parent_id', null)
-        .not('category_id', 'is', null),
+        .not('category_id', 'is', null)
+        .order('sort_order'),
       req,
     );
     if (cErr) return serverError(req, res, cErr);
 
-    const counts = rows.reduce((m, r) => m.set(r.category_id, (m.get(r.category_id) ?? 0) + 1), new Map());
-    res.json(cats.map(c => ({ ...c, count: counts.get(c.id) ?? 0 })).filter(c => c.count > 0));
+    const counts = new Map();
+    const preview = new Map();
+    for (const r of rows) {
+      counts.set(r.category_id, (counts.get(r.category_id) ?? 0) + 1);
+      // First by sort_order that actually HAS an image. Deterministic, and it is also the element
+      // the admin ordered to the front — so the category shows its best decoration, not whichever
+      // row the database happened to return first.
+      if (!preview.has(r.category_id) && (r.thumb_key || r.thumbnail_url)) {
+        preview.set(r.category_id, toPublicUrl(r.thumb_key || r.thumbnail_url));
+      }
+    }
+
+    res.json(cats
+      .map(c => ({ ...c, count: counts.get(c.id) ?? 0, thumbnail_url: preview.get(c.id) ?? null }))
+      .filter(c => c.count > 0));
   } catch (err) {
     serverError(req, res, err);
   }
