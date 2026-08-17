@@ -33,6 +33,7 @@
     "check:plan-copy": "node ../spattoo-docs/bin/check-plan-copy.mjs",
     "verify:ai-credit-buckets": "node scripts/verify-ai-credit-buckets.mjs",
     "db:schema": "node scripts/dump-schema.mjs",
+    "db:migrations": "node scripts/migrations.mjs",
     "db:schema:check": "node scripts/dump-schema.mjs --check",
     "db:seed-lookups": "node scripts/seed-lookups.mjs",
     "db:seed-lookups:sql": "node scripts/seed-lookups-sql.mjs",
