@@ -203,7 +203,18 @@ router.get('/admin/element-categories', requireAuth, requireCapability('catalog:
       .select('id, slug, name, sort_order, is_active')
       .order('sort_order');
     if (error) return serverError(req, res, error);
-    res.json(data);
+
+    // Counted GLOBALLY here, not through scopeCatalogRead — this is the catalogue owner's view, and
+    // "how many decorations would I strand by retiring this?" is the question the number answers.
+    const { data: rows } = await supabase
+      .from('cake_elements')
+      .select('category_id')
+      .eq('is_active', true)
+      .is('parent_id', null)
+      .not('category_id', 'is', null);
+
+    const counts = (rows ?? []).reduce((m, r) => m.set(r.category_id, (m.get(r.category_id) ?? 0) + 1), new Map());
+    res.json(data.map(c => ({ ...c, count: counts.get(c.id) ?? 0 })));
   } catch (err) {
     serverError(req, res, err);
   }
