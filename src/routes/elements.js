@@ -504,8 +504,9 @@ router.get('/admin/elements/export', requireAuth, requireCapability('catalog:adm
       exported_at: new Date().toISOString(),
       // Recorded so an import can say WHERE a bundle came from — and notice one aimed at itself.
       source: { r2_public_url: config.r2.publicUrl },
-      // Insert order. Types and tags first: elements and joins reference them.
+      // Insert order. Vocabulary first: elements and joins reference it.
       element_types:       c.element_types,
+      element_categories:  c.element_categories,
       tags:                c.tags,
       elements:            c.elements,
       element_tags:        c.element_tags,
@@ -548,6 +549,9 @@ router.post('/admin/elements/import', requireAuth, requireCapability('catalog:ad
 
     const elements     = bundle.elements            ?? [];
     const types        = bundle.element_types       ?? [];
+    // Absent in bundles exported before 2026-08-18, which is why it defaults rather than being
+    // required — an older bundle simply carries no categories and its elements arrive uncategorised.
+    const categories   = bundle.element_categories  ?? [];
     const tags         = bundle.tags                ?? [];
     const elementTags  = bundle.element_tags        ?? [];
     const craftGuides  = bundle.element_craft_guide ?? [];
@@ -570,7 +574,7 @@ router.post('/admin/elements/import', requireAuth, requireCapability('catalog:ad
 
     // ── Vocabulary collisions, before anything is written ──────────────────────────────────────
     const collisions = [];
-    for (const [table, rows] of [['element_types', types], ['tags', tags]]) {
+    for (const [table, rows] of [['element_types', types], ['element_categories', categories], ['tags', tags]]) {
       const slugs = rows.map(r => r.slug).filter(Boolean);
       if (!slugs.length) continue;
       const { data, error } = await supabase.from(table).select('id, slug').in('slug', slugs);
@@ -600,10 +604,12 @@ router.post('/admin/elements/import', requireAuth, requireCapability('catalog:ad
     const haveElements = await existing('cake_elements', 'id', elements.map(e => e.id));
     const haveTypes    = await existing('element_types', 'id', types.map(t => t.id));
     const haveTags     = await existing('tags',          'id', tags.map(t => t.id));
+    const haveCats     = await existing('element_categories', 'id', categories.map(c => c.id));
     const haveTemplates = await existing('cake_templates', 'id', templates.map(t => t.id));
 
     const plan = {
       element_types:       { create: types.filter(t => !haveTypes.has(t.id)).length,       update: types.filter(t => haveTypes.has(t.id)).length },
+      element_categories:  { create: categories.filter(c => !haveCats.has(c.id)).length,   update: categories.filter(c => haveCats.has(c.id)).length },
       tags:                { create: tags.filter(t => !haveTags.has(t.id)).length,         update: tags.filter(t => haveTags.has(t.id)).length },
       elements:            { create: elements.filter(e => !haveElements.has(e.id)).length, update: elements.filter(e => haveElements.has(e.id)).length },
       cake_templates:      { create: templates.filter(t => !haveTemplates.has(t.id)).length, update: templates.filter(t => haveTemplates.has(t.id)).length },
@@ -638,6 +644,9 @@ router.post('/admin/elements/import', requireAuth, requireCapability('catalog:ad
     const tplChildren = templates.filter(t => t.parent_template_id);
     const steps = [
       ['element_types',       types],
+      // Before cake_elements: category_id is a FK, and the categories in a bundle exist in the
+      // target under different uuids (each environment ran migration 065's own seed INSERT).
+      ['element_categories',  categories],
       ['tags',                tags],
       ['cake_elements',       parents],
       ['cake_elements',       children],

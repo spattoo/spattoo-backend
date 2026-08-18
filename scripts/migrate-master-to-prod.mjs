@@ -55,6 +55,12 @@ const SKIP_EMBEDDINGS = process.argv.includes('--skip-embeddings');
 // "the walk, not a column list" below.
 export const PLAN = [
   { table: 'element_types' },
+  // Vocabulary, and it MUST precede cake_elements. Each environment ran migration 065's own seed
+  // INSERT, so the same eleven categories exist on both sides under DIFFERENT uuids — and a copied
+  // element carries dev's category_id. Without this line the elements arrive pointing at uuids prod
+  // has never seen and the insert dies on cake_elements_category_id_fkey. Conflict on SLUG, not id,
+  // so prod's existing rows are matched by name and adopt dev's ids rather than duplicating.
+  { table: 'element_categories', conflict: 'slug' },
   { table: 'tags' },                                          // vocabulary — before element_tags / template_tags reference it
   { table: 'cake_shapes' },                                   // before cake_templates in case templates.shape references it
   { table: 'flavours' },

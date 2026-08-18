@@ -55,17 +55,24 @@ export async function elementClosure(ids) {
 
   const rows = [...elements.values()];
   if (!rows.length) {
-    return { elements: [], element_types: [], tags: [], element_tags: [], element_craft_guide: [], keys: new Set() };
+    return { elements: [], element_types: [], element_categories: [], tags: [], element_tags: [], element_craft_guide: [], keys: new Set() };
   }
   const elementIds = rows.map(e => e.id);
 
   const typeIds = [...new Set(rows.map(e => e.element_type_id).filter(Boolean))];
-  const [types, elementTags, craftGuides] = await Promise.all([
+  // Categories travel with the elements for the same reason types do: category_id is a uuid, and
+  // each environment ran migration 065's own seed INSERT, so "Animals" exists on both sides under a
+  // DIFFERENT id. Without the vocabulary in the bundle, an imported element points at an id the
+  // target has never seen. Only the categories actually used — a bundle of two lions should not
+  // carry the whole menu.
+  const catIds  = [...new Set(rows.map(e => e.category_id).filter(Boolean))];
+  const [types, categories, elementTags, craftGuides] = await Promise.all([
     typeIds.length ? supabase.from('element_types').select('*').in('id', typeIds) : { data: [] },
+    catIds.length  ? supabase.from('element_categories').select('*').in('id', catIds) : { data: [] },
     supabase.from('element_tags').select('*').in('element_id', elementIds),
     supabase.from('element_craft_guide').select('*').in('element_id', elementIds),
   ]);
-  for (const r of [types, elementTags, craftGuides]) if (r.error) throw r.error;
+  for (const r of [types, categories, elementTags, craftGuides]) if (r.error) throw r.error;
 
   const tagIds = [...new Set((elementTags.data ?? []).map(t => t.tag_id).filter(Boolean))];
   const tags = tagIds.length ? await supabase.from('tags').select('*').in('id', tagIds) : { data: [] };
@@ -84,6 +91,7 @@ export async function elementClosure(ids) {
   return {
     elements: rows,
     element_types: types.data ?? [],
+    element_categories: categories.data ?? [],
     tags: tags.data ?? [],
     element_tags: elementTags.data ?? [],
     element_craft_guide: craftGuides.data ?? [],
