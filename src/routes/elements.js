@@ -574,7 +574,9 @@ router.post('/admin/elements/import', requireAuth, requireCapability('catalog:ad
 
     // ── Vocabulary collisions, before anything is written ──────────────────────────────────────
     const collisions = [];
-    for (const [table, rows] of [['element_types', types], ['element_categories', categories], ['tags', tags]]) {
+    // element_categories is NOT here: its rows arrive without ids (see promotionBundle), so there is
+    // no id to collide. It is resolved by slug below instead.
+    for (const [table, rows] of [['element_types', types], ['tags', tags]]) {
       const slugs = rows.map(r => r.slug).filter(Boolean);
       if (!slugs.length) continue;
       const { data, error } = await supabase.from(table).select('id, slug').in('slug', slugs);
@@ -604,12 +606,14 @@ router.post('/admin/elements/import', requireAuth, requireCapability('catalog:ad
     const haveElements = await existing('cake_elements', 'id', elements.map(e => e.id));
     const haveTypes    = await existing('element_types', 'id', types.map(t => t.id));
     const haveTags     = await existing('tags',          'id', tags.map(t => t.id));
-    const haveCats     = await existing('element_categories', 'id', categories.map(c => c.id));
+    // By SLUG, not id — a bundle's categories arrive without ids, so counting them by id would
+    // report every one as new and the dry run would be a lie in the direction of alarm.
+    const haveCats     = await existing('element_categories', 'slug', categories.map(c => c.slug));
     const haveTemplates = await existing('cake_templates', 'id', templates.map(t => t.id));
 
     const plan = {
       element_types:       { create: types.filter(t => !haveTypes.has(t.id)).length,       update: types.filter(t => haveTypes.has(t.id)).length },
-      element_categories:  { create: categories.filter(c => !haveCats.has(c.id)).length,   update: categories.filter(c => haveCats.has(c.id)).length },
+      element_categories:  { create: categories.filter(c => !haveCats.has(c.slug)).length, reused: categories.filter(c => haveCats.has(c.slug)).length },
       tags:                { create: tags.filter(t => !haveTags.has(t.id)).length,         update: tags.filter(t => haveTags.has(t.id)).length },
       elements:            { create: elements.filter(e => !haveElements.has(e.id)).length, update: elements.filter(e => haveElements.has(e.id)).length },
       cake_templates:      { create: templates.filter(t => !haveTemplates.has(t.id)).length, update: templates.filter(t => haveTemplates.has(t.id)).length },
@@ -642,11 +646,42 @@ router.post('/admin/elements/import', requireAuth, requireCapability('catalog:ad
     // parent_template_id is a self-FK, and a single upsert array gives no ordering guarantee.
     const tplParents  = templates.filter(t => !t.parent_template_id);
     const tplChildren = templates.filter(t => t.parent_template_id);
+    // ── Categories, resolved by slug ─────────────────────────────────────────────────────────────
+    // Elements arrive carrying `category_slug`, never `category_id` — an id from another database is
+    // an assertion about this one that is simply false. Anything whose slug is missing here is
+    // created; everything else binds to the row this environment already has, INCLUDING one an admin
+    // made by hand, which is the case that made the id approach untenable.
+    //
+    // Ordering: this runs before the upserts, because cake_elements rows need their category_id
+    // filled in before they are written.
+    if (!dryRun) {
+      const wanted = [...new Set(elements.map(e => e.category_slug).filter(Boolean))];
+      if (wanted.length) {
+        const { data: here } = await supabase
+          .from('element_categories').select('id, slug').in('slug', wanted);
+        const idBySlug = new Map((here ?? []).map(c => [c.slug, c.id]));
+
+        const missing = categories.filter(c => c.slug && wanted.includes(c.slug) && !idBySlug.has(c.slug));
+        if (missing.length) {
+          // No id supplied — this database mints its own, which is the whole point.
+          const { data: made, error: catErr } = await supabase
+            .from('element_categories').insert(missing).select('id, slug');
+          if (catErr) return res.status(500).json({ error: `element_categories: ${catErr.message}`, plan, assetErrors });
+          for (const c of made ?? []) idBySlug.set(c.slug, c.id);
+        }
+        // A slug with no row and none in the bundle leaves the element uncategorised rather than
+        // failing the import — visibly missing from the menu, which someone fixes in one click.
+        for (const el of elements) {
+          if (el.category_slug) el.category_id = idBySlug.get(el.category_slug) ?? null;
+          delete el.category_slug;
+        }
+      } else {
+        for (const el of elements) delete el.category_slug;
+      }
+    }
+
     const steps = [
       ['element_types',       types],
-      // Before cake_elements: category_id is a FK, and the categories in a bundle exist in the
-      // target under different uuids (each environment ran migration 065's own seed INSERT).
-      ['element_categories',  categories],
       ['tags',                tags],
       ['cake_elements',       parents],
       ['cake_elements',       children],

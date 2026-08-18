@@ -88,10 +88,27 @@ export async function elementClosure(ids) {
     assetKeysIn(el.placement_config, keys, config.r2.publicUrl);
   }
 
+  // ── Categories travel by SLUG, never by id ─────────────────────────────────────────────────────
+  // Migration 065 ran separately in each environment, so "Animals" has a different uuid on every
+  // side and always will. An id in a bundle is an assertion about a database the bundle is not
+  // running in: it either collides, or binds an element to the wrong row.
+  //
+  // So each element carries `category_slug` and NOT `category_id`, and the importer resolves it
+  // against whatever the target holds — including a category the target's admin created by hand,
+  // which is the case that made this obvious. The category rows still travel, without their ids, so
+  // a slug the target has never seen can be created rather than silently dropping the element's
+  // category on the floor.
+  const bySlug = new Map((categories.data ?? []).map(c => [c.id, c.slug]));
+  const outRows = rows.map(({ category_id, ...el }) => (
+    category_id ? { ...el, category_slug: bySlug.get(category_id) ?? null } : el
+  ));
+
   return {
-    elements: rows,
+    elements: outRows,
     element_types: types.data ?? [],
-    element_categories: categories.data ?? [],
+    // Vocabulary for anything the target lacks. `id` is stripped for the same reason it is stripped
+    // from the elements — it means nothing there.
+    element_categories: (categories.data ?? []).map(({ id, created_at, ...c }) => c),
     tags: tags.data ?? [],
     element_tags: elementTags.data ?? [],
     element_craft_guide: craftGuides.data ?? [],
