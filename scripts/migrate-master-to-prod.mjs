@@ -55,6 +55,12 @@ const SKIP_EMBEDDINGS = process.argv.includes('--skip-embeddings');
 // "the walk, not a column list" below.
 export const PLAN = [
   { table: 'element_types' },
+  // Vocabulary, and it MUST precede cake_elements. Each environment ran migration 065's own seed
+  // INSERT, so the same eleven categories exist on both sides under DIFFERENT uuids — and a copied
+  // element carries dev's category_id. Without this line the elements arrive pointing at uuids prod
+  // has never seen and the insert dies on cake_elements_category_id_fkey. Conflict on SLUG, not id,
+  // so prod's existing rows are matched by name and adopt dev's ids rather than duplicating.
+  { table: 'element_categories', conflict: 'slug' },
   { table: 'tags' },                                          // vocabulary — before element_tags / template_tags reference it
   { table: 'cake_shapes' },                                   // before cake_templates in case templates.shape references it
   { table: 'flavours' },
@@ -102,8 +108,15 @@ export const PLAN = [
 // Keep in step with `ENV_HDR_PATH` in spattoo-core `src/designer/canvas/CakeCanvas.jsx`. If a second
 // hardcoded asset path is ever added there, it belongs here too — there is no automatic link
 // between the two repos, which is exactly why the first one was missed.
+// All four sizes travel, not just the one in use. They are 1.9 MB together, and having them in prod
+// means changing the look is a one-line edit to ENV_HDR_PATH rather than a resize, an upload and a
+// migration re-run. The 1k stays because it is the original — the only one that can be re-derived
+// from, and the fallback if a smaller map ever reads as too soft on gold leaf.
 const STATIC_ASSETS = [
-  'code/env/lebombo_1k.hdr',      // image-based lighting for the 3D canvas
+  'code/env/lebombo_1k.hdr',      // image-based lighting for the 3D canvas — the original
+  'code/env/lebombo_512.hdr',     // 370 KB
+  'code/env/lebombo_256.hdr',     //  96 KB — what ENV_HDR_PATH points at today
+  'code/env/lebombo_128.hdr',     //  25 KB
 ];
 
 // ── Env resolution ────────────────────────────────────────────────────────────

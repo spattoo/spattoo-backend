@@ -138,6 +138,88 @@ router.get('/element-types', requireAuth, requireCapability('design:create'), as
   }
 });
 
+// ── Browsing categories (migration 065) ──────────────────────────────────────────────────────────
+// The decorations MENU, which is a different question from /element-types: that one says how a
+// decoration behaves, this one says what it is. A customer hunting for a lion does not care that
+// toppers and picks are placed differently.
+//
+// `count` is the reason this is not just a SELECT. The menu shows categories BEFORE any element is
+// fetched, so it has to know a category is worth opening without opening it — and an empty heading
+// that turns out to hold nothing is the one thing a category-first menu must not do. Categories
+// with no elements are dropped here rather than in the client, so every surface agrees.
+router.get('/element-categories', requireAuth, requireCapability('design:create'), async (req, res) => {
+  try {
+    const { data: cats, error } = await supabase
+      .from('element_categories')
+      .select('id, slug, name, sort_order')
+      .eq('is_active', true)
+      .order('sort_order');
+    if (error) return serverError(req, res, error);
+
+    // Counted over the SAME scope the element list uses — active, top-level, global + this tenant.
+    // A count taken over a wider set would promise elements the next request then filters away.
+    //
+    // The thumbnails come from this same read. A menu of eleven words is a poor door into a library
+    // of pictures — people recognise a lion far faster than they read "Animals" — and one preview
+    // per category is ~5 KB, so all eleven cost about an eighth of what the flat list did.
+    const { data: rows, error: cErr } = await scopeCatalogRead(
+      supabase
+        .from('cake_elements')
+        .select('category_id, thumbnail_url, thumb_key, sort_order')
+        .eq('is_active', true)
+        .is('parent_id', null)
+        .not('category_id', 'is', null)
+        .order('sort_order'),
+      req,
+    );
+    if (cErr) return serverError(req, res, cErr);
+
+    const counts = new Map();
+    const preview = new Map();
+    for (const r of rows) {
+      counts.set(r.category_id, (counts.get(r.category_id) ?? 0) + 1);
+      // First by sort_order that actually HAS an image. Deterministic, and it is also the element
+      // the admin ordered to the front — so the category shows its best decoration, not whichever
+      // row the database happened to return first.
+      if (!preview.has(r.category_id) && (r.thumb_key || r.thumbnail_url)) {
+        preview.set(r.category_id, toPublicUrl(r.thumb_key || r.thumbnail_url));
+      }
+    }
+
+    res.json(cats
+      .map(c => ({ ...c, count: counts.get(c.id) ?? 0, thumbnail_url: preview.get(c.id) ?? null }))
+      .filter(c => c.count > 0));
+  } catch (err) {
+    serverError(req, res, err);
+  }
+});
+
+router.get('/admin/element-categories', requireAuth, requireCapability('catalog:admin'), async (req, res) => {
+  try {
+    // Unfiltered, unlike the customer list: admin picks from every category including the empty and
+    // the retired ones — an element has to be assignable to a category before that category has any.
+    const { data, error } = await supabase
+      .from('element_categories')
+      .select('id, slug, name, sort_order, is_active')
+      .order('sort_order');
+    if (error) return serverError(req, res, error);
+
+    // Counted GLOBALLY here, not through scopeCatalogRead — this is the catalogue owner's view, and
+    // "how many decorations would I strand by retiring this?" is the question the number answers.
+    const { data: rows } = await supabase
+      .from('cake_elements')
+      .select('category_id')
+      .eq('is_active', true)
+      .is('parent_id', null)
+      .not('category_id', 'is', null);
+
+    const counts = (rows ?? []).reduce((m, r) => m.set(r.category_id, (m.get(r.category_id) ?? 0) + 1), new Map());
+    res.json(data.map(c => ({ ...c, count: counts.get(c.id) ?? 0 })));
+  } catch (err) {
+    serverError(req, res, err);
+  }
+});
+
 router.get('/admin/element-types', requireAuth, requireCapability('catalog:admin'), async (req, res) => {
   try {
     const { data, error } = await supabase
@@ -145,6 +227,70 @@ router.get('/admin/element-types', requireAuth, requireCapability('catalog:admin
       .select('id, slug, name, description, placement_rules, sort_order, is_active, baker_uploadable, default_for_uploads')
       .order('sort_order');
 
+    if (error) return serverError(req, res, error);
+    res.json(data);
+  } catch (err) {
+    serverError(req, res, err);
+  }
+});
+
+// Slug from the name, so the admin types one thing. A category is created mid-task — you are
+// filing a new decoration and there is no home for it — and asking for a slug at that moment is a
+// second decision about a field nobody sees.
+const slugify = (s) => String(s).toLowerCase().trim().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
+
+router.post('/admin/element-categories', requireAuth, requireCapability('catalog:admin'), async (req, res) => {
+  try {
+    const { name, sort_order } = req.body ?? {};
+    if (!name?.trim()) return res.status(400).json({ error: 'name is required' });
+
+    const slug = slugify(name);
+    if (!slug) return res.status(400).json({ error: 'name must contain letters or numbers' });
+
+    // Default to the END of the menu rather than 0. A new category landing at the top — above
+    // Animals, which holds twelve decorations — would quietly reorder the customer's menu as a side
+    // effect of filing one element. Order is a deliberate choice, so it is made deliberately.
+    let order = sort_order;
+    if (order == null) {
+      const { data: last } = await supabase
+        .from('element_categories').select('sort_order').order('sort_order', { ascending: false }).limit(1).maybeSingle();
+      order = (last?.sort_order ?? 0) + 10;
+    }
+
+    const { data, error } = await supabase
+      .from('element_categories')
+      .insert({ name: name.trim(), slug, sort_order: order, is_active: true })
+      .select('id, slug, name, sort_order, is_active')
+      .single();
+
+    // 23505 = the slug already exists. "Animals" and "animals" collide, and a raw Postgres error
+    // reads as a crash rather than "you already have that one".
+    if (error?.code === '23505') return res.status(409).json({ error: `A category called "${name.trim()}" already exists.` });
+    if (error) return serverError(req, res, error);
+    res.status(201).json(data);
+  } catch (err) {
+    serverError(req, res, err);
+  }
+});
+
+// Rename, reorder, retire. The SLUG is deliberately not editable: nothing user-facing reads it, and
+// changing it would break any link or saved filter that does.
+router.patch('/admin/element-categories/:id', requireAuth, requireCapability('catalog:admin'), async (req, res) => {
+  try {
+    const { name, sort_order, is_active } = req.body ?? {};
+    const patch = {};
+    if (name != null)        patch.name       = String(name).trim();
+    if (sort_order != null)  patch.sort_order = sort_order;
+    // Retiring hides the category from the customer menu; the elements in it keep their category_id
+    // and come straight back if it is re-activated. Deleting is not offered here for that reason —
+    // the FK is ON DELETE SET NULL, so a delete would silently strip the category off every element
+    // it held, and there would be no way back.
+    if (is_active != null)   patch.is_active  = is_active;
+    if (!Object.keys(patch).length) return res.status(400).json({ error: 'nothing to update' });
+
+    const { data, error } = await supabase
+      .from('element_categories').update(patch).eq('id', req.params.id)
+      .select('id, slug, name, sort_order, is_active').single();
     if (error) return serverError(req, res, error);
     res.json(data);
   } catch (err) {
@@ -208,9 +354,9 @@ router.patch('/admin/element-types/:id', requireAuth, requireCapability('catalog
 
 router.get('/elements', requireAuth, requireCapability('design:create'), async (req, res) => {
   try {
-    const { element_type_id, parents_only } = req.query;
+    const { element_type_id, category_id, parents_only } = req.query;
 
-    const ELEM_FIELDS = 'id, name, description, image_url, thumbnail_url, thumb_key, element_type_id, allowed_zones, placement_config, allowed_actions, default_color, sort_order';
+    const ELEM_FIELDS = 'id, name, description, image_url, thumbnail_url, thumb_key, element_type_id, category_id, allowed_zones, placement_config, allowed_actions, default_color, sort_order';
 
     if (parents_only === 'true') {
       // SEC-7: global elements + the caller's own tenant only (never another baker's private lib).
@@ -225,6 +371,9 @@ router.get('/elements', requireAuth, requireCapability('design:create'), async (
       );
 
       if (element_type_id) query = query.eq('element_type_id', element_type_id);
+      // Migration 065 — the decorations menu asks for ONE category at a time, which is the whole
+      // point: 86 elements and 430 KB of thumbnails become a dozen and 60 KB.
+      if (category_id) query = query.eq('category_id', category_id);
 
       const { data, error } = await query;
       if (error) return serverError(req, res, error);
@@ -248,6 +397,7 @@ router.get('/elements', requireAuth, requireCapability('design:create'), async (
     );
 
     if (element_type_id) query = query.eq('element_type_id', element_type_id);
+    if (category_id)     query = query.eq('category_id', category_id);
 
     const { data, error } = await query;
     if (error) return serverError(req, res, error);
@@ -291,7 +441,7 @@ router.post(
 // invisible in the worst way: the filter simply matched nothing, which reads as "you added nothing
 // today" rather than "this column never arrived". A hand-maintained field list drops columns
 // silently — the reason the export below uses select('*') instead.
-const ADMIN_ELEM_FIELDS = 'id, created_at, name, description, image_url, thumbnail_url, thumb_key, element_type_id, parent_id, allowed_zones, placement_config, allowed_actions, default_color, sort_order, is_active, baker_id, file_size, asset_class, tri_count, texture_max_dim, decoded_mem_kb, optimized_size_kb, over_cap, medium';
+const ADMIN_ELEM_FIELDS = 'id, created_at, name, description, image_url, thumbnail_url, thumb_key, element_type_id, category_id, parent_id, allowed_zones, placement_config, allowed_actions, default_color, sort_order, is_active, baker_id, file_size, asset_class, tri_count, texture_max_dim, decoded_mem_kb, optimized_size_kb, over_cap, medium';
 
 // asset_class is a compact surrogate in the DB; admin clients speak the readable key (schema-scale rule).
 const toAdminElement = el => ({ ...withPublicUrls(el), asset_class: ASSET_CLASS_KEY[el.asset_class] ?? null });
@@ -354,8 +504,9 @@ router.get('/admin/elements/export', requireAuth, requireCapability('catalog:adm
       exported_at: new Date().toISOString(),
       // Recorded so an import can say WHERE a bundle came from — and notice one aimed at itself.
       source: { r2_public_url: config.r2.publicUrl },
-      // Insert order. Types and tags first: elements and joins reference them.
+      // Insert order. Vocabulary first: elements and joins reference it.
       element_types:       c.element_types,
+      element_categories:  c.element_categories,
       tags:                c.tags,
       elements:            c.elements,
       element_tags:        c.element_tags,
@@ -398,6 +549,9 @@ router.post('/admin/elements/import', requireAuth, requireCapability('catalog:ad
 
     const elements     = bundle.elements            ?? [];
     const types        = bundle.element_types       ?? [];
+    // Absent in bundles exported before 2026-08-18, which is why it defaults rather than being
+    // required — an older bundle simply carries no categories and its elements arrive uncategorised.
+    const categories   = bundle.element_categories  ?? [];
     const tags         = bundle.tags                ?? [];
     const elementTags  = bundle.element_tags        ?? [];
     const craftGuides  = bundle.element_craft_guide ?? [];
@@ -420,6 +574,8 @@ router.post('/admin/elements/import', requireAuth, requireCapability('catalog:ad
 
     // ── Vocabulary collisions, before anything is written ──────────────────────────────────────
     const collisions = [];
+    // element_categories is NOT here: its rows arrive without ids (see promotionBundle), so there is
+    // no id to collide. It is resolved by slug below instead.
     for (const [table, rows] of [['element_types', types], ['tags', tags]]) {
       const slugs = rows.map(r => r.slug).filter(Boolean);
       if (!slugs.length) continue;
@@ -450,10 +606,14 @@ router.post('/admin/elements/import', requireAuth, requireCapability('catalog:ad
     const haveElements = await existing('cake_elements', 'id', elements.map(e => e.id));
     const haveTypes    = await existing('element_types', 'id', types.map(t => t.id));
     const haveTags     = await existing('tags',          'id', tags.map(t => t.id));
+    // By SLUG, not id — a bundle's categories arrive without ids, so counting them by id would
+    // report every one as new and the dry run would be a lie in the direction of alarm.
+    const haveCats     = await existing('element_categories', 'slug', categories.map(c => c.slug));
     const haveTemplates = await existing('cake_templates', 'id', templates.map(t => t.id));
 
     const plan = {
       element_types:       { create: types.filter(t => !haveTypes.has(t.id)).length,       update: types.filter(t => haveTypes.has(t.id)).length },
+      element_categories:  { create: categories.filter(c => !haveCats.has(c.slug)).length, reused: categories.filter(c => haveCats.has(c.slug)).length },
       tags:                { create: tags.filter(t => !haveTags.has(t.id)).length,         update: tags.filter(t => haveTags.has(t.id)).length },
       elements:            { create: elements.filter(e => !haveElements.has(e.id)).length, update: elements.filter(e => haveElements.has(e.id)).length },
       cake_templates:      { create: templates.filter(t => !haveTemplates.has(t.id)).length, update: templates.filter(t => haveTemplates.has(t.id)).length },
@@ -486,6 +646,40 @@ router.post('/admin/elements/import', requireAuth, requireCapability('catalog:ad
     // parent_template_id is a self-FK, and a single upsert array gives no ordering guarantee.
     const tplParents  = templates.filter(t => !t.parent_template_id);
     const tplChildren = templates.filter(t => t.parent_template_id);
+    // ── Categories, resolved by slug ─────────────────────────────────────────────────────────────
+    // Elements arrive carrying `category_slug`, never `category_id` — an id from another database is
+    // an assertion about this one that is simply false. Anything whose slug is missing here is
+    // created; everything else binds to the row this environment already has, INCLUDING one an admin
+    // made by hand, which is the case that made the id approach untenable.
+    //
+    // Ordering: this runs before the upserts, because cake_elements rows need their category_id
+    // filled in before they are written.
+    if (!dryRun) {
+      const wanted = [...new Set(elements.map(e => e.category_slug).filter(Boolean))];
+      if (wanted.length) {
+        const { data: here } = await supabase
+          .from('element_categories').select('id, slug').in('slug', wanted);
+        const idBySlug = new Map((here ?? []).map(c => [c.slug, c.id]));
+
+        const missing = categories.filter(c => c.slug && wanted.includes(c.slug) && !idBySlug.has(c.slug));
+        if (missing.length) {
+          // No id supplied — this database mints its own, which is the whole point.
+          const { data: made, error: catErr } = await supabase
+            .from('element_categories').insert(missing).select('id, slug');
+          if (catErr) return res.status(500).json({ error: `element_categories: ${catErr.message}`, plan, assetErrors });
+          for (const c of made ?? []) idBySlug.set(c.slug, c.id);
+        }
+        // A slug with no row and none in the bundle leaves the element uncategorised rather than
+        // failing the import — visibly missing from the menu, which someone fixes in one click.
+        for (const el of elements) {
+          if (el.category_slug) el.category_id = idBySlug.get(el.category_slug) ?? null;
+          delete el.category_slug;
+        }
+      } else {
+        for (const el of elements) delete el.category_slug;
+      }
+    }
+
     const steps = [
       ['element_types',       types],
       ['tags',                tags],
@@ -571,7 +765,7 @@ router.get('/admin/elements/:id', requireAuth, requireCapability('catalog:admin'
 router.patch('/admin/elements/:id', requireAuth, requireCapability('catalog:admin'), async (req, res) => {
   try {
     const { id } = req.params;
-    const { name, description, image_url, thumbnail_url, element_type_id, parent_id, allowed_zones, placement_config, allowed_actions, default_color, sort_order, is_active, file_size, medium } = req.body;
+    const { name, description, image_url, thumbnail_url, element_type_id, category_id, parent_id, allowed_zones, placement_config, allowed_actions, default_color, sort_order, is_active, file_size, medium } = req.body;
 
     const updates = {};
     if (name            != null)      updates.name             = name;
@@ -579,6 +773,10 @@ router.patch('/admin/elements/:id', requireAuth, requireCapability('catalog:admi
     if (image_url       !== undefined) updates.image_url        = image_url;
     if (thumbnail_url   !== undefined) updates.thumbnail_url    = thumbnail_url;
     if (element_type_id != null)      updates.element_type_id  = element_type_id;
+    // Browsing category (migration 065). `!== undefined`, not `!= null`, so an explicit null CLEARS
+    // it — an element pulled out of a category is a real edit, and the alternative would be that a
+    // wrong category can be changed but never removed.
+    if (category_id     !== undefined) updates.category_id      = category_id;
     if (parent_id       !== undefined) updates.parent_id        = parent_id;
     if (allowed_zones   != null)      updates.allowed_zones    = allowed_zones;
     if (placement_config!= null)      updates.placement_config = placement_config;
@@ -646,7 +844,7 @@ async function ensureDecorationGuide(elementId) {
 
 router.post('/admin/elements', requireAuth, requireCapability('catalog:admin'), async (req, res) => {
   try {
-    const { name, description, image_url, thumbnail_url, element_type_id, parent_id, allowed_zones, placement_config, allowed_actions, default_color, sort_order, file_size, medium } = req.body;
+    const { name, description, image_url, thumbnail_url, element_type_id, category_id, parent_id, allowed_zones, placement_config, allowed_actions, default_color, sort_order, file_size, medium } = req.body;
     if (!name || !element_type_id) {
       return res.status(400).json({ error: 'name and element_type_id are required' });
     }
@@ -659,6 +857,10 @@ router.post('/admin/elements', requireAuth, requireCapability('catalog:admin'), 
         image_url,
         thumbnail_url,
         element_type_id,
+        // NOT required, unlike element_type_id. A decoration without a type cannot be placed at
+        // all; one without a category simply has no home in the browsing menu yet, and forcing the
+        // choice at create time would only produce a habit of picking the first option.
+        category_id:      category_id ?? null,
         parent_id:        parent_id ?? null,
         allowed_zones,
         placement_config: placement_config ?? {},

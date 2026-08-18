@@ -55,17 +55,24 @@ export async function elementClosure(ids) {
 
   const rows = [...elements.values()];
   if (!rows.length) {
-    return { elements: [], element_types: [], tags: [], element_tags: [], element_craft_guide: [], keys: new Set() };
+    return { elements: [], element_types: [], element_categories: [], tags: [], element_tags: [], element_craft_guide: [], keys: new Set() };
   }
   const elementIds = rows.map(e => e.id);
 
   const typeIds = [...new Set(rows.map(e => e.element_type_id).filter(Boolean))];
-  const [types, elementTags, craftGuides] = await Promise.all([
+  // Categories travel with the elements for the same reason types do: category_id is a uuid, and
+  // each environment ran migration 065's own seed INSERT, so "Animals" exists on both sides under a
+  // DIFFERENT id. Without the vocabulary in the bundle, an imported element points at an id the
+  // target has never seen. Only the categories actually used — a bundle of two lions should not
+  // carry the whole menu.
+  const catIds  = [...new Set(rows.map(e => e.category_id).filter(Boolean))];
+  const [types, categories, elementTags, craftGuides] = await Promise.all([
     typeIds.length ? supabase.from('element_types').select('*').in('id', typeIds) : { data: [] },
+    catIds.length  ? supabase.from('element_categories').select('*').in('id', catIds) : { data: [] },
     supabase.from('element_tags').select('*').in('element_id', elementIds),
     supabase.from('element_craft_guide').select('*').in('element_id', elementIds),
   ]);
-  for (const r of [types, elementTags, craftGuides]) if (r.error) throw r.error;
+  for (const r of [types, categories, elementTags, craftGuides]) if (r.error) throw r.error;
 
   const tagIds = [...new Set((elementTags.data ?? []).map(t => t.tag_id).filter(Boolean))];
   const tags = tagIds.length ? await supabase.from('tags').select('*').in('id', tagIds) : { data: [] };
@@ -81,9 +88,27 @@ export async function elementClosure(ids) {
     assetKeysIn(el.placement_config, keys, config.r2.publicUrl);
   }
 
+  // ── Categories travel by SLUG, never by id ─────────────────────────────────────────────────────
+  // Migration 065 ran separately in each environment, so "Animals" has a different uuid on every
+  // side and always will. An id in a bundle is an assertion about a database the bundle is not
+  // running in: it either collides, or binds an element to the wrong row.
+  //
+  // So each element carries `category_slug` and NOT `category_id`, and the importer resolves it
+  // against whatever the target holds — including a category the target's admin created by hand,
+  // which is the case that made this obvious. The category rows still travel, without their ids, so
+  // a slug the target has never seen can be created rather than silently dropping the element's
+  // category on the floor.
+  const bySlug = new Map((categories.data ?? []).map(c => [c.id, c.slug]));
+  const outRows = rows.map(({ category_id, ...el }) => (
+    category_id ? { ...el, category_slug: bySlug.get(category_id) ?? null } : el
+  ));
+
   return {
-    elements: rows,
+    elements: outRows,
     element_types: types.data ?? [],
+    // Vocabulary for anything the target lacks. `id` is stripped for the same reason it is stripped
+    // from the elements — it means nothing there.
+    element_categories: (categories.data ?? []).map(({ id, created_at, ...c }) => c),
     tags: tags.data ?? [],
     element_tags: elementTags.data ?? [],
     element_craft_guide: craftGuides.data ?? [],
