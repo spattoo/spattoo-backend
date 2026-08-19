@@ -84,6 +84,11 @@ router.get('/admin/templates/export', requireAuth, requireCapability('catalog:ad
       source: { r2_public_url: config.r2.publicUrl },
       // Insert order: vocabulary, then elements, then the templates that reference them.
       element_types:       c.element_types,
+      // templateClosure spreads elementClosure, so the categories are already in `c` — they were
+      // simply never named here, and a key absent from this object never reaches the importer. The
+      // elements would have arrived carrying `category_slug` with no vocabulary to resolve it
+      // against, so any category prod happened to lack would have silently dropped.
+      element_categories:  c.element_categories,
       tags:                c.tags,
       elements:            c.elements,
       element_tags:        c.element_tags,
