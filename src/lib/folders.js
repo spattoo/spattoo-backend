@@ -18,6 +18,10 @@ export const FOLDER_KIND = {
   'elements/files/2D':    'image',
   'elements/files/3D':    'model',
   'elements/thumbnails':  'image',
+  // A browsing category's own menu picture — typically a hand-made collage of three or four of the
+  // decorations in it, which says what the category holds better than the one borrowed element
+  // thumbnail it falls back to. See migration 068.
+  'categories/thumbnails': 'image',
   'templates/files':      'model_or_json',
   'templates/thumbnails': 'image',
   // Front view of a cake shape, captured through the real designer renderer when admin saves the shape.
