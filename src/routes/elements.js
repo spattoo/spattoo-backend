@@ -151,7 +151,7 @@ router.get('/element-categories', requireAuth, requireCapability('design:create'
   try {
     const { data: cats, error } = await supabase
       .from('element_categories')
-      .select('id, slug, name, sort_order')
+      .select('id, slug, name, sort_order, thumb_key')
       .eq('is_active', true)
       .order('sort_order');
     if (error) return serverError(req, res, error);
@@ -186,8 +186,17 @@ router.get('/element-categories', requireAuth, requireCapability('design:create'
       }
     }
 
+    // A category's OWN picture wins; the borrowed element thumbnail is the fallback. Resolved HERE
+    // rather than in the client so every surface agrees and none of them has to know there are two
+    // sources — the designer's menu reads `thumbnail_url` and is unchanged by this having a second
+    // origin. `thumb_key` is dropped from the response for the same reason: the customer list hands
+    // out a URL, not our storage layout.
     res.json(cats
-      .map(c => ({ ...c, count: counts.get(c.id) ?? 0, thumbnail_url: preview.get(c.id) ?? null }))
+      .map(({ thumb_key, ...c }) => ({
+        ...c,
+        count: counts.get(c.id) ?? 0,
+        thumbnail_url: toPublicUrl(thumb_key) ?? preview.get(c.id) ?? null,
+      }))
       .filter(c => c.count > 0));
   } catch (err) {
     serverError(req, res, err);
@@ -200,7 +209,7 @@ router.get('/admin/element-categories', requireAuth, requireCapability('catalog:
     // the retired ones — an element has to be assignable to a category before that category has any.
     const { data, error } = await supabase
       .from('element_categories')
-      .select('id, slug, name, sort_order, is_active')
+      .select('id, slug, name, sort_order, is_active, thumb_key')
       .order('sort_order');
     if (error) return serverError(req, res, error);
 
@@ -208,13 +217,33 @@ router.get('/admin/element-categories', requireAuth, requireCapability('catalog:
     // "how many decorations would I strand by retiring this?" is the question the number answers.
     const { data: rows } = await supabase
       .from('cake_elements')
-      .select('category_id')
+      .select('category_id, thumbnail_url, thumb_key, sort_order')
       .eq('is_active', true)
       .is('parent_id', null)
-      .not('category_id', 'is', null);
+      .not('category_id', 'is', null)
+      .order('sort_order');
 
-    const counts = (rows ?? []).reduce((m, r) => m.set(r.category_id, (m.get(r.category_id) ?? 0) + 1), new Map());
-    res.json(data.map(c => ({ ...c, count: counts.get(c.id) ?? 0 })));
+    const counts = new Map();
+    // The same borrowed preview the customer menu falls back to. Admin needs it to answer the
+    // question the screen exists to answer — "which categories still need a picture of their own?"
+    // — and it can only answer that by showing what a customer currently sees.
+    const borrowed = new Map();
+    for (const r of rows ?? []) {
+      counts.set(r.category_id, (counts.get(r.category_id) ?? 0) + 1);
+      if (!borrowed.has(r.category_id) && (r.thumb_key || r.thumbnail_url)) {
+        borrowed.set(r.category_id, toPublicUrl(r.thumb_key || r.thumbnail_url));
+      }
+    }
+
+    // `thumbnail_url` is the category's OWN picture or null — deliberately NOT the fallback, which
+    // arrives separately as `borrowed_url`. Collapsing them into one field is what would make the
+    // screen unable to distinguish "has its own" from "is borrowing one", which is the whole point.
+    res.json(data.map(c => ({
+      ...c,
+      count: counts.get(c.id) ?? 0,
+      thumbnail_url: toPublicUrl(c.thumb_key),
+      borrowed_url: borrowed.get(c.id) ?? null,
+    })));
   } catch (err) {
     serverError(req, res, err);
   }
@@ -273,14 +302,27 @@ router.post('/admin/element-categories', requireAuth, requireCapability('catalog
   }
 });
 
-// Rename, reorder, retire. The SLUG is deliberately not editable: nothing user-facing reads it, and
-// changing it would break any link or saved filter that does.
+// Rename, reorder, retire, re-picture. The SLUG is deliberately not editable: nothing user-facing
+// reads it, and changing it would break any link or saved filter that does.
 router.patch('/admin/element-categories/:id', requireAuth, requireCapability('catalog:admin'), async (req, res) => {
   try {
-    const { name, sort_order, is_active } = req.body ?? {};
+    const { name, sort_order, is_active, thumb_key } = req.body ?? {};
     const patch = {};
     if (name != null)        patch.name       = String(name).trim();
     if (sort_order != null)  patch.sort_order = sort_order;
+    // The category's own menu picture. `null` is a MEANINGFUL value here and must survive the
+    // `!= null` guards above — it is how the screen removes a picture and returns the category to
+    // borrowing an element's thumbnail. So this reads `undefined`, not null: "absent from the body"
+    // and "explicitly cleared" are different requests.
+    //
+    // Only a key from OUR bucket is accepted. The column is expanded with toPublicUrl on read, so a
+    // value that is already an absolute URL would pass through untouched — which is exactly how an
+    // arbitrary third-party image ends up rendered inside the decorations menu.
+    if (thumb_key !== undefined) {
+      if (thumb_key === null || thumb_key === '') patch.thumb_key = null;
+      else if (typeof thumb_key === 'string' && thumb_key.startsWith('categories/thumbnails/')) patch.thumb_key = thumb_key;
+      else return res.status(400).json({ error: 'thumb_key must be a key under categories/thumbnails/' });
+    }
     // Retiring hides the category from the customer menu; the elements in it keep their category_id
     // and come straight back if it is re-activated. Deleting is not offered here for that reason —
     // the FK is ON DELETE SET NULL, so a delete would silently strip the category off every element
@@ -290,9 +332,11 @@ router.patch('/admin/element-categories/:id', requireAuth, requireCapability('ca
 
     const { data, error } = await supabase
       .from('element_categories').update(patch).eq('id', req.params.id)
-      .select('id, slug, name, sort_order, is_active').single();
+      .select('id, slug, name, sort_order, is_active, thumb_key').single();
     if (error) return serverError(req, res, error);
-    res.json(data);
+    // Echoed as a URL as well as a key, so the screen can show the picture it just saved without a
+    // reload — and without building the asset URL itself, which is the API's job (toPublicUrl).
+    res.json({ ...data, thumbnail_url: toPublicUrl(data.thumb_key) });
   } catch (err) {
     serverError(req, res, err);
   }

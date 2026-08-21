@@ -88,6 +88,15 @@ export async function elementClosure(ids) {
     assetKeysIn(el.placement_config, keys, config.r2.publicUrl);
   }
 
+  // A category's own menu picture is an asset too (migration 068), and it is NOT reached by the loop
+  // above — that walks elements, and this key hangs off the category row. Without it the category
+  // travels and its picture does not: the row imports cleanly, `thumb_key` points at an object the
+  // target has never had, and the decorations menu shows a broken square. Nothing errors, which is
+  // why it is worth the three lines rather than a note.
+  for (const c of categories.data ?? []) {
+    if (c.thumb_key && !/^https?:\/\//i.test(c.thumb_key)) keys.add(c.thumb_key);
+  }
+
   // ── Categories travel by SLUG, never by id ─────────────────────────────────────────────────────
   // Migration 065 ran separately in each environment, so "Animals" has a different uuid on every
   // side and always will. An id in a bundle is an assertion about a database the bundle is not
