@@ -10,7 +10,7 @@ import { removeBackground } from '../services/removebg.js';
 import { jobQueue } from '../jobs/queue.js';
 import { reindexElement } from '../services/elementIndex.js';
 import { generateWebpThumbnail } from '../services/thumbnails.js';
-import { putObject } from '../services/r2.js';
+import { putObject, objectExists } from '../services/r2.js';
 import { elementClosure } from '../lib/promotionBundle.js';
 import { rewriteAssetHost } from '../lib/assetKeys.js';
 import { buildElementGuide } from '../services/decorationGuide.js';
@@ -655,6 +655,19 @@ router.post('/admin/elements/import', requireAuth, requireCapability('catalog:ad
     const haveCats     = await existing('element_categories', 'slug', categories.map(c => c.slug));
     const haveTemplates = await existing('cake_templates', 'id', templates.map(t => t.id));
 
+    // ── Which assets are actually missing here ────────────────────────────────────────────────
+    // Every import used to re-copy every asset the bundle named, including the ones already sitting
+    // in this bucket — a template's second import re-fetched the whole history of everything it
+    // touched. A key is a UUID minted at upload and is never written twice (replacing a picture
+    // mints a new key and repoints the row), so a key that is here already holds the right bytes.
+    //
+    // The dry run pays for the HEADs too, deliberately: "35 assets" told you the size of the bundle
+    // when the question being asked is how much of it is new. "2 to copy, 33 already here" answers
+    // that, and it is the number that predicts how long Import will take.
+    const presentKeys = new Set();
+    await Promise.all(assets.map(async a => { if (await objectExists(a.key)) presentKeys.add(a.key); }));
+    const toCopy = assets.filter(a => !presentKeys.has(a.key));
+
     const plan = {
       element_types:       { create: types.filter(t => !haveTypes.has(t.id)).length,       update: types.filter(t => haveTypes.has(t.id)).length },
       element_categories:  { create: categories.filter(c => !haveCats.has(c.slug)).length, reused: categories.filter(c => haveCats.has(c.slug)).length },
@@ -663,14 +676,15 @@ router.post('/admin/elements/import', requireAuth, requireCapability('catalog:ad
       cake_templates:      { create: templates.filter(t => !haveTemplates.has(t.id)).length, update: templates.filter(t => haveTemplates.has(t.id)).length },
       element_tags:        { rows: elementTags.length },
       element_craft_guide: { rows: craftGuides.length },
-      assets:              { count: assets.length },
+      assets:              { count: assets.length, copy: toCopy.length, present: assets.length - toCopy.length },
       same_environment:    bundle.source?.r2_public_url === config.r2.publicUrl,
     };
     if (dryRun) return res.json({ dryRun: true, plan, collisions: [] });
 
     // ── Assets first: a row pointing at an object that is not there yet renders broken ─────────
+    // Only the ones missing here. See `toCopy` above for why an existing key needs no second copy.
     const assetErrors = [];
-    for (const a of assets) {
+    for (const a of toCopy) {
       try {
         const r = await fetch(a.url);
         if (!r.ok) throw new Error(`fetch ${r.status}`);
