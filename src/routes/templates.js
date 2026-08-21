@@ -9,7 +9,7 @@ import { jobQueue } from '../jobs/queue.js';
 import { templatesForBaker, allTemplates } from '../lib/templateList.js';
 // toPublicUrl is declared locally further down — not imported, or the two collide and the API
 // fails to boot (check:boot catches it, which is how this was found).
-import { templateClosure } from '../lib/promotionBundle.js';
+import { templateClosure, elementIdsReferencedBy } from '../lib/promotionBundle.js';
 
 const router = Router();
 
@@ -103,15 +103,133 @@ router.get('/admin/templates/export', requireAuth, requireCapability('catalog:ad
   }
 });
 
+// ── Publish a template into the catalogue ────────────────────────────────────────────────────────
+// Our own bakery is where catalogue templates get written — in the designer, like any baker writes
+// one — and this is how the result becomes a catalogue row. From there it reaches prod through
+// export/import, which carries baker_id IS NULL and nothing else.
+//
+// ── WHOSE TEMPLATE MAY BE PUBLISHED ─────────────────────────────────────────────────────────────
+// Only a bakery flagged `is_catalog_author` (migration 070). A template a real baker made is THEIR
+// work, and moving it into the catalogue — even a very good one — is appropriating it. The rule is
+// enforced here rather than by hiding a button, so a hand-made API call cannot do what the UI will
+// not offer.
+//
+// It also makes the whole feature dev-only without an environment check: no baker is a catalogue
+// author until somebody says so, and we only say so in dev. Prod refuses every publish by default.
+//
+// ── COPY, NEVER MOVE ────────────────────────────────────────────────────────────────────────────
+// A new row with a new id. Setting baker_id = NULL in place would take the template OUT of the
+// bakery's library and hand the same row to everyone, so a later edit to the catalogue version
+// would silently rewrite what that bakery sees. Two rows, two owners, two independent futures.
+//
+// ── A CATALOGUE TEMPLATE MAY NOT USE PRIVATE DECORATIONS ────────────────────────────────────────
+// The design embeds elementIds, and an element uploaded by a baker is scoped to that baker. Publish
+// such a design and every OTHER baker gets a template whose decorations they cannot resolve — and
+// the designer is deliberately tolerant of a missing catalogue row, so it would still render, with
+// move/resize caps quietly reverting to defaults and clustering silently off. It would look right
+// and behave differently, and log nothing.
+//
+// So this refuses, and names the elements. Fixing it means promoting those decorations to the
+// catalogue first, which is the same import/export path everything else uses.
+router.post('/admin/templates/:id/publish', requireAuth, requireCapability('catalog:admin'), async (req, res) => {
+  try {
+    const { data: src, error: readErr } = await supabase
+      .from('cake_templates').select('*').eq('id', req.params.id).single();
+    if (readErr || !src) return res.status(404).json({ error: 'No such template' });
+    if (!src.baker_id) return res.status(400).json({ error: 'That template is already in the catalogue.' });
+
+    const { data: baker } = await supabase
+      .from('bakers').select('name, is_catalog_author').eq('id', src.baker_id).single();
+    if (!baker?.is_catalog_author) {
+      return res.status(403).json({
+        error: `"${baker?.name ?? 'That bakery'}" is not a catalogue author, so its templates stay its own.`,
+      });
+    }
+
+    // Private decorations, by the same walk the export uses to find a design's elements.
+    const referenced = await elementIdsReferencedBy([src.design].filter(Boolean));
+    if (referenced.length) {
+      const { data: els } = await supabase
+        .from('cake_elements').select('id, name, baker_id').in('id', referenced).not('baker_id', 'is', null);
+      if (els?.length) {
+        return res.status(409).json({
+          error: 'This design uses decorations that belong to one bakery, so other bakeries could not '
+               + 'render it. Promote them to the catalogue first.',
+          private_elements: els.map(e => ({ id: e.id, name: e.name })),
+        });
+      }
+    }
+
+    // Last in the menu. A new catalogue template does not get to jump the queue on its way in; the
+    // order customers browse in is decided deliberately, on the templates screen.
+    const { data: last } = await supabase
+      .from('cake_templates').select('sort_order').is('baker_id', null)
+      .order('sort_order', { ascending: false }).limit(1).maybeSingle();
+
+    const { data: made, error: insErr } = await supabase
+      .from('cake_templates')
+      .insert({
+        name:          src.name,
+        shape:         src.shape,
+        tier_count:    src.tier_count,
+        type:          src.type,
+        offering:      src.offering,
+        baker_id:      null,
+        // Dropped, not copied: a parent is another template's id, and the source's parent is a row in
+        // that bakery's library. Pointing a catalogue template at it would reach back across the
+        // boundary this route exists to hold.
+        parent_template_id: null,
+        design:        src.design,
+        // The same object, not a copy of it. One environment, one bucket, and the key is not scoped
+        // to a baker — so the picture is shared rather than duplicated.
+        thumbnail_url: src.thumbnail_url,
+        sort_order:    (last?.sort_order ?? 0) + 10,
+        is_active:     true,
+      })
+      .select('id')
+      .single();
+    if (insErr) return serverError(req, res, insErr);
+
+    // Tags and size/age attributes travel: they are how a template is FOUND, and a catalogue copy
+    // that cannot be filtered to is one nobody meets.
+    const [{ data: srcTags }, { data: srcAttrs }] = await Promise.all([
+      supabase.from('template_tags').select('tag_id').eq('template_id', src.id),
+      supabase.from('cake_template_attrs').select('*').eq('template_id', src.id),
+    ]);
+    if (srcTags?.length) {
+      await supabase.from('template_tags')
+        .insert(srcTags.map(t => ({ template_id: made.id, tag_id: t.tag_id })));
+    }
+    for (const a of srcAttrs ?? []) {
+      const { template_id, id, ...rest } = a;   // eslint-disable-line no-unused-vars
+      await supabase.from('cake_template_attrs').insert({ ...rest, template_id: made.id });
+    }
+
+    res.status(201).json({ ok: true, id: made.id, from: { id: src.id, baker: baker.name } });
+  } catch (err) {
+    serverError(req, res, err);
+  }
+});
+
 router.get('/admin/templates', requireAuth, requireCapability('catalog:admin'), async (req, res) => {
   try {
+    // Unfiltered by baker, unlike every customer-facing read: this is the catalogue owner's view of
+    // the whole table. The OWNER travels with each row because the screen cannot do its job without
+    // it — a baker's template cannot be exported (the closure takes global rows only) and cannot be
+    // published unless that bakery authors the catalogue. Without the owner the screen offers both
+    // and finds out by 404.
     const { data, error } = await supabase
       .from('cake_templates')
-      .select(`${TEMPLATE_FIELDS}, ${TEMPLATE_FILTER_JOIN}`)
+      .select(`${TEMPLATE_FIELDS}, ${TEMPLATE_FILTER_JOIN}, bakers(name, is_catalog_author)`)
       .order('sort_order');
 
     if (error) return serverError(req, res, error);
-    res.json(data.map(t => withTagsAndAttrs({ ...t, thumbnail_url: toPublicUrl(t.thumbnail_url) })));
+    res.json(data.map(({ bakers, ...t }) => withTagsAndAttrs({
+      ...t,
+      thumbnail_url: toPublicUrl(t.thumbnail_url),
+      owner_name: t.baker_id ? (bakers?.name ?? 'Unknown bakery') : null,   // null = the catalogue's own
+      can_publish: !!t.baker_id && !!bakers?.is_catalog_author,
+    })));
   } catch (err) {
     serverError(req, res, err);
   }
