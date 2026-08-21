@@ -203,7 +203,11 @@ router.get('/admin/templates', requireAuth, requireCapability('catalog:admin'), 
     // and finds out by 404.
     const { data, error } = await supabase
       .from('cake_templates')
-      .select(`${TEMPLATE_FIELDS}, ${TEMPLATE_FILTER_JOIN}, bakers(name, is_catalog_author)`)
+      // The FK is NAMED because cake_templates reaches bakers two ways — the owner
+      // (cake_templates.baker_id) and, many-to-many, the bakers who have HIDDEN this template
+      // (baker_template_exclusions). PostgREST will not guess between them: a bare `bakers(...)`
+      // is PGRST201 and a 500 on the whole screen. Wanted here is the owner.
+      .select(`${TEMPLATE_FIELDS}, ${TEMPLATE_FILTER_JOIN}, bakers!cake_templates_baker_id_fkey(name, is_catalog_author)`)
       .order('sort_order');
 
     if (error) return serverError(req, res, error);
