@@ -117,20 +117,21 @@ router.get('/admin/templates/export', requireAuth, requireCapability('catalog:ad
 // It also makes the whole feature dev-only without an environment check: no baker is a catalogue
 // author until somebody says so, and we only say so in dev. Prod refuses every publish by default.
 //
-// ── COPY, NEVER MOVE ────────────────────────────────────────────────────────────────────────────
-// A new row with a new id. Setting baker_id = NULL in place would take the template OUT of the
-// bakery's library and hand the same row to everyone, so a later edit to the catalogue version
-// would silently rewrite what that bakery sees. Two rows, two owners, two independent futures.
+// ── IT MOVES, IT DOES NOT COPY ──────────────────────────────────────────────────────────────────
+// One UPDATE: baker_id becomes NULL and the row IS the catalogue template. Same id, same tags, same
+// size/age attributes — they hang off the row, so nothing has to be re-inserted and nothing can be
+// half-copied.
 //
-// ── A CATALOGUE TEMPLATE MAY NOT USE PRIVATE DECORATIONS ────────────────────────────────────────
-// The design embeds elementIds, and an element uploaded by a baker is scoped to that baker. Publish
-// such a design and every OTHER baker gets a template whose decorations they cannot resolve — and
-// the designer is deliberately tolerant of a missing catalogue row, so it would still render, with
-// move/resize caps quietly reverting to defaults and clustering silently off. It would look right
-// and behave differently, and log nothing.
+// This was built as a copy first, to protect a baker from having their work taken. That protection
+// is already absolute one line up: only a bakery WE author from can get here at all. A template
+// written by us, for the catalogue, has no second owner to defend — so copying only produced a dead
+// row to deactivate and a duplicate in the authoring bakery's own studio, which is what a baker sees
+// when a design matches both `baker_id = them` and `baker_id IS NULL`.
 //
-// So this refuses, and names the elements. Fixing it means promoting those decorations to the
-// catalogue first, which is the same import/export path everything else uses.
+// What that gives up, stated rather than discovered: there is no longer a record that the catalogue
+// row came from a particular bakery, and no copy for them to keep. Both are fine when the bakery is
+// ours; neither would be if this were ever opened up, and the is_catalog_author gate is what stops
+// that happening quietly.
 router.post('/admin/templates/:id/publish', requireAuth, requireCapability('catalog:admin'), async (req, res) => {
   try {
     const { data: src, error: readErr } = await supabase
@@ -146,7 +147,13 @@ router.post('/admin/templates/:id/publish', requireAuth, requireCapability('cata
       });
     }
 
-    // Private decorations, by the same walk the export uses to find a design's elements.
+    // Private decorations, found by the same walk the export uses on a design.
+    //
+    // This check is why publish is a route rather than an UPDATE somebody runs by hand. A design
+    // embeds elementIds, and a baker-uploaded element is scoped to that baker — so a catalogue
+    // template built on one renders for every OTHER bakery with its decorations unresolved. It does
+    // not fail loudly: the designer tolerates a missing catalogue row, so move/resize caps quietly
+    // revert to defaults and clustering silently stops. Promote those elements first.
     const referenced = await elementIdsReferencedBy([src.design].filter(Boolean));
     if (referenced.length) {
       const { data: els } = await supabase
@@ -160,75 +167,28 @@ router.post('/admin/templates/:id/publish', requireAuth, requireCapability('cata
       }
     }
 
-    // Last in the menu. A new catalogue template does not get to jump the queue on its way in; the
-    // order customers browse in is decided deliberately, on the templates screen.
+    // Last in the menu. A baker's template carries sort_order 0, which as a catalogue row would put
+    // it first — and the order customers browse in is a deliberate choice, made on this screen.
     const { data: last } = await supabase
       .from('cake_templates').select('sort_order').is('baker_id', null)
       .order('sort_order', { ascending: false }).limit(1).maybeSingle();
 
-    const { data: made, error: insErr } = await supabase
+    const { data: made, error: updErr } = await supabase
       .from('cake_templates')
-      .insert({
-        name:          src.name,
-        shape:         src.shape,
-        tier_count:    src.tier_count,
-        type:          src.type,
-        offering:      src.offering,
-        baker_id:      null,
-        // Dropped, not copied: a parent is another template's id, and the source's parent is a row in
-        // that bakery's library. Pointing a catalogue template at it would reach back across the
-        // boundary this route exists to hold.
+      .update({
+        baker_id: null,
+        // A parent is a row in that bakery's library, and a catalogue template pointing at one would
+        // reach back across the boundary this route exists to hold.
         parent_template_id: null,
-        design:        src.design,
-        // The same object, not a copy of it. One environment, one bucket, and the key is not scoped
-        // to a baker — so the picture is shared rather than duplicated.
-        thumbnail_url: src.thumbnail_url,
-        sort_order:    (last?.sort_order ?? 0) + 10,
-        is_active:     true,
+        sort_order: (last?.sort_order ?? 0) + 10,
+        is_active: true,
       })
-      .select('id')
+      .eq('id', src.id)
+      .select('id, name')
       .single();
-    if (insErr) return serverError(req, res, insErr);
+    if (updErr) return serverError(req, res, updErr);
 
-    // Tags and size/age attributes travel: they are how a template is FOUND, and a catalogue copy
-    // that cannot be filtered to is one nobody meets.
-    const [{ data: srcTags }, { data: srcAttrs }] = await Promise.all([
-      supabase.from('template_tags').select('tag_id').eq('template_id', src.id),
-      supabase.from('cake_template_attrs').select('*').eq('template_id', src.id),
-    ]);
-    if (srcTags?.length) {
-      await supabase.from('template_tags')
-        .insert(srcTags.map(t => ({ template_id: made.id, tag_id: t.tag_id })));
-    }
-    for (const a of srcAttrs ?? []) {
-      const { template_id, id, ...rest } = a;   // eslint-disable-line no-unused-vars
-      await supabase.from('cake_template_attrs').insert({ ...rest, template_id: made.id });
-    }
-
-    // ── The bakery's own copy steps aside ──────────────────────────────────────────────────────
-    // A baker sees `baker_id IS NULL OR baker_id = them`, so once the catalogue has this design the
-    // authoring bakery matches BOTH rows and sees the same cake twice in its studio — worse with
-    // every template published. Deactivating the original leaves one of each.
-    //
-    // Deliberately AFTER the insert, and only on success: the reverse order would deactivate a
-    // bakery's template and then fail to give the catalogue anything, which loses them a template
-    // and gains nothing.
-    //
-    // Deactivated, not deleted. The row stays for provenance, still shows in admin (this list does
-    // not filter on is_active) carrying its Inactive badge, and Activate puts it back. It is only
-    // ever OUR bakeries this happens to — nobody else can be a catalogue author.
-    const { error: deactErr } = await supabase
-      .from('cake_templates').update({ is_active: false }).eq('id', src.id);
-
-    res.status(201).json({
-      ok: true,
-      id: made.id,
-      from: { id: src.id, baker: baker.name },
-      // Reported rather than assumed: a template quietly vanishing from a studio is the kind of side
-      // effect that should arrive as a sentence, not as a discovery.
-      deactivated_source: !deactErr,
-      ...(deactErr && { warning: `Published, but "${src.name}" could not be deactivated: ${deactErr.message}` }),
-    });
+    res.json({ ok: true, id: made.id, name: made.name, from: { baker: baker.name } });
   } catch (err) {
     serverError(req, res, err);
   }
