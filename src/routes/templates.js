@@ -205,7 +205,30 @@ router.post('/admin/templates/:id/publish', requireAuth, requireCapability('cata
       await supabase.from('cake_template_attrs').insert({ ...rest, template_id: made.id });
     }
 
-    res.status(201).json({ ok: true, id: made.id, from: { id: src.id, baker: baker.name } });
+    // ── The bakery's own copy steps aside ──────────────────────────────────────────────────────
+    // A baker sees `baker_id IS NULL OR baker_id = them`, so once the catalogue has this design the
+    // authoring bakery matches BOTH rows and sees the same cake twice in its studio — worse with
+    // every template published. Deactivating the original leaves one of each.
+    //
+    // Deliberately AFTER the insert, and only on success: the reverse order would deactivate a
+    // bakery's template and then fail to give the catalogue anything, which loses them a template
+    // and gains nothing.
+    //
+    // Deactivated, not deleted. The row stays for provenance, still shows in admin (this list does
+    // not filter on is_active) carrying its Inactive badge, and Activate puts it back. It is only
+    // ever OUR bakeries this happens to — nobody else can be a catalogue author.
+    const { error: deactErr } = await supabase
+      .from('cake_templates').update({ is_active: false }).eq('id', src.id);
+
+    res.status(201).json({
+      ok: true,
+      id: made.id,
+      from: { id: src.id, baker: baker.name },
+      // Reported rather than assumed: a template quietly vanishing from a studio is the kind of side
+      // effect that should arrive as a sentence, not as a discovery.
+      deactivated_source: !deactErr,
+      ...(deactErr && { warning: `Published, but "${src.name}" could not be deactivated: ${deactErr.message}` }),
+    });
   } catch (err) {
     serverError(req, res, err);
   }
