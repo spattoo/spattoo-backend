@@ -1,4 +1,4 @@
-import { S3Client, PutObjectCommand, GetObjectCommand, DeleteObjectCommand, CopyObjectCommand } from '@aws-sdk/client-s3';
+import { S3Client, PutObjectCommand, GetObjectCommand, DeleteObjectCommand, CopyObjectCommand, HeadObjectCommand } from '@aws-sdk/client-s3';
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 import { config } from '../config.js';
 
@@ -43,6 +43,26 @@ export async function putObject(key, buffer, contentType) {
   });
   await r2.send(command);
   return `${config.r2.publicUrl}/${key}`;
+}
+
+// Is this key already in the bucket? HEAD, so no bytes are moved to find out.
+//
+// Existence is a sufficient test for "the right bytes are already here", which is only true because
+// of two things: keys are UUIDs minted per upload, so nothing ever writes twice to one (replacing an
+// element's picture mints a NEW key and repoints the row), and PutObject is atomic, so a failed
+// upload leaves NO object rather than a truncated one. Neither holds for a hand-made key reused by
+// somebody in the R2 console — that would defeat this, and there is no cheap way to notice.
+//
+// Any error that is not a plain 404 also reads as "not here": the caller's fallback is to copy,
+// which is what it did before this existed. Guessing "present" from an ambiguous answer would skip a
+// file that needs copying and leave a picture broken; guessing "absent" only costs a copy.
+export async function objectExists(key) {
+  try {
+    await r2.send(new HeadObjectCommand({ Bucket: config.r2.bucket, Key: key }));
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 // Downloads an object's bytes as a Buffer (server-side).
