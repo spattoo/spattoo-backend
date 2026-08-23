@@ -23,6 +23,28 @@ export const ENTITLEMENTS = {
   // progress. What Blaze buys is printing things NO order asked for — a name, a logo, a sheet of
   // roses — which is a bakery's own productivity, not a customer's order.
   edible_print_studio:    { type: 'bool', fallback: false, label: 'Edible Print Studio' },
+  // Reel capture: film the cake turning and download it at 1080×1920, ready to post.
+  // See spattoo-docs/plans/reel-for-bakers.md.
+  //
+  // TWO keys, not one, because "may record" and "whose name is on it" are different questions and a
+  // plan row should say exactly what the customer gets.
+  //
+  // ⚠️ reel_capture is ON FOR EVERY PAID TIER, deliberately — including Spark and Flame. It costs
+  // nothing to give away: recording runs entirely on the baker's device (their GPU renders it, their
+  // hardware encoder writes the MP4, the file lands in their downloads) with no upload, transcode,
+  // storage or queue. And a locked feature generates no awareness while a watermarked one markets us
+  // every time it is posted. It still collapses to false on a LAPSED subscription, like everything
+  // else — that is the fallback doing its job.
+  reel_capture:           { type: 'bool', fallback: false, label: 'Record a reel of a cake' },
+  // Whose name the reel carries. TRUE → the bakery's own. FALSE → a small "made with Spattoo".
+  // This is the Blaze lever, and the upgrade reads as "take our name off your marketing".
+  //
+  // ⚠️ ADVISORY, not enforced. Every other entitlement is backed by requireEntitlement on a route;
+  // this one has no route to guard, because the whole feature is client-side. Somebody who edits the
+  // response in devtools gets an unbranded reel — which is a thing they could also achieve by
+  // cropping the video, so there is nothing here worth defending server-side. Do not let a later
+  // reader mistake the absence of middleware for an oversight.
+  reel_branding:          { type: 'bool', fallback: false, label: 'Reels carry the bakery\'s own name' },
   // Storefront themes marked is_premium. Blaze+. Gates CHOOSING one, never RENDERING one: a
   // shop already published on a theme keeps working if that theme is later re-priced, because
   // taking away somebody's live storefront is not a thing a price change should do.
