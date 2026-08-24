@@ -193,8 +193,14 @@ function validateOrderBody(body, { requireDesign = true } = {}) {
 // from 043 on purpose: a DB constraint is the guarantee, this is the error message, and they are
 // allowed to be verified against each other rather than derived — a typo here is a bad message, a
 // typo there is bad data.
-const OCCASIONS  = ['birthday', 'anniversary', 'wedding', 'baby_shower', 'engagement',
-                    'farewell', 'corporate', 'festival', 'other'];
+// Kept in step with orders_occasion_valid — widened by 059, and the API's copy was NOT, so five
+// occasions the storefront offered (bridal_shower, new_home, graduation, new_job, love) were
+// refused here after the customer had answered every question. check:occasions now compares this
+// array too; it only ever compared the storefront against the CHECK, and this third copy sat
+// between them unguarded.
+const OCCASIONS  = ['birthday', 'anniversary', 'wedding', 'engagement', 'bridal_shower',
+                    'baby_shower', 'new_home', 'graduation', 'new_job', 'festival',
+                    'farewell', 'corporate', 'love', 'other'];
 const RECIPIENTS = ['child', 'adult', 'couple', 'family', 'friends', 'colleagues'];
 const CELEBRATIONS = ['first_birthday', 'kids_party', 'teen_party', 'grown_ups', 'elders'];
 

@@ -317,7 +317,16 @@ router.get('/baker/profile', requireAuth, async (req, res) => {
 
     const { data: baker } = await supabase
       .from('bakers')
-      .select('id, name, slug, logo_url, logo_transparent_key, primary_color, accent_color, instagram_handle, website_url, tagline, storefront_theme_id, portrait_url, storefront_published, storefront_customizations, first_paid_at')
+      // is_catalog_author (migration 070) is here so the DESIGNER can gate on it. It already decides
+      // who may publish a template to the catalogue, enforced in routes/templates.js; the same
+      // bakeries are the ones who film a new template for Instagram, so the reel recorder is gated on
+      // it too. See spattoo-docs/features/reel-capture.md.
+      //
+      // ⚠️ A per-BAKER flag, not a per-user capability. `capabilities` on the user answers "may this
+      // person create designs"; this answers "is this bakery one of ours". They are different
+      // questions and the second one has no user-level answer — every user of an authoring bakery
+      // gets it, and nobody else does.
+      .select('id, name, slug, logo_url, logo_transparent_key, primary_color, accent_color, instagram_handle, website_url, tagline, storefront_theme_id, portrait_url, storefront_published, storefront_customizations, first_paid_at, is_catalog_author')
       .eq('id', contact.baker_id)
       .single();
     if (!baker) return res.status(404).json({ error: 'Baker not found' });
@@ -369,6 +378,12 @@ router.get('/baker/profile', requireAuth, async (req, res) => {
         portrait_url:     toPublicUrl(baker.portrait_url),
         storefront_published: baker.storefront_published,
         storefront_customizations: baker.storefront_customizations || {},
+        // Whether this bakery authors the catalogue (migration 070). The designer gates the reel
+        // recorder on it — same bakeries that publish templates are the ones that film them.
+        // Coerced, not passed through: the column is NOT NULL DEFAULT false, but a null here would
+        // read as "false" in the UI by accident rather than by rule, and a gate that works by
+        // accident is one nobody can reason about.
+        is_catalog_author: !!baker.is_catalog_author,
         subscription_status: sub.status,
         subscription_plan:   sub.plan?.name ?? null,
         subscription_end:    sub.end_date   ?? null,
