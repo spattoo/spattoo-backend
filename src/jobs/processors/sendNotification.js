@@ -556,6 +556,53 @@ export function buildEmail(typeSlug, recipientEmail, payload) {
     };
   }
 
+  // ── The Spark trial countdown ─────────────────────────────────────────────────────────────────
+  // Four sends across one trial (7 days, 2 days, the last day, the morning after) and they must not
+  // read as four copies of the same email — somebody who ignored the first one is not persuaded by
+  // receiving it again with a different number in it. So the shape changes as the deadline closes:
+  // the early one is informational and names what they would lose, the last two are short, and the
+  // after-email stops selling urgency it no longer has.
+  //
+  // ⚠️ The number comes from the PAYLOAD, never from the milestone. A run catching up after a missed
+  // day is in the seven-day bucket while three days remain, and an email that says seven when three
+  // are left is worse than one that never arrived — see services/trialReminders.js.
+  if (typeSlug === 'trial_ending' || typeSlug === 'trial_ended') {
+    const ended = typeSlug === 'trial_ended';
+    const hiName = p.bakerName ? `, ${esc(p.bakerName)}` : '';
+    const when   = esc(p.when ?? 'is ending');
+    const last   = Number(p.days) <= 0;
+
+    return {
+      from:    config.smtp.from,
+      to:      recipientEmail,
+      // The subject carries the deadline, because most of these are read in a notification shade
+      // and never opened. No exclamation marks and no counting down in the subject of the first
+      // one — a week away is information, not an emergency, and treating it as one spends the
+      // urgency we actually need on the last day.
+      subject: ended
+        ? 'Your Spark trial has ended — pick a plan to carry on'
+        : last
+          ? 'Your Spark trial ends today'
+          : `Your Spark trial ${when}`,
+      html: shell(ended
+        ? `<h2 style="margin:0 0 12px;font-size:22px;color:#2C4433;font-weight:800;">Your trial has ended</h2>
+           <p>Hi${hiName} — your Spark trial finished on ${esc(p.endDate)}.</p>
+           <p>Your cakes, templates, customers and orders are all still here and nothing has been
+              deleted. Choosing a plan picks everything up exactly where you left it.</p>
+           ${billingCta}
+           <p style="color:#6b6b6b;font-size:13px;">If you have already chosen a plan, you can ignore this.</p>`
+        : `<h2 style="margin:0 0 12px;font-size:22px;color:#2C4433;font-weight:800;">
+             Your Spark trial ${when}
+           </h2>
+           <p>Hi${hiName} — your trial runs until <strong>${esc(p.endDate)}</strong>.</p>
+           <p>${last
+                ? 'After today the designer stops accepting new orders until a plan is chosen. Everything you have made stays exactly as it is.'
+                : 'Choosing a plan before then means nothing pauses: your storefront keeps taking orders and your templates stay published.'}</p>
+           ${billingCta}
+           <p style="color:#6b6b6b;font-size:13px;">Already chosen a plan? Then this one is already out of date — ignore it.</p>`),
+    };
+  }
+
   throw new Error(`Unknown notification type: ${typeSlug}`);
 }
 
@@ -604,8 +651,44 @@ export function buildPush(typeSlug, payload) {
     };
   }
 
+  /* ── The trial deadline, at the two moments it can still be acted on ─────────────────────────
+   *
+   * ⚠️ THE FIRST PUSH HERE THAT DEPENDS ON THE PAYLOAD. Every other type is push-or-not by slug;
+   * this one is the same slug at four different distances from the deadline, and only two of them
+   * earn an interruption:
+   *
+   *   +7  email only — a week out is information, and a buzzing pocket would spend urgency we
+   *       need later on something nobody has to act on today
+   *   +2  push. Close enough to matter, far enough to do something about it.
+   *    0  push. The last chance.
+   *   -1  email only — it has already happened. A push cannot change the outcome, and interrupting
+   *       somebody to tell them they missed a deadline is a poor way to ask for their money.
+   *
+   * ⚠️ Silent when `days` is missing rather than guessing. An unknown distance must not buzz a
+   * phone — and a payload written before this field existed is exactly the thing that would.
+   */
+  if (typeSlug === 'trial_ending') {
+    const days = Number(p.days);
+    if (!Number.isFinite(days) || days < 0 || days > 2) return null;
+    // Derived here rather than read from p.when: with the guard above this cannot render undefined,
+    // and a payload from an older row may not carry the pre-shaped string at all.
+    const label = days === 0 ? 'ends today' : days === 1 ? 'ends tomorrow' : `ends in ${days} days`;
+    return {
+      title: `Your Spark trial ${label}`,
+      body:  days === 0
+        ? 'After today your storefront stops taking new orders. Everything you have made stays as it is.'
+        : 'Choose a plan and nothing pauses — your storefront keeps taking orders.',
+      url:   linkFor(typeSlug, p),
+      /* One tag for the whole trial, so the last-day push REPLACES the two-day one rather than
+       * stacking beside it. They are the same deadline said twice; a baker who ignored the first
+       * does not want both sitting on the lock screen, and the later one is strictly more urgent. */
+      tag:   `trial:${p.endDate ?? ''}`,
+    };
+  }
+
   // Everything else is email-only. A customer has no app to be pushed to, and a baker does not need
-  // their phone to buzz because an invite email went out.
+  // their phone to buzz because an invite email went out — nor because a trial they already lost
+  // has ended.
   return null;
 }
 
