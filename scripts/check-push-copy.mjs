@@ -49,10 +49,61 @@ for (const slug of SILENT) {
   buildPush(slug, {}) === null ? ok(`${slug} is email-only`) : bad(`${slug} pushes and should not`);
 }
 
+// ── 1b. Pushes that depend on the PAYLOAD, not the slug ─────────────────────────────────────────
+// The trial countdown is one slug at four distances from the deadline and only two of them earn an
+// interruption. A slug-level list cannot express that, so the ladder is asserted rung by rung —
+// otherwise "trial_ending pushes" would be true and say nothing about which day.
+//
+// ⚠️ The -1 rung matters most. Interrupting somebody to tell them they have already missed a
+// deadline cannot change the outcome and is a poor way to ask for their money.
+{
+  const at = (days) => buildPush('trial_ending', { days, endDate: '2026-09-01' });
+  const LADDER = [
+    [7,  false, 'a week out is information, not an interruption'],
+    [3,  false, 'still inside the seven-day bucket — no buzz'],
+    [2,  true,  'two days out earns a push'],
+    [1,  true,  'the day before earns one too'],
+    [0,  true,  'the last day earns one'],
+    [-1, false, '⚠️ after it has ended, email only — a push cannot change the outcome'],
+  ];
+  for (const [days, shouldPush, why] of LADDER) {
+    const got = at(days) !== null;
+    got === shouldPush ? ok(`days=${days}: ${why}`)
+                       : bad(`days=${days} ${got ? 'pushes and should not' : 'should push and does not'} — ${why}`);
+  }
+  // ⚠️ A payload with no `days` must NOT guess. An older row that predates the field is exactly the
+  // thing that would buzz a phone at the wrong moment.
+  at(undefined) === null ? ok('an unknown distance stays silent rather than guessing')
+                         : bad('a payload with no days still pushes');
+  buildPush('trial_ended', { days: -1 }) === null
+    ? ok('trial_ended never pushes, at any payload')
+    : bad('trial_ended pushes and should not');
+
+  // The two rungs are one deadline said twice: the later must REPLACE the earlier on the lock
+  // screen, not stack beside it.
+  at(2).tag === at(0).tag ? ok('the last-day push replaces the two-day one rather than stacking')
+                          : bad('the trial pushes would pile up on the lock screen');
+  at(0).url === '/?panel=billing' ? ok('a trial push lands on billing, where the plan is chosen')
+                                  : bad(`a trial push lands on "${at(0).url}"`);
+  // Forty characters is roughly what a lock screen shows before it truncates.
+  LADDER.filter(([, sp]) => sp).every(([d]) => at(d).title.length <= 40)
+    ? ok('every trial push title fits a lock screen')
+    : bad('a trial push title is too long for a lock screen');
+}
+
 // ── 2. Nothing renders undefined ─────────────────────────────────────────────────────────────────
 // Every one of these is reachable: an order with no customer row, a digest whose orders array never
 // arrived, a payload written before a field existed.
 const EMPTY_PAYLOADS = [{}, { orders: [] }, { count: 0 }, { customerName: undefined }];
+// The trial push needs a `days` to exist at all, so it is swept separately against the thin
+// payloads it can actually receive.
+for (const thin of [{ days: 0 }, { days: 2 }, { days: 1, endDate: undefined }, { days: 0, bakerName: undefined }]) {
+  const t = buildPush('trial_ending', thin);
+  if (/undefined|NaN|\[object/.test(`${t.title} ${t.body}`)) {
+    bad(`trial_ending renders "${t.title} ${t.body}" for ${JSON.stringify(thin)}`);
+  }
+  if (typeof t.url !== 'string' || !t.url) bad(`trial_ending has no url for ${JSON.stringify(thin)}`);
+}
 for (const slug of PUSHES) {
   for (const payload of EMPTY_PAYLOADS) {
     const p = buildPush(slug, payload);

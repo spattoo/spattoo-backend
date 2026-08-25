@@ -651,8 +651,44 @@ export function buildPush(typeSlug, payload) {
     };
   }
 
+  /* ── The trial deadline, at the two moments it can still be acted on ─────────────────────────
+   *
+   * ⚠️ THE FIRST PUSH HERE THAT DEPENDS ON THE PAYLOAD. Every other type is push-or-not by slug;
+   * this one is the same slug at four different distances from the deadline, and only two of them
+   * earn an interruption:
+   *
+   *   +7  email only — a week out is information, and a buzzing pocket would spend urgency we
+   *       need later on something nobody has to act on today
+   *   +2  push. Close enough to matter, far enough to do something about it.
+   *    0  push. The last chance.
+   *   -1  email only — it has already happened. A push cannot change the outcome, and interrupting
+   *       somebody to tell them they missed a deadline is a poor way to ask for their money.
+   *
+   * ⚠️ Silent when `days` is missing rather than guessing. An unknown distance must not buzz a
+   * phone — and a payload written before this field existed is exactly the thing that would.
+   */
+  if (typeSlug === 'trial_ending') {
+    const days = Number(p.days);
+    if (!Number.isFinite(days) || days < 0 || days > 2) return null;
+    // Derived here rather than read from p.when: with the guard above this cannot render undefined,
+    // and a payload from an older row may not carry the pre-shaped string at all.
+    const label = days === 0 ? 'ends today' : days === 1 ? 'ends tomorrow' : `ends in ${days} days`;
+    return {
+      title: `Your Spark trial ${label}`,
+      body:  days === 0
+        ? 'After today your storefront stops taking new orders. Everything you have made stays as it is.'
+        : 'Choose a plan and nothing pauses — your storefront keeps taking orders.',
+      url:   linkFor(typeSlug, p),
+      /* One tag for the whole trial, so the last-day push REPLACES the two-day one rather than
+       * stacking beside it. They are the same deadline said twice; a baker who ignored the first
+       * does not want both sitting on the lock screen, and the later one is strictly more urgent. */
+      tag:   `trial:${p.endDate ?? ''}`,
+    };
+  }
+
   // Everything else is email-only. A customer has no app to be pushed to, and a baker does not need
-  // their phone to buzz because an invite email went out.
+  // their phone to buzz because an invite email went out — nor because a trial they already lost
+  // has ended.
   return null;
 }
 
