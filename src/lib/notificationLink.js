@@ -42,8 +42,28 @@ export function linkFor(typeSlug, payload) {
   // singling one out would be picking arbitrarily. Opens the list.
   if (typeSlug === 'delivery_digest_baker') return '/?panel=orders';
 
-  // Billing-shaped: a baker reading these wants the billing screen, not an order.
-  if (typeSlug.startsWith('subscription_') || typeSlug.startsWith('credit_')) return '/?panel=billing';
+  /* Billing-shaped: a baker reading these wants the billing screen, not an order.
+   *
+   * ⚠️ MATCHED AGAINST THE REAL SLUGS, which is not what this line used to do. It tested
+   * `credit_` — singular — and every credits slug is `credits_*`, so `credits_low`,
+   * `credits_exhausted` and `credits_purchased` have all been falling through to the app root since
+   * they shipped. A baker tapping "your AI credits are running out" landed in the designer with no
+   * indication of where to go, which is precisely the "the bell is decorative" outcome the fallback
+   * below warns about. `payment_failed` was never listed at all.
+   *
+   * A prefix test is what let that hide: it looks like it covers a family, and nothing fails when
+   * the family is spelled differently. The list is explicit now — a new billing slug has to be added
+   * here, and that is a better failure than a silent miss.
+   */
+  const BILLING_TYPES = new Set([
+    'subscription_activated', 'subscription_cancelled', 'subscription_expired', 'subscription_renewed',
+    'credits_low', 'credits_exhausted', 'credits_purchased',
+    'payment_failed',
+    // The Spark trial countdown. The whole point of the email is "choose a plan", so landing anywhere
+    // else would waste the one tap it earns.
+    'trial_ending', 'trial_ended',
+  ]);
+  if (BILLING_TYPES.has(typeSlug)) return '/?panel=billing';
 
   // The app itself. Deliberately not null: a notification that cannot be opened is one a baker taps
   // and nothing happens, which teaches them the bell is decorative.

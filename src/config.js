@@ -97,6 +97,14 @@ export const config = {
     // default is 01:30 UTC = 07:00 IST — early enough to shape the day, late enough not to be an
     // alarm clock. Retime per-env from the Render dashboard without a deploy.
     deliveryDigestCron: process.env.DELIVERY_DIGEST_CRON || '30 1 * * *',
+    // The Spark trial countdown. 02:00 UTC = 07:30 IST — after the delivery digest, so a baker with
+    // both gets the day's work first and the billing note second. Retime per-env without a deploy.
+    trialReminderCron: process.env.TRIAL_REMINDER_CRON || '0 2 * * *',
+    // Which zone "days left" is counted in. SEPARATE from the cron for the same reason the digest's
+    // is: the cron says WHEN to look, this says WHICH DAY it is where the baker is. Every bakery on
+    // dev is Asia/Kolkata, 5.5 hours from the UTC the job runs in — so for a third of every day a
+    // server-clock answer is off by one, and "ends tomorrow" on the last morning is a lie.
+    trialReminderTz: process.env.TRIAL_REMINDER_TZ || 'Asia/Kolkata',
     // Which timezone "today" means when the digest runs. SEPARATE from the cron, because they answer
     // different questions: the cron says WHEN to look, this says WHICH DAY to look at. Run at 01:30
     // UTC and ask the server what day it is and you get the right answer by luck — 01:30 UTC and

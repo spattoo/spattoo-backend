@@ -9,6 +9,7 @@ import { reconcileSubscriptions } from './processors/reconcileSubscriptions.js';
 import { relayBillingOutbox } from './processors/relayBillingOutbox.js';
 import { eraseExpiredAccounts } from './processors/eraseExpiredAccounts.js';
 import { sendDeliveryDigest } from './processors/sendDeliveryDigest.js';
+import { sendTrialReminders } from './processors/sendTrialReminders.js';
 
 const processors = {
   extract_image:           extractImage,
@@ -20,6 +21,7 @@ const processors = {
   relay_billing_outbox:    relayBillingOutbox,
   erase_expired_accounts:  eraseExpiredAccounts,
   send_delivery_digest:    sendDeliveryDigest,
+  send_trial_reminders:    sendTrialReminders,
 };
 
 export function startWorker() {

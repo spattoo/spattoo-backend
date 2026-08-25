@@ -27,10 +27,16 @@ export async function registerJobSchedulers() {
     { pattern: config.jobs.deliveryDigestCron, tz: 'UTC' },
     { name: 'send_delivery_digest', opts: { removeOnComplete: true, removeOnFail: 100 } },
   );
+  await jobQueue.upsertJobScheduler(
+    'send-trial-reminders',
+    { pattern: config.jobs.trialReminderCron, tz: 'UTC' },
+    { name: 'send_trial_reminders', opts: { removeOnComplete: true, removeOnFail: 100 } },
+  );
   console.log(
     `Job schedulers registered (reconcile_subscriptions: "${config.jobs.reconcileCron}" UTC; ` +
     `relay_billing_outbox: "${config.jobs.outboxRelayCron}" UTC; ` +
     `erase_expired_accounts: "${config.jobs.eraseAccountsCron}" UTC; ` +
-    `send_delivery_digest: "${config.jobs.deliveryDigestCron}" UTC, day in ${config.jobs.deliveryDigestTz})`,
+    `send_delivery_digest: "${config.jobs.deliveryDigestCron}" UTC, day in ${config.jobs.deliveryDigestTz}; ` +
+    `send_trial_reminders: "${config.jobs.trialReminderCron}" UTC, day in ${config.jobs.trialReminderTz})`,
   );
 }

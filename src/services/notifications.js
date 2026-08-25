@@ -1,6 +1,7 @@
 import { supabase } from './supabase.js';
 import { jobQueue } from '../jobs/queue.js';
 import { digestDedupeKey } from './deliveryDigest.js';
+import { reminderDedupeKey, isEndedMilestone } from './trialReminders.js';
 
 async function getTypeId(slug) {
   const { data } = await supabase
@@ -308,6 +309,30 @@ export async function notifyCreditsLow(baker, { threshold, left, allowance, wall
 //
 // Returns the notification id, or NULL when the dedupe key caught a repeat — the caller counts that
 // as "already produced today", which is a normal outcome of a re-run rather than an error.
+// ── The Spark trial countdown (scheduled, not event-triggered) ──────────────────────────────────
+// One per baker per MILESTONE — 7 days out, 2 days out, the last day, and the morning after. WHEN it
+// fires is decided in services/trialReminders.js; this is delivery.
+//
+// Returns the notification id, or NULL when the dedupe key caught a repeat. The caller counts that
+// as "this milestone was already sent", which is the normal outcome of a re-run rather than an error
+// — and is also what stops a baker sitting in the seven-day bucket for five days getting five
+// identical emails.
+export async function notifyTrialReminder({ baker, milestone, payload }) {
+  // ⚠️ Through bakerNotifyEmail, never baker.email. NO baker row on dev carries an address — the
+  // reachable one is the primary baker_appusers row, which this resolves. Reading baker.email
+  // directly produces a job that sends nothing and reports success.
+  const email = await bakerNotifyEmail(baker);
+  // No address, no reminder. Silent because a bakery with no reachable email is a state onboarding
+  // owns, not something a daily cron should start alarming about.
+  if (!email) return null;
+
+  const slug = isEndedMilestone(milestone) ? 'trial_ended' : 'trial_ending';
+  return insertNotification(slug, email, payload, {
+    dedupeKey: reminderDedupeKey(baker.id, milestone),
+    bakerId:   baker.id,
+  });
+}
+
 export async function notifyDeliveryDigest({ baker, date, payload }) {
   const email = await bakerNotifyEmail(baker);
   // No address, no digest. Silent because a bakery without a reachable email is a state the
