@@ -1,4 +1,11 @@
 -- ── The rainbow is an element TYPE ──────────────────────────────────────────────────────────────
+-- ⚠️ DEV ONLY — do not run this in production.
+--
+-- The promotion bundle carries element types WITH their ids, and the import matches vocabulary by
+-- SLUG: if production has already minted its own id for this slug, importing any element that uses
+-- it is rejected with a 409 — same slug, different id, reconcile by hand. Production gets this type
+-- when the first element using it is imported, which is how `fondant_decor` got there.
+--
 -- A fondant rainbow, generated rather than modelled. Its legs have to REACH THE BOARD, and that is a
 -- different distance on a single tier than on a stack — with no scale factor that fixes it, because
 -- the legs must stretch while the arch must not. A modelled arch is authored at one leg length.

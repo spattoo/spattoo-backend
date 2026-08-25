@@ -1,4 +1,11 @@
 -- ── One type for generated fondant decorations, not one per decoration ──────────────────────────
+-- ⚠️ DEV ONLY — do not run this in production.
+--
+-- The promotion bundle carries element types WITH their ids, and the import matches vocabulary by
+-- SLUG: if production has already minted its own id for this slug, importing any element that uses
+-- it is rejected with a 409 — same slug, different id, reconcile by hand. Production gets this type
+-- when the first element using it is imported, which is how `fondant_decor` got there.
+--
 -- 072 added a `rainbow` element type. That was a mistake, and this corrects it before a second one
 -- compounds it: a cloud was about to get its own type too, and then every future generated shape
 -- would have brought another.

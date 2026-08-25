@@ -1,4 +1,11 @@
 -- ── A type for things that COVER a surface ──────────────────────────────────────────────────────
+-- ⚠️ DEV ONLY — do not run this in production.
+--
+-- The promotion bundle carries element types WITH their ids, and the import matches vocabulary by
+-- SLUG: if production has already minted its own id for this slug, importing any element that uses
+-- it is rejected with a 409 — same slug, different id, reconcile by hand. Production gets this type
+-- when the first element using it is imported, which is how `fondant_decor` got there.
+--
 -- Grass has a studio with a Save button, a `procedural` key wired into the designer's registry, and
 -- a `typeSlug: 'grass'` that names an element type which has never existed. So the save has been
 -- impossible since the studio was written, and says so only at the moment somebody presses it:
