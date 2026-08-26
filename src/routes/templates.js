@@ -90,6 +90,10 @@ router.get('/admin/templates/export', requireAuth, requireCapability('catalog:ad
       // against, so any category prod happened to lack would have silently dropped.
       element_categories:  c.element_categories,
       tags:                c.tags,
+      // ⚠️ Named here, or it never reaches the importer — the same omission this file's comment
+      // above describes for element_categories. A tier keyed to a shape the target lacks renders as
+      // a plain Round, silently: cakeShapeDef falls back rather than throwing.
+      cake_shapes:         c.cake_shapes,
       elements:            c.elements,
       element_tags:        c.element_tags,
       element_craft_guide: c.element_craft_guide,
