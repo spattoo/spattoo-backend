@@ -920,12 +920,14 @@ async function ensureDecorationGuide(elementId) {
   try {
     const { data: el } = await supabase
       .from('cake_elements')
-      .select('id, name, description, image_url, thumbnail_url, thumb_key, medium, element_types(name)')
+      .select('id, name, description, image_url, thumbnail_url, thumb_key, medium, placement_config, element_types(name)')
       .eq('id', elementId).maybeSingle();
     if (!el) return;
 
-    // Element type first, medium only for the flat placeables where an image genuinely cannot say
-    // fondant from printed sheet from acrylic (services/decorationPolicy.js).
+    // Ready-made first, then element type, then medium — only for the flat placeables, where an
+    // image genuinely cannot say fondant from printed sheet from acrylic
+    // (services/decorationPolicy.js). This is the guide built AT CREATION, so the flag has to be
+    // visible here or a bought decoration ships with a how-to for making it.
     const policy = decorationPolicy(el);
     if (!policy.modelling) return;
 

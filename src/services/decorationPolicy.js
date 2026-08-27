@@ -81,6 +81,24 @@ export function decorationDimension(el) {
 export function decorationPolicy(el) {
   const type = el?.element_types?.name ?? el?.element_type ?? null;
 
+  // ── Ready-made wins over everything ───────────────────────────────────────────────────────────
+  // Ticked in admin: a faux ball, a bought topper, a candle. Every other branch here INFERS whether
+  // something is hand-made from what it is made of; this is somebody saying so outright, and a
+  // statement beats an inference.
+  //
+  // First, not last, and that is the point. Without it an admin could tick Ready-made, generate a
+  // modelling guide anyway, SPEND THE CREDITS, and have the result hidden by the fetch filter — the
+  // worst of both, and exactly the state this was in before.
+  //
+  // `print` goes too. Printing at actual size exists to give a baker a template to model against,
+  // and there is nothing to model — the same reasoning `acrylic` already used.
+  //
+  // It does NOT replace the medium branches. `medium` says what a thing is made of, `ready_made`
+  // says you do not make it, and they are independent: a fondant ball bought pre-rolled is both.
+  if (el?.placement_config?.ready_made) {
+    return { modelling: false, print: false, reason: 'ready-made — bought, not made' };
+  }
+
   // Cream, in either technique. The nozzle guide already covers piping; palette-knife work needs a
   // guide format of its own, and the fondant one is written for sugar paste and would read wrongly.
   if (CREAM_TYPES.has(type)) {

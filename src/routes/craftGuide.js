@@ -258,7 +258,7 @@ router.get('/admin/elements/:id/decoration-guide', requireAuth, requireCapabilit
   try {
     const { data: el } = await supabase
       .from('cake_elements')
-      .select('id, name, medium, baker_id, element_types(name)')
+      .select('id, name, medium, placement_config, baker_id, element_types(name)')
       .eq('id', req.params.id).maybeSingle();
     if (!el) return res.status(404).json({ error: 'Element not found' });
 
@@ -291,7 +291,7 @@ router.post('/admin/elements/:id/decoration-guide', requireAuth, requireCapabili
   try {
     const { data: el } = await supabase
       .from('cake_elements')
-      .select('id, name, description, image_url, thumbnail_url, thumb_key, medium, baker_id, element_types(name)')
+      .select('id, name, description, image_url, thumbnail_url, thumb_key, medium, placement_config, baker_id, element_types(name)')
       .eq('id', req.params.id).maybeSingle();
     if (!el) return res.status(404).json({ error: 'Element not found' });
     // A baker's own decoration is theirs to generate and theirs to pay for. Admin generating it
@@ -397,7 +397,7 @@ router.post('/elements/:id/xray/decoration-steps', requireAuth, requireCapabilit
     // null) they used on a cake. Never for another bakery's private decoration.
     const { data: el } = await supabase
       .from('cake_elements')
-      .select('id, name, description, image_url, thumbnail_url, thumb_key, medium, baker_id, element_types(name)')
+      .select('id, name, description, image_url, thumbnail_url, thumb_key, medium, placement_config, baker_id, element_types(name)')
       .eq('id', req.params.id).maybeSingle();
     if (!el) return res.status(404).json({ error: 'Element not found' });
     if (el.baker_id && el.baker_id !== req.bakerId) {
