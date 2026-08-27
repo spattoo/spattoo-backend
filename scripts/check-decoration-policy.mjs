@@ -30,16 +30,27 @@ const p  = (over) => decorationPolicy(el(over));
 {
   const r = p({ placement_config: { ready_made: true } });
   ok(r.modelling === false, 'ready-made offers no modelling guide', JSON.stringify(r));
-  // Printing at actual size exists to give a baker a template to model against. Nothing to model.
-  ok(r.print === false, 'ready-made offers no print either', JSON.stringify(r));
 }
+
+// ── …but "not made" is NOT "not printable" ───────────────────────────────────
+// The two are different claims and collapsing them loses a real answer. Butterflies are mostly
+// bought AND routinely printed on wafer paper, so once the modelling guide is refused, "print it at
+// actual size instead" is the most useful thing the sheet can say. Forcing print off answered the
+// baker's question with silence.
+ok(p({ medium: 'fondant', placement_config: { ready_made: true } }).print === true,
+   'a ready-made fondant piece can still be printed');
+ok(p({ medium: 'edible_paper', placement_config: { ready_made: true } }).print === true,
+   'a bought wafer decoration can still be printed');
+// Where printing genuinely is impossible the MEDIUM says so, and that answer must survive.
+ok(p({ medium: 'acrylic', placement_config: { ready_made: true } }).print === false,
+   'acrylic is still unprintable once marked ready-made');
 
 // FIRST, not last. Without this an admin could tick Ready-made, generate a guide anyway, spend the
 // credits, and have the result hidden by the fetch filter — the worst of both.
 ok(p({ medium: 'fondant', placement_config: { ready_made: true } }).modelling === false,
    'ready-made overrides fondant, which would otherwise be modelled');
-ok(p({ element_types: { name: CREAM }, placement_config: { ready_made: true } }).print === false,
-   'ready-made is answered before the type branches too');
+ok(p({ element_types: { name: CREAM }, placement_config: { ready_made: true } }).modelling === false,
+   'ready-made is answered for the type branches too');
 
 // It must not fire on a MISSING flag, or every decoration silently loses its guide.
 ok(p({ medium: 'fondant' }).modelling === true, 'no flag means business as usual');
@@ -75,4 +86,4 @@ if (failures) {
   console.error(`\n✗ check:decoration-policy — ${failures} rule(s) broken.`);
   process.exit(1);
 }
-console.log('✓ check:decoration-policy — ready-made beats inference; medium and type rules intact');
+console.log('✓ check:decoration-policy — ready-made stops MODELLING not printing; medium and type rules intact');
