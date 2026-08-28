@@ -155,9 +155,14 @@ export function buildEmail(typeSlug, recipientEmail, payload) {
   // the majority of enquiries. A customer who picked Black Forest and a Saturday was thanked for
   // designing a cake they never opened a designer for.
   //
-  // The thumbnail is the honest signal: it exists only when a design snapshot produced one. It is
-  // used to CHOOSE THE SENTENCE, and the fallback is wording that is true either way — so a
-  // designed cake whose thumbnail is missing gets a vaguer email, never a wrong one.
+  // The thumbnail is the honest signal for THAT question: it exists only when a design snapshot
+  // produced one. It picks the BAKER's sentence — "review the design" versus "take a look at what
+  // they have asked for" — and the fallback is true either way, so a designed cake whose thumbnail
+  // is missing gets a vaguer email, never a wrong one.
+  //
+  // ⚠️ It is NOT a signal for who did the designing, and it was used as one in the customer's email
+  // until it thanked a customer for designing a cake their baker had designed. A thumbnail says a
+  // design exists and nothing about whose hands made it.
   const hasDesign = !!thumbUrl;
 
   if (typeSlug === 'order_placed_baker') {
@@ -184,12 +189,30 @@ export function buildEmail(typeSlug, recipientEmail, payload) {
     return {
       from:    `${p.bakerName} <${rawEmail(config.smtp.from)}>`,
       to:      recipientEmail,
-      subject: `Your cake request was sent to ${p.bakerName}`,
+      // ── WHO made this is not knowable here, so the copy must not claim it ──────────────────────
+      // It said "thanks for designing your cake" whenever a thumbnail existed, and a thumbnail only
+      // says a DESIGN exists — not that the customer made it. A baker who designs a cake for a
+      // customer and places the order goes through this same route, so the customer was thanked for
+      // work they never did, about a request they never sent.
+      //
+      // The signal genuinely is not available: only POST /orders/manual records authoredBy 'baker',
+      // and that path has no design at all. A baker placing a DESIGNED order goes through
+      // POST /orders like any customer, which always records 'customer'. Rather than infer it wrong,
+      // the wording is now true whoever typed it in: the request exists, and the baker will quote.
+      // Thanks them for designing it only when they DID. `authoredBy` comes from the verified token
+      // on POST /orders — a baker app-user of this bakery, or nobody — so it answers the question
+      // the thumbnail was being asked and could not: whose hands made this.
+      // Absent (an older queued job) falls to the neutral wording, which is true either way.
+      subject: p.authoredBy === 'baker'
+        ? `Your cake request with ${p.bakerName}`
+        : `Your cake request was sent to ${p.bakerName}`,
       html: `<div style="font-family:sans-serif;max-width:560px;margin:0 auto">
-        <h2 style="color:#2C4433">Request sent!</h2>
-        <p>Hi ${esc(p.customerFirstName)}, ${hasDesign
-          ? `thanks for designing your cake with <b>${esc(p.bakerName)}</b>. Your request has been sent — <b>${esc(p.bakerName)}</b> will review your design and get back to you with a quote.`
-          : `thanks for your cake request. It has been sent to <b>${esc(p.bakerName)}</b>, who will get back to you with a quote.`} Here's what you asked for:</p>
+        <h2 style="color:#2C4433">${p.authoredBy === 'baker' ? 'Your cake request' : 'Request sent!'}</h2>
+        <p>Hi ${esc(p.customerFirstName)}, ${p.authoredBy === 'baker'
+          ? `your cake request with <b>${esc(p.bakerName)}</b> has been created. <b>${esc(p.bakerName)}</b> will review it and get back to you with a quote. Here are the details:`
+          : hasDesign
+            ? `thanks for designing your cake with <b>${esc(p.bakerName)}</b>. Your request has been sent — <b>${esc(p.bakerName)}</b> will review your design and get back to you with a quote. Here's what you asked for:`
+            : `thanks for your cake request. It has been sent to <b>${esc(p.bakerName)}</b>, who will get back to you with a quote. Here's what you asked for:`}</p>
         ${thumbnailHtml}
         ${orderDetailsHtml(p)}
         <p style="margin-top:24px">We'll email you as soon as your quote is ready. If you have any questions, contact your baker directly.</p>

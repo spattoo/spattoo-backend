@@ -41,9 +41,18 @@ import { serverError } from '../lib/httpError.js';
 //                so never got a token. The honeypot only catches bots that fill every field; one
 //                that reads this form and posts the right JSON walks past it and into Turnstile.
 //
-// The captcha is checked FIRST, before the honeypot and before any parsing: it is the cheapest way
-// to end a request that was never going to be legitimate, and it keeps junk out of the rate
-// limiters' counters as well.
+// ── ORDER MATTERS, AND IT WAS WRONG ─────────────────────────────────────────────────────────────
+// The limiters are middleware; the captcha check used to sit in the handler. So it ran LAST, and
+// every captcha failure spent the caller's per-email budget. A misconfigured site key on the
+// marketing deploy meant three refused submissions locked a real person out for a day, having stored
+// nothing — and told them "we already have your request", which was not true.
+//
+// The order is now: per-IP → captcha → per-email.
+//   per-IP first, because it is free and it is the flood protection; it counts everything, including
+//     requests that turn out to be bots, which is exactly what it is for.
+//   captcha second, so a request that was never going to be legitimate ends before it can spend
+//     anything scarcer than that.
+//   per-email last, so the thing being counted is a real person submitting a real form.
 
 const router = express.Router();
 
@@ -62,6 +71,13 @@ const perEmail = rateLimit({
 // Bounded, trimmed, and never trusted. `max` is per field so a single request cannot carry a
 // megabyte of prose into the database or the email body.
 const clean = (v, max) => String(v ?? '').trim().slice(0, max);
+
+// Middleware rather than a check inside the handler, purely so it runs BEFORE the per-email limiter.
+// See the ordering note at the top of this file.
+async function requireCaptcha(req, res, next) {
+  if (await verifyTurnstile(req.body?.captchaToken, req.ip)) return next();
+  res.status(400).json({ error: 'Could not verify you are human. Please try again.', code: 'CAPTCHA_FAILED' });
+}
 
 // Deliberately loose. A rejected real address costs a lead; a bad one costs one bounced email, and
 // the row is kept either way. Erring towards accepting is the cheaper mistake here.
@@ -82,17 +98,9 @@ function leadsDb() {
   return leadsClient;
 }
 
-router.post('/public/demo-request', perIp, perEmail, async (req, res) => {
+router.post('/public/demo-request', perIp, requireCaptcha, perEmail, async (req, res) => {
   try {
     const b = req.body ?? {};
-
-    // ── Captcha, before anything else ───────────────────────────────────────────────────────────
-    // Unlike the rate limiter this fails CLOSED — see services/turnstile.js for why the two differ.
-    // Not configured is not the same as broken: with no secret key it does not enforce, and the
-    // other layers carry the endpoint.
-    if (!(await verifyTurnstile(b.captchaToken, req.ip))) {
-      return res.status(400).json({ error: 'Could not verify you are human. Please try again.', code: 'CAPTCHA_FAILED' });
-    }
 
     // ── Honeypot ────────────────────────────────────────────────────────────────────────────────
     // A field no human sees and no human fills. Answered with the SAME 200 a real submission gets:

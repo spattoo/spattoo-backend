@@ -229,7 +229,11 @@ const OCCASIONS  = ['birthday', 'anniversary', 'wedding', 'engagement', 'bridal_
                     'baby_shower', 'new_home', 'graduation', 'new_job', 'festival',
                     'farewell', 'corporate', 'love', 'other'];
 const RECIPIENTS = ['child', 'adult', 'couple', 'family', 'friends', 'colleagues'];
-const CELEBRATIONS = ['first_birthday', 'kids_party', 'teen_party', 'grown_ups', 'elders'];
+// ⚠️ One of THREE lists that have to agree — this, cakeDraft.js CELEBRATIONS in spattoo-core, and
+// orders_celebration_valid in the database. Gated by `check:occasions`, which grew to cover this
+// vocabulary after `milestone` was added: it was the same three-part contract as occasions and the
+// only one of the two that nothing was checking.
+const CELEBRATIONS = ['first_birthday', 'kids_party', 'teen_party', 'grown_ups', 'milestone', 'elders'];
 
 function validateOrderSignals({ occasion, recipient, celebration, cakeNumber, tierCount }) {
   if (occasion  != null && !OCCASIONS.includes(occasion))   return `occasion must be one of: ${OCCASIONS.join(', ')}`;
@@ -370,6 +374,8 @@ async function insertOrderAndNotify({ baker, customerId, customerContact, body, 
     order: { ...order, delivery_date: deliveryDate, delivery_time: deliveryTime, delivery_mode: deliveryMode, delivery_address: deliveryAddress, weight_kg: weightKg, flavours, special_instructions: specialInstructions, design_thumbnail_url: toPublicUrl(thumbnailUrl) },
     baker,
     customer: customerContact,
+    // So the customer's email can thank them for designing it only when they actually did.
+    authoredBy,
   }).catch(err => console.error('[notifications] failed:', err.message));
 
   return order;
@@ -579,6 +585,19 @@ router.post('/orders', requireVerifiedContact, async (req, res) => {
           .eq('auth_user_id', req.user.id).maybeSingle()
       : { data: null };
 
+    // ── Who is actually placing this ────────────────────────────────────────
+    // A token on this route means the baker app sent the request (see
+    // requireVerifiedContact); the storefront's OTP path presents none. Matching the token's
+    // app-user to THIS bakery is what makes it an answer rather than a guess — a baker signed
+    // into their own account, ordering from someone else's storefront, is a customer there.
+    //
+    // Derived from the verified token, never from the body, so a customer cannot claim it.
+    //
+    // ⚠️ It also corrects the RECORD, not just an email. `authoredBy` is written to
+    // design_versions.authored_by, and this route hardcoded the default — so every cake a baker
+    // designed for a customer was stored as customer-authored.
+    const placedByBaker = !!appUser && appUser.baker_id === baker.id;
+
     let customer;
     if (!req.user || appUser) {
       // The body is the source in two cases, and they are the same case in the end: a baker typing
@@ -623,6 +642,7 @@ router.post('/orders', requireVerifiedContact, async (req, res) => {
       customerId,
       customerContact: { first_name: customer.firstName, last_name: customer.lastName, email: emailNorm, phone: phoneNorm },
       body:            req.body,
+      authoredBy:      placedByBaker ? 'baker' : 'customer',
     });
 
     res.status(201).json({ orderId: order.id, createdAt: order.created_at });
