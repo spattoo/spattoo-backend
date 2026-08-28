@@ -185,7 +185,10 @@ export const config = {
   leads: {
     url:        process.env.LEADS_SUPABASE_URL,
     serviceKey: process.env.LEADS_SUPABASE_SERVICE_KEY,
-    table:      process.env.LEADS_TABLE || 'demo_requests',
+    // `waitlist` — the table already there. It began as the pre-launch waitlist and now takes
+    // demo requests too, which is why the row carries a `source`: without it the two kinds are
+    // indistinguishable the moment anyone asks how many demos were requested.
+    table:      process.env.LEADS_TABLE || 'waitlist',
     // Where the "someone asked for a demo" note goes. An address, not a person — so it can become a
     // shared inbox without a code change.
     notify:     process.env.DEMO_REQUEST_NOTIFY || 'sandeep@spattoo.com',

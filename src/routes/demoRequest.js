@@ -103,15 +103,23 @@ router.post('/public/demo-request', perIp, perEmail, async (req, res) => {
       first_name:      clean(b.firstName, 80),
       last_name:       clean(b.lastName, 80),
       email:           clean(b.email, 160).toLowerCase(),
-      mobile:          clean(b.mobile, 40),
+      phone:           clean(b.mobile, 40),
       city:            clean(b.city, 120),
-      brand_name:      clean(b.brandName, 160),
+      business_name:   clean(b.brandName, 160),
       cakes_per_month: clean(b.cakesPerMonth, 40),
-      source:          'marketing-site',
+      // ── How they heard about us, in the visitor's words ────────────────────────────────────
+      // A dropdown with an "Other" that opens a text box, so this is either one of our options or
+      // whatever they typed — hence bounded like every other free field rather than validated
+      // against the list. Rejecting an unrecognised value would only lose the interesting answers.
+      //
+      // It also happens to separate the two kinds of row in this table. `waitlist` predates the
+      // demo form and its old rows have no source at all, so NULL means "pre-launch waitlist" and
+      // anything set means "asked for a demo" — no extra column needed to tell them apart.
+      source:          clean(b.heardFrom, 80),
     };
 
     // The minimum that makes a lead followable: a name, and a way to reach them.
-    if (!lead.first_name || (!looksLikeEmail(lead.email) && !lead.mobile)) {
+    if (!lead.first_name || (!looksLikeEmail(lead.email) && !lead.phone)) {
       return res.status(400).json({ error: 'Please give your name and an email or phone number.' });
     }
 
@@ -125,7 +133,27 @@ router.post('/public/demo-request', perIp, perEmail, async (req, res) => {
     // ── Store FIRST, email second ───────────────────────────────────────────────────────────────
     // The row is the record; the email is a notification. Reversed, an SMTP hiccup would lose a
     // sales lead silently — the failure nobody notices, because nothing is there to be missed.
-    const { error } = await db.from(config.leads.table).insert(lead);
+    //
+    // ── AND NEVER LOSE A LEAD TO A MISSING COLUMN ───────────────────────────────────────────────
+    // `waitlist` was built for the pre-launch waitlist and has no `cakes_per_month` or `source`.
+    // Both are worth having — one qualifies the lead, the other tells a demo request apart from an
+    // old waitlist signup — so they are written when the columns exist.
+    //
+    // When they do not, the whole insert would fail and the visitor would be turned away over a
+    // column nobody has added yet. So a schema error retries with the columns the table has
+    // definitely got. The lead is the thing that must survive; the extra fields are not worth one.
+    //
+    // It complains loudly each time rather than degrading quietly — a silent fallback is how you
+    // discover months later that every lead is missing the field you were sorting them by.
+    const EXTRA = ['cakes_per_month', 'source'];
+    let { error } = await db.from(config.leads.table).insert(lead);
+    if (error && EXTRA.some(c => error.message?.includes(c))) {
+      console.error(`[demo-request] ${config.leads.table} is missing ${EXTRA.join(' / ')} — `
+        + 'storing the lead without them. Add: cakes_per_month text, source text.');
+      const core = { ...lead };
+      for (const c of EXTRA) delete core[c];
+      ({ error } = await db.from(config.leads.table).insert(core));
+    }
     if (error) {
       console.error('[demo-request] insert failed:', error.message);
       return res.status(503).json({ error: 'We could not record that just now. Please email us directly.' });
@@ -136,15 +164,15 @@ router.post('/public/demo-request', perIp, perEmail, async (req, res) => {
     if (mailConfigured()) {
       const rows = [
         ['Name',      `${lead.first_name} ${lead.last_name}`.trim()],
-        ['Bakery',    lead.brand_name],
+        ['Bakery',    lead.business_name],
         ['City',      lead.city],
         ['Email',     lead.email],
-        ['Phone',     lead.mobile],
+        ['Phone',     lead.phone],
         ['Cakes/mo',  lead.cakes_per_month],
       ].filter(([, v]) => v);
       sendEmail({
         to: config.leads.notify,
-        subject: `Demo request — ${lead.brand_name || lead.first_name}`,
+        subject: `Demo request — ${lead.business_name || lead.first_name}`,
         text: rows.map(([k, v]) => `${k}: ${v}`).join('\n'),
         html: `<h2 style="font-family:sans-serif">Demo request</h2><table style="font-family:sans-serif;font-size:14px">${
           rows.map(([k, v]) => `<tr><td style="padding:2px 12px 2px 0;color:#666">${esc(k)}</td><td><b>${esc(v)}</b></td></tr>`).join('')

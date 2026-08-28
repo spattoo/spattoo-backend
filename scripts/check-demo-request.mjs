@@ -94,6 +94,23 @@ ok(html.length > 0, 'the notification builds an HTML body');
 ok(!/\$\{(?!\s*(rows|esc))/.test(html.replace(/esc\([^)]*\)/g, 'esc()')),
    'every interpolation in the notification HTML goes through esc()', html.slice(0, 120));
 
+// ── the column names match the table ─────────────────────────────────────────
+// `waitlist` is an existing table with existing names, and a mismatch is not a compile error — it is
+// a 503 at submit time, discovered by a visitor. These are the four that differ from what the FORM
+// calls them (mobile→phone, brandName→business_name), which is exactly where a rename gets missed.
+for (const col of ['first_name', 'last_name', 'email', 'phone', 'business_name', 'city']) {
+  ok(new RegExp(`\\b${col}:`).test(src), `the insert writes ${col}, as the table names it`);
+}
+ok(!/\bmobile:/.test(src),     'nothing is written to `mobile` — the column is `phone`');
+ok(!/\bbrand_name:/.test(src), 'nothing is written to `brand_name` — the column is `business_name`');
+
+// ── a missing column never costs a lead ──────────────────────────────────────
+// cakes_per_month and source are additive: worth having, not worth turning a visitor away over. The
+// retry keeps the lead; the log is what stops the fallback becoming permanent and unnoticed.
+ok(/EXTRA/.test(src), 'the additive columns are named in one place');
+ok(/insert\(core\)/.test(src), 'a schema error retries with the columns the table certainly has');
+ok(/console\.error\([^)]*missing/.test(src), 'the fallback complains rather than degrading quietly');
+
 // ── unconfigured fails LOUDLY ────────────────────────────────────────────────
 // Pretending it worked would lose the lead and tell the visitor we will be in touch.
 ok(/status\(503\)/.test(src), 'an unconfigured or failing leads database answers 503, never a fake success');
