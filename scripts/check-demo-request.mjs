@@ -46,10 +46,22 @@ ok(/rateLimit\(\{[^}]*key:[^}]*req\.body\?\.email/s.test(src), 'the per-email li
 // because it keeps junk out of the rate limiters' counters, where it would otherwise crowd out real
 // visitors sharing an IP.
 ok(/verifyTurnstile\(/.test(src), 'the route verifies the captcha token');
-const bodyStart = src.indexOf('const b = req.body');
-ok(bodyStart > 0 && src.indexOf('verifyTurnstile(') < src.indexOf('b.website'),
-   'the captcha is checked before the honeypot and the parsing');
 ok(/CAPTCHA_FAILED/.test(src), 'a failed captcha answers with a code the form can act on');
+
+// ── the captcha runs BEFORE the per-email limiter ────────────────────────────
+// It used to sit in the handler, which is to say AFTER both limiters, so every captcha failure spent
+// the caller's daily budget. A misconfigured site key locked a real person out for a day having
+// stored nothing — and told them "we already have your request".
+//
+// Order, left to right: per-IP (free, counts everything, the flood protection), captcha (ends a
+// request that was never going to be legitimate), per-email (counts a real person submitting).
+const order = ['perIp', 'requireCaptcha', 'perEmail']
+  .map(name => handler.indexOf(name));
+ok(order.every(i => i >= 0), 'all three guards are on the route', handler.trim().slice(0, 90));
+ok(order[0] < order[1], 'the per-IP limiter runs before the captcha');
+ok(order[1] < order[2], 'the captcha runs before the per-email limiter — a bot must not spend a human\'s budget');
+ok(!/if \(!\(await verifyTurnstile/.test(src),
+   'the captcha is middleware, not a check inside the handler where it would run last');
 
 // ── the captcha fails CLOSED ─────────────────────────────────────────────────
 // The opposite of rateLimit.js, deliberately. A limiter must never take the site down, so it fails
