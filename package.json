@@ -43,7 +43,8 @@
     "db:verify-library": "node scripts/verify-prod-library.mjs",
     "verify:razorpay-plans": "node scripts/verify-razorpay-plans.mjs",
     "check:decoration-policy": "node scripts/check-decoration-policy.mjs",
-    "check:dietary-egg": "node scripts/check-dietary-egg.mjs"
+    "check:dietary-egg": "node scripts/check-dietary-egg.mjs",
+    "check:demo-request": "node scripts/check-demo-request.mjs"
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.1036.0",

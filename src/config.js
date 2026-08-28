@@ -164,6 +164,32 @@ export const config = {
     pass: process.env.SMTP_PASS,
     from: process.env.SMTP_FROM || process.env.SMTP_USER,
   },
+  // Cloudflare Turnstile. The app's login has used the widget for a while, but Supabase verified
+  // those tokens — this is the first SECRET we hold, for endpoints of our own with no such backstop.
+  // Unset means not enforced (see services/turnstile.js), like smtp/razorpay/fcm.
+  turnstile: {
+    secretKey: process.env.TURNSTILE_SECRET_KEY,
+  },
+  // ── Demo requests from the public marketing site ────────────────────────────────────────────
+  // Leads live in their OWN Supabase project, deliberately: they are prospect PII belonging to
+  // people who are not customers, and keeping them out of the app database limits what a mistake in
+  // either one can reach.
+  //
+  // The SERVICE key, and only ever server-side. The previous version of this feature put that
+  // project's ANON key in the marketing site's browser bundle, which let anyone POST rows straight
+  // to the table — bypassing the form, the validation and every limit. It was removed under
+  // SEC-WEB-1 and must not come back; see routes/demoRequest.js.
+  //
+  // Optional, like smtp/razorpay: unset simply means the endpoint reports itself unavailable rather
+  // than the server failing to boot.
+  leads: {
+    url:        process.env.LEADS_SUPABASE_URL,
+    serviceKey: process.env.LEADS_SUPABASE_SERVICE_KEY,
+    table:      process.env.LEADS_TABLE || 'demo_requests',
+    // Where the "someone asked for a demo" note goes. An address, not a person — so it can become a
+    // shared inbox without a code change.
+    notify:     process.env.DEMO_REQUEST_NOTIFY || 'sandeep@spattoo.com',
+  },
   // Push notifications — Firebase Cloud Messaging. Optional (like razorpay/smtp/sms) so a
   // deployment without it simply never pushes; email is the durable channel either way.
   //
