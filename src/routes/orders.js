@@ -184,6 +184,33 @@ function validateOrderBody(body, { requireDesign = true } = {}) {
   if (requireDesign && !designSnapshot) return 'designSnapshot is required';
   if (!['pickup', 'home_delivery'].includes(deliveryMode)) return 'deliveryMode must be pickup or home_delivery';
   if (deliveryMode === 'home_delivery' && !deliveryAddress) return 'deliveryAddress is required for home_delivery';
+
+  /* ── Every cake has a flavour ─────────────────────────────────────────────────────────────────
+   *
+   * ⚠️ GATED ON THE DESIGN, not on the route, and that is the whole design of this check.
+   *
+   * A cake without a flavour is not orderable: the baker does not know what to bake, nothing can be
+   * priced (rates are per KG, per flavour), and the flavour↔dietary conflict warning has nothing to
+   * compare against. So wherever there is a CAKE, there must be a flavour.
+   *
+   * But POST /orders also carries ENQUIRIES, and an enquiry is deliberately allowed to be
+   * design-less — a reference-photo enquiry has `referenceKeys` and no design, and requiring a
+   * flavour there would refuse a customer who is asking whether a photo can be made at all. A
+   * design is what distinguishes "here is my cake" from "here is my question", so it is what this
+   * keys on. The route flag `requireDesign` cannot express it: the enquiry route passes false, and
+   * an enquiry that DOES carry a design is a real cake order and should be held to the same rule.
+   *
+   * Shape is [{ name, tier, source, flavourId }] — a name is what the baker reads and what the X-Ray
+   * prints, so a row without one is not a choice. `[]` is a real value in the table today, which is
+   * exactly what this stops being created again.
+   */
+  if (designSnapshot) {
+    const flavours = Array.isArray(body.flavours) ? body.flavours : [];
+    if (!flavours.some(f => typeof f?.name === 'string' && f.name.trim())) {
+      return 'at least one flavour is required for a cake order';
+    }
+  }
+
   return validateOrderSignals(body);
 }
 
