@@ -87,7 +87,35 @@ router.get('/craft-guide', requireAuth, requireCapability('design:create'), asyn
       .in('element_id', ids);
 
     if (error) return serverError(req, res, error);
-    res.json((data ?? []).map(withStageUrl));
+
+    // ── Ready-made elements have no how-to ──────────────────────────────────────────────────────
+    // A faux ball, a bought topper, a candle: a baker buys these from a supply shop, and a sheet
+    // that tells them how to roll a faux ball is telling them to do work that does not exist. The
+    // element itself knows — `placement_config.ready_made`, ticked in admin by whoever added it.
+    //
+    // Filtered HERE rather than in the designer's report, and that is deliberate: this is the one
+    // place every consumer passes through (the screen, the PDF, the kitchen sheet), and it applies
+    // to orders ALREADY PLACED. Marking an element ready-made stops its guide appearing on last
+    // week's order too, which is the honest behaviour — the ball was always bought.
+    //
+    // A nozzle guide is unaffected: that answers "which tip", not "how do I make one", and a piped
+    // border is never bought in.
+    const rows = data ?? [];
+    if (rows.length) {
+      const { data: els } = await supabase
+        .from('cake_elements')
+        .select('id, placement_config')
+        .in('id', [...new Set(rows.map(r => r.element_id))]);
+      const readyMade = new Set((els ?? [])
+        .filter(e => e?.placement_config?.ready_made)
+        .map(e => e.id));
+      if (readyMade.size) {
+        return res.json(rows
+          .filter(r => !(readyMade.has(r.element_id) && r.guide_type !== 'nozzle'))
+          .map(withStageUrl));
+      }
+    }
+    res.json(rows.map(withStageUrl));
   } catch (err) {
     serverError(req, res, err);
   }
@@ -230,7 +258,7 @@ router.get('/admin/elements/:id/decoration-guide', requireAuth, requireCapabilit
   try {
     const { data: el } = await supabase
       .from('cake_elements')
-      .select('id, name, medium, baker_id, element_types(name)')
+      .select('id, name, medium, placement_config, baker_id, element_types(name)')
       .eq('id', req.params.id).maybeSingle();
     if (!el) return res.status(404).json({ error: 'Element not found' });
 
@@ -263,7 +291,7 @@ router.post('/admin/elements/:id/decoration-guide', requireAuth, requireCapabili
   try {
     const { data: el } = await supabase
       .from('cake_elements')
-      .select('id, name, description, image_url, thumbnail_url, thumb_key, medium, baker_id, element_types(name)')
+      .select('id, name, description, image_url, thumbnail_url, thumb_key, medium, placement_config, baker_id, element_types(name)')
       .eq('id', req.params.id).maybeSingle();
     if (!el) return res.status(404).json({ error: 'Element not found' });
     // A baker's own decoration is theirs to generate and theirs to pay for. Admin generating it
@@ -369,7 +397,7 @@ router.post('/elements/:id/xray/decoration-steps', requireAuth, requireCapabilit
     // null) they used on a cake. Never for another bakery's private decoration.
     const { data: el } = await supabase
       .from('cake_elements')
-      .select('id, name, description, image_url, thumbnail_url, thumb_key, medium, baker_id, element_types(name)')
+      .select('id, name, description, image_url, thumbnail_url, thumb_key, medium, placement_config, baker_id, element_types(name)')
       .eq('id', req.params.id).maybeSingle();
     if (!el) return res.status(404).json({ error: 'Element not found' });
     if (el.baker_id && el.baker_id !== req.bakerId) {

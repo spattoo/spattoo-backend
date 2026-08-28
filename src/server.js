@@ -1,6 +1,7 @@
 import express from 'express';
 import cors from 'cors';
 import healthRouter from './routes/health.js';
+import demoRequestRouter from './routes/demoRequest.js';
 import elementsRouter from './routes/elements.js';
 import uploadsRouter from './routes/uploads.js';
 import templatesRouter from './routes/templates.js';
@@ -65,6 +66,9 @@ app.use(express.json({ limit: '5mb' }));
 app.use('/api/admin', requireAuth, requireAdmin);
 
 app.use(healthRouter);
+// Public, unauthenticated, and rate-limited at the route — the marketing site's demo form.
+// Mounted with the rest rather than under /api/admin precisely because it is NOT privileged.
+app.use('/api', demoRequestRouter);
 app.use('/api', elementsRouter);
 app.use('/api', uploadsRouter);       // uploads: baker/customer-owned images (NOT /api/admin)
 app.use('/api', templatesRouter);

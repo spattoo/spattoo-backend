@@ -32,6 +32,27 @@ export async function elementIdsReferencedBy(designs) {
 }
 
 /**
+ * The shape keys a set of templates references — from the `shape` COLUMN and from every tier inside
+ * each design.
+ *
+ * ⚠️ Both, because they can disagree. A two-tier cake with a heart on a round base has `shape:
+ * 'round'` on the column and a `heart` tier in the design; reading only the column strands the
+ * heart, and a promoted template renders it as a second round tier with nothing logged.
+ *
+ * Exported and pure so the schedule can be asserted without a database — every global template on
+ * dev is round today, so nothing in the live data exercises the tier path at all. A check that only
+ * ran against real rows would pass while covering none of it.
+ */
+export function shapeKeysReferencedBy(templates = []) {
+  const keys = new Set();
+  for (const t of templates ?? []) {
+    if (t?.shape) keys.add(t.shape);
+    for (const tier of t?.design?.tiers ?? []) if (tier?.shape) keys.add(tier.shape);
+  }
+  return keys;
+}
+
+/**
  * Elements plus everything they need in order to exist elsewhere: their types (element_type_id is a
  * FK — the insert fails without it), their parents (parent_id is a self-FK), their tags, the tag
  * joins, their craft guides, and every R2 object any of it names.
@@ -169,7 +190,39 @@ export async function templateClosure(ids) {
   const tags = tagIds.length ? await supabase.from('tags').select('*').in('id', tagIds) : { data: [] };
   if (tags.error) throw tags.error;
 
+  /* ── The SHAPES those templates are built on ───────────────────────────────────────────────────
+   *
+   * ⚠️ Without this a promoted template silently becomes a ROUND cake. A tier names its footprint by
+   * KEY (`shape: 'tall_round'`), and `cakeShapeDef` deliberately falls back to round for a key it
+   * does not know — so an environment that has never heard of that shape renders a different cake
+   * with no error, no warning and nothing logged. Exactly the failure `element_categories` had
+   * before it started travelling, and exactly what the comment on the export route describes: a key
+   * absent from the bundle never reaches the importer.
+   *
+   * Referenced TWO ways and both are collected: the template's own `shape` column, and every tier
+   * inside its design. They usually agree; a two-tier cake with a heart on top is the case where
+   * they do not, and reading only the column would strand the heart.
+   *
+   * ⚠️ Carried WITHOUT ids, keyed by `key` — the same decision element_categories made about slugs.
+   * A shape is referenced by key everywhere (the column and the design both hold a string), so the
+   * id means nothing in the target and shipping it would invent a collision class for a value
+   * nothing points at.
+   */
+  const shapeKeys = shapeKeysReferencedBy(rows);
+  const shapes = shapeKeys.size
+    ? await supabase.from('cake_shapes').select('*').in('key', [...shapeKeys])
+    : { data: [] };
+  if (shapes.error) throw shapes.error;
+  const cake_shapes = (shapes.data ?? []).map(({ id, created_at, updated_at, ...sh }) => sh);
+
   const keys = new Set(elements.keys);
+  /* ⚠️ The shape's thumbnail is an ASSET and has to travel with it. The column is `thumbnail_key`,
+   * not `thumbnail_url` — a copy-paste from cake_elements misses it, which is precisely how ten
+   * shape thumbnails were once left behind and prod's New-cake picker would have launched as broken
+   * <img> tiles. assetKeysIn recognises a key by its folder (`shapes/thumbnails` is in the list), so
+   * walking the row finds it whatever the column is called. */
+  for (const sh of cake_shapes) assetKeysIn(sh, keys, config.r2.publicUrl);
+
   for (const t of rows) {
     if (t.thumbnail_url && !/^https?:\/\//i.test(t.thumbnail_url)) keys.add(t.thumbnail_url);
     // From the DESIGN, not from the elements it references: the design points at keys directly, so a
@@ -183,6 +236,7 @@ export async function templateClosure(ids) {
   return {
     ...elements,
     tags: tags.data ?? [],
+    cake_shapes,
     cake_templates: rows,
     template_tags: templateTags.data ?? [],
     cake_template_attrs: attrs.data ?? [],

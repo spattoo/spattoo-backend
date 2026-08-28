@@ -603,6 +603,10 @@ router.post('/admin/elements/import', requireAuth, requireCapability('catalog:ad
     // Present only in a template bundle. Absent ones read as empty, so an element bundle exported
     // before templates existed still imports unchanged.
     const templates    = bundle.cake_templates      ?? [];
+    // Absent in template bundles exported before 2026-08-26. Defaults rather than being required, so
+    // an older bundle still imports — its templates just rely on the target already knowing their
+    // shape keys, which for the reserved round/rect it always does.
+    const shapes       = bundle.cake_shapes         ?? [];
     const templateTags = bundle.template_tags       ?? [];
     const templateAttrs= bundle.cake_template_attrs ?? [];
     if (!elements.length && !templates.length) return res.status(400).json({ error: 'Bundle contains nothing to import' });
@@ -654,6 +658,9 @@ router.post('/admin/elements/import', requireAuth, requireCapability('catalog:ad
     // report every one as new and the dry run would be a lie in the direction of alarm.
     const haveCats     = await existing('element_categories', 'slug', categories.map(c => c.slug));
     const haveTemplates = await existing('cake_templates', 'id', templates.map(t => t.id));
+    // By KEY, not id — a bundle's shapes arrive without ids for the same reason categories do, so
+    // counting by id would report every one as new and the dry run would overstate the change.
+    const haveShapes    = await existing('cake_shapes', 'key', shapes.map(sh => sh.key));
 
     // ── Which assets are actually missing here ────────────────────────────────────────────────
     // Every import used to re-copy every asset the bundle named, including the ones already sitting
@@ -674,6 +681,8 @@ router.post('/admin/elements/import', requireAuth, requireCapability('catalog:ad
       tags:                { create: tags.filter(t => !haveTags.has(t.id)).length,         update: tags.filter(t => haveTags.has(t.id)).length },
       elements:            { create: elements.filter(e => !haveElements.has(e.id)).length, update: elements.filter(e => haveElements.has(e.id)).length },
       cake_templates:      { create: templates.filter(t => !haveTemplates.has(t.id)).length, update: templates.filter(t => haveTemplates.has(t.id)).length },
+      // `reused`, never `update` — an existing shape is left exactly as it is. See below.
+      cake_shapes:         { create: shapes.filter(sh => !haveShapes.has(sh.key)).length,     reused: shapes.filter(sh => haveShapes.has(sh.key)).length },
       element_tags:        { rows: elementTags.length },
       element_craft_guide: { rows: craftGuides.length },
       assets:              { count: assets.length, copy: toCopy.length, present: assets.length - toCopy.length },
@@ -704,6 +713,33 @@ router.post('/admin/elements/import', requireAuth, requireCapability('catalog:ad
     // parent_template_id is a self-FK, and a single upsert array gives no ordering guarantee.
     const tplParents  = templates.filter(t => !t.parent_template_id);
     const tplChildren = templates.filter(t => t.parent_template_id);
+    /* ── Shapes, resolved by key ──────────────────────────────────────────────────────────────────
+     * A tier names its footprint by key, and an unknown key renders as a plain Round with nothing
+     * logged — so the shape has to exist here before its templates are of any use.
+     *
+     * ⚠️ INSERT-IF-MISSING, NEVER UPDATE. This is the important half. Every environment already has
+     * `round` and `rect`, and a bundle built on them carries dev's copy of those rows; upserting
+     * would overwrite the target's own definition with dev's — silently changing the starting size
+     * of every future cake there, and for a shape the importer was never asked to touch. An existing
+     * key is left exactly as it is and the template binds to it, which is also what makes a
+     * re-import free.
+     *
+     * No id remapping, unlike categories: nothing references a shape BY id. The key in the template
+     * column and the key inside the design are the whole reference, and they already match.
+     */
+    if (!dryRun && shapes.length) {
+      const { data: hereShapes, error: shapeReadErr } = await supabase
+        .from('cake_shapes').select('key').in('key', shapes.map(sh => sh.key));
+      if (shapeReadErr) return res.status(500).json({ error: `cake_shapes: ${shapeReadErr.message}`, plan, assetErrors });
+      const present = new Set((hereShapes ?? []).map(sh => sh.key));
+      const missingShapes = shapes.filter(sh => sh.key && !present.has(sh.key));
+      if (missingShapes.length) {
+        // No id supplied — this database mints its own, which is the whole point.
+        const { error: shapeErr } = await supabase.from('cake_shapes').insert(missingShapes);
+        if (shapeErr) return res.status(500).json({ error: `cake_shapes: ${shapeErr.message}`, plan, assetErrors });
+      }
+    }
+
     // ── Categories, resolved by slug ─────────────────────────────────────────────────────────────
     // Elements arrive carrying `category_slug`, never `category_id` — an id from another database is
     // an assertion about this one that is simply false. Anything whose slug is missing here is
@@ -884,12 +920,14 @@ async function ensureDecorationGuide(elementId) {
   try {
     const { data: el } = await supabase
       .from('cake_elements')
-      .select('id, name, description, image_url, thumbnail_url, thumb_key, medium, element_types(name)')
+      .select('id, name, description, image_url, thumbnail_url, thumb_key, medium, placement_config, element_types(name)')
       .eq('id', elementId).maybeSingle();
     if (!el) return;
 
-    // Element type first, medium only for the flat placeables where an image genuinely cannot say
-    // fondant from printed sheet from acrylic (services/decorationPolicy.js).
+    // Ready-made first, then element type, then medium — only for the flat placeables, where an
+    // image genuinely cannot say fondant from printed sheet from acrylic
+    // (services/decorationPolicy.js). This is the guide built AT CREATION, so the flag has to be
+    // visible here or a bought decoration ships with a how-to for making it.
     const policy = decorationPolicy(el);
     if (!policy.modelling) return;
 

@@ -81,29 +81,51 @@ export function decorationDimension(el) {
 export function decorationPolicy(el) {
   const type = el?.element_types?.name ?? el?.element_type ?? null;
 
+  // ── Ready-made: not MADE, but often still PRINTED ─────────────────────────────────────────────
+  // Ticked in admin: a faux ball, a bought topper, a wafer butterfly. Every other branch here INFERS
+  // whether something is hand-made from what it is made of; this is somebody saying so outright, and
+  // a statement beats an inference. So `modelling` is off, and it is decided FIRST — without that an
+  // admin could tick the box, generate a guide anyway, SPEND THE CREDITS, and have the result hidden
+  // by the fetch filter.
+  //
+  // `print` is deliberately NOT forced off with it, and that distinction is the whole point:
+  // "you do not make this" and "you cannot print this" are different claims. Butterflies are mostly
+  // bought AND routinely printed on wafer paper, so "print it at actual size instead" is the most
+  // useful thing the sheet can say once the modelling guide is refused. Suppressing it would answer
+  // a baker's question with silence.
+  //
+  // Where print genuinely is impossible the MEDIUM already says so — `acrylic` returns print:false —
+  // and that answer is preserved by falling through rather than short-circuiting. It also does not
+  // replace `medium`: that says what a thing is made of, this says you do not make it, and a fondant
+  // ball bought pre-rolled is both.
+  const readyMade = !!el?.placement_config?.ready_made;
+  const settle = (r) => (readyMade
+    ? { ...r, modelling: false, reason: `ready-made — bought, not made (${r.reason})` }
+    : r);
+
   // Cream, in either technique. The nozzle guide already covers piping; palette-knife work needs a
   // guide format of its own, and the fondant one is written for sugar paste and would read wrongly.
   if (CREAM_TYPES.has(type)) {
-    return { modelling: false, print: false, reason: 'cream — nozzle guide covers this' };
+    return settle({ modelling: false, print: false, reason: 'cream — nozzle guide covers this' });
   }
 
   if (STICKER_TYPES.has(type)) {
     switch (el?.medium) {
       // The substitution case: hand-model it, or print it. Both, always.
-      case 'fondant':      return { modelling: true,  print: true,  reason: 'fondant' };
-      case 'chocolate':    return { modelling: false, print: true,  reason: 'chocolate — no guide format yet' };
+      case 'fondant':      return settle({ modelling: true, print: true, reason: 'fondant' });
+      case 'chocolate':    return settle({ modelling: false, print: true, reason: 'chocolate — no guide format yet' });
       // There is no hand-modelled version of a printed sheet. A modelling guide here would invent
       // a process.
-      case 'edible_paper': return { modelling: false, print: true,  reason: 'printed sheet' };
+      case 'edible_paper': return settle({ modelling: false, print: true, reason: 'printed sheet' });
       // Bought, not made.
-      case 'acrylic':      return { modelling: false, print: false, reason: 'acrylic — not made by hand' };
+      case 'acrylic':      return settle({ modelling: false, print: false, reason: 'acrylic — not made by hand' });
       // Not stated. Offer both and let the model answer: it self-reports when something is not
       // hand-made, returning empty steps and saying so, which costs at most one generation.
-      default:             return { modelling: true,  print: true,  reason: 'medium not stated' };
+      default:             return settle({ modelling: true, print: true, reason: 'medium not stated' });
     }
   }
 
   // An unrecognised or absent type. Same reasoning as an unset medium — let the model answer
   // rather than silently withholding a guide because our type list has fallen behind the catalogue.
-  return { modelling: true, print: true, reason: 'type not recognised' };
+  return settle({ modelling: true, print: true, reason: 'type not recognised' });
 }

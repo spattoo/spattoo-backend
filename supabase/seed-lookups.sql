@@ -11,7 +11,7 @@
 -- Every row is a snapshot of DEV at generation time, not a copy of the seed migrations —
 -- those have drifted. Idempotent: re-running refreshes rows rather than duplicating them.
 --
--- 16 tables, 128 rows.
+-- 16 tables, 132 rows.
 -- ─────────────────────────────────────────────────────────────────────────────
 
 BEGIN;
@@ -134,14 +134,15 @@ ON CONFLICT (id) DO UPDATE SET
     is_active = EXCLUDED.is_active,
     created_at = EXCLUDED.created_at;
 
--- dietary_requirements — 6 rows
+-- dietary_requirements — 7 rows
 INSERT INTO public.dietary_requirements (id, key, label, kind, sort_order, is_active, created_at) VALUES
   (1, 'eggless', 'Eggless', 'diet', 10, true, '2026-07-25T20:16:18.942278+00:00'),
   (2, 'vegan', 'Vegan', 'diet', 20, true, '2026-07-25T20:16:18.942278+00:00'),
   (3, 'jain', 'Jain', 'diet', 30, true, '2026-07-25T20:16:18.942278+00:00'),
   (4, 'nut_free', 'Nut-free', 'allergen', 40, true, '2026-07-25T20:16:18.942278+00:00'),
   (5, 'gluten_free', 'Gluten-free', 'allergen', 50, true, '2026-07-25T20:16:18.942278+00:00'),
-  (6, 'dairy_free', 'Dairy-free', 'allergen', 60, true, '2026-07-25T20:16:18.942278+00:00')
+  (6, 'dairy_free', 'Dairy-free', 'allergen', 60, true, '2026-07-25T20:16:18.942278+00:00'),
+  (7, 'egg', 'With egg', 'diet', 5, true, '2026-08-28T07:58:43.631382+00:00')
 ON CONFLICT (id) DO UPDATE SET
     key = EXCLUDED.key,
     label = EXCLUDED.label,
@@ -150,7 +151,7 @@ ON CONFLICT (id) DO UPDATE SET
     is_active = EXCLUDED.is_active,
     created_at = EXCLUDED.created_at;
 
--- notification_types — 21 rows
+-- notification_types — 23 rows
 INSERT INTO public.notification_types (id, slug, label, audience) VALUES
   (11, 'subscription_activated', 'Subscription activated — baker', 'baker'),
   (12, 'subscription_renewed', 'Subscription renewed (payment received) — baker', 'baker'),
@@ -172,7 +173,9 @@ INSERT INTO public.notification_types (id, slug, label, audience) VALUES
   (4, 'quote_accepted_baker', 'Quote accepted — baker notification', 'baker'),
   (7, 'quote_question_baker', 'Customer question on the quote — baker notification', 'baker'),
   (21, 'delivery_digest_baker', 'Deliveries due today — baker morning digest', 'baker'),
-  (8, 'customer_invite', 'Customer invited to design session', 'customer')
+  (8, 'customer_invite', 'Customer invited to design session', 'customer'),
+  (23, 'trial_ending', 'Spark trial — ending soon', 'baker'),
+  (24, 'trial_ended', 'Spark trial — ended', 'baker')
 ON CONFLICT (id) DO UPDATE SET
     slug = EXCLUDED.slug,
     label = EXCLUDED.label,
@@ -222,10 +225,10 @@ ON CONFLICT (id) DO UPDATE SET
 
 -- subscription_plans — 4 rows
 INSERT INTO public.subscription_plans (id, name, display_name, price_monthly, price_yearly, features, is_active, sort_order, created_at, tagline, feature_bullets, is_popular, has_storefront) VALUES
-  (1, 'spark', 'Spark', 0, 0, '{"storefront":true,"trial_days":30,"xray_reports":true,"premium_themes":false,"can_buy_credits":false,"custom_branding":true,"custom_templates":true,"max_orders_total":null,"max_team_members":2,"edible_print_studio":false,"max_saved_templates":30,"ai_credits_per_month":200,"ai_background_removal":false,"whatsapp_notifications":false}'::jsonb, true, 0, '2026-05-29T16:58:06.572298+00:00', 'Everything, free for 30 days', ARRAY['Your storefront + 3D designer', 'Unlimited orders and quotes', 'Flavour suggestions for your customers', '200 smart-tool credits', '30 days — then choose a plan']::text[], false, true),
-  (2, 'flame', 'Flame', 99900, 999900, '{"storefront":true,"xray_reports":true,"premium_themes":false,"can_buy_credits":false,"custom_branding":true,"custom_templates":true,"max_orders_total":null,"max_team_members":2,"edible_print_studio":false,"max_saved_templates":30,"ai_credits_per_month":300,"ai_background_removal":false,"whatsapp_notifications":false}'::jsonb, true, 1, '2026-05-29T16:58:06.572298+00:00', 'Less than the price of one cake', ARRAY['Everything in Spark, with no time limit', '300 smart-tool credits a month', 'Email support']::text[], false, true),
-  (3, 'blaze', 'Blaze', 249900, 2499900, '{"storefront":true,"trial_days":30,"xray_reports":true,"premium_themes":true,"can_buy_credits":true,"custom_branding":true,"custom_templates":true,"max_orders_total":null,"max_team_members":4,"edible_print_studio":true,"max_custom_elements":0,"max_saved_templates":null,"ai_credits_per_month":800,"ai_background_removal":true,"whatsapp_notifications":false}'::jsonb, true, 2, '2026-05-29T16:58:06.572298+00:00', 'More credits, more tools, faster help', ARRAY['Everything in Flame', '800 smart-tool credits a month', 'Buy extra credits when you need them', 'Unlimited saved templates', 'Premium storefront themes', 'Edible Print Studio — any image, not just order photos', 'Priority chat support']::text[], true, true),
-  (4, 'forge', 'Forge', 499900, 4999900, '{"storefront":true,"trial_days":30,"xray_reports":true,"premium_themes":true,"can_buy_credits":true,"custom_branding":true,"custom_templates":true,"max_orders_total":null,"max_team_members":10,"edible_print_studio":true,"max_custom_elements":0,"max_saved_templates":null,"ai_credits_per_month":2000,"ai_background_removal":true,"whatsapp_notifications":false}'::jsonb, false, 3, '2026-05-29T16:58:06.572298+00:00', 'The most credits, and someone to call', ARRAY['Everything in Blaze', '2,000 smart-tool credits a month', 'Dedicated account manager']::text[], false, true)
+  (3, 'blaze', 'Blaze', 249900, 2499900, '{"storefront":true,"trial_days":30,"reel_capture":true,"xray_reports":true,"reel_branding":true,"premium_themes":true,"can_buy_credits":true,"custom_branding":true,"custom_templates":true,"max_orders_total":null,"max_team_members":4,"edible_print_studio":true,"max_custom_elements":0,"max_saved_templates":null,"ai_credits_per_month":800,"ai_background_removal":true,"whatsapp_notifications":false}'::jsonb, true, 2, '2026-05-29T16:58:06.572298+00:00', 'More credits, more tools, faster help', ARRAY['Everything in Flame', '800 smart-tool credits a month', 'Buy extra credits when you need them', 'Unlimited saved templates', 'Premium storefront themes', 'Edible Print Studio — any image, not just order photos', 'Priority chat support']::text[], true, true),
+  (4, 'forge', 'Forge', 499900, 4999900, '{"storefront":true,"trial_days":30,"reel_capture":true,"xray_reports":true,"reel_branding":true,"premium_themes":true,"can_buy_credits":true,"custom_branding":true,"custom_templates":true,"max_orders_total":null,"max_team_members":10,"edible_print_studio":true,"max_custom_elements":0,"max_saved_templates":null,"ai_credits_per_month":2000,"ai_background_removal":true,"whatsapp_notifications":false}'::jsonb, false, 3, '2026-05-29T16:58:06.572298+00:00', 'The most credits, and someone to call', ARRAY['Everything in Blaze', '2,000 smart-tool credits a month', 'Dedicated account manager']::text[], false, true),
+  (1, 'spark', 'Spark', 0, 0, '{"storefront":true,"trial_days":30,"reel_capture":true,"xray_reports":true,"reel_branding":false,"premium_themes":false,"can_buy_credits":false,"custom_branding":true,"custom_templates":true,"max_orders_total":null,"max_team_members":2,"edible_print_studio":false,"max_saved_templates":30,"ai_credits_per_month":200,"ai_background_removal":false,"whatsapp_notifications":false}'::jsonb, true, 0, '2026-05-29T16:58:06.572298+00:00', 'Everything, free for 30 days', ARRAY['Your storefront + 3D designer', 'Unlimited orders and quotes', 'Flavour suggestions for your customers', '200 smart-tool credits', '30 days — then choose a plan']::text[], false, true),
+  (2, 'flame', 'Flame', 99900, 999900, '{"storefront":true,"reel_capture":true,"xray_reports":true,"reel_branding":false,"premium_themes":false,"can_buy_credits":false,"custom_branding":true,"custom_templates":true,"max_orders_total":null,"max_team_members":2,"edible_print_studio":false,"max_saved_templates":30,"ai_credits_per_month":300,"ai_background_removal":false,"whatsapp_notifications":false}'::jsonb, true, 1, '2026-05-29T16:58:06.572298+00:00', 'Less than the price of one cake', ARRAY['Everything in Spark, with no time limit', '300 smart-tool credits a month', 'Email support']::text[], false, true)
 ON CONFLICT (id) DO UPDATE SET
     name = EXCLUDED.name,
     display_name = EXCLUDED.display_name,
@@ -288,11 +291,12 @@ ON CONFLICT (id) DO UPDATE SET
     sort_order = EXCLUDED.sort_order,
     updated_at = EXCLUDED.updated_at;
 
--- storefront_themes — 3 rows
+-- storefront_themes — 4 rows
 INSERT INTO public.storefront_themes (id, key, name, description, is_active, sort_order, is_premium) VALUES
   (1, 'spotlight', 'Spotlight', 'A dramatic dark hero with a spotlit, rotating 3D cake. Bold and modern.', true, 1, false),
   (3, 'aurora', 'Aurora', 'Soft, airy and colourful — a bright, welcoming storefront.', true, 3, false),
-  (2, 'patisserie', 'Patisserie', 'Hand-drawn ink and watercolour: your shopfront, sketched around your name, with a window of cakes and scalloped edges throughout.', true, 2, true)
+  (2, 'patisserie', 'Patisserie', 'Hand-drawn ink and watercolour: your shopfront, sketched around your name, with a window of cakes and scalloped edges throughout.', true, 2, true),
+  (4, 'ink', 'Ink', 'Hand-drawn, on paper. Your name large, a drawn cake beneath it, and nothing else competing.', true, 4, true)
 ON CONFLICT (id) DO UPDATE SET
     key = EXCLUDED.key,
     name = EXCLUDED.name,
