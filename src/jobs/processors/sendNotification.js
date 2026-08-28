@@ -199,10 +199,20 @@ export function buildEmail(typeSlug, recipientEmail, payload) {
       // and that path has no design at all. A baker placing a DESIGNED order goes through
       // POST /orders like any customer, which always records 'customer'. Rather than infer it wrong,
       // the wording is now true whoever typed it in: the request exists, and the baker will quote.
-      subject: `Your cake request with ${p.bakerName}`,
+      // Thanks them for designing it only when they DID. `authoredBy` comes from the verified token
+      // on POST /orders — a baker app-user of this bakery, or nobody — so it answers the question
+      // the thumbnail was being asked and could not: whose hands made this.
+      // Absent (an older queued job) falls to the neutral wording, which is true either way.
+      subject: p.authoredBy === 'baker'
+        ? `Your cake request with ${p.bakerName}`
+        : `Your cake request was sent to ${p.bakerName}`,
       html: `<div style="font-family:sans-serif;max-width:560px;margin:0 auto">
-        <h2 style="color:#2C4433">Your cake request</h2>
-        <p>Hi ${esc(p.customerFirstName)}, your cake request with <b>${esc(p.bakerName)}</b> has been created. <b>${esc(p.bakerName)}</b> will review it and get back to you with a quote. Here are the details:</p>
+        <h2 style="color:#2C4433">${p.authoredBy === 'baker' ? 'Your cake request' : 'Request sent!'}</h2>
+        <p>Hi ${esc(p.customerFirstName)}, ${p.authoredBy === 'baker'
+          ? `your cake request with <b>${esc(p.bakerName)}</b> has been created. <b>${esc(p.bakerName)}</b> will review it and get back to you with a quote. Here are the details:`
+          : hasDesign
+            ? `thanks for designing your cake with <b>${esc(p.bakerName)}</b>. Your request has been sent — <b>${esc(p.bakerName)}</b> will review your design and get back to you with a quote. Here's what you asked for:`
+            : `thanks for your cake request. It has been sent to <b>${esc(p.bakerName)}</b>, who will get back to you with a quote. Here's what you asked for:`}</p>
         ${thumbnailHtml}
         ${orderDetailsHtml(p)}
         <p style="margin-top:24px">We'll email you as soon as your quote is ready. If you have any questions, contact your baker directly.</p>

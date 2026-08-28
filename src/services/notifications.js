@@ -68,7 +68,7 @@ export async function bakerNotifyEmail(baker) {
   return data?.email ?? null;
 }
 
-export async function notifyOrderPlaced({ order, baker, customer }) {
+export async function notifyOrderPlaced({ order, baker, customer, authoredBy = 'customer' }) {
   const customerName = [customer.first_name, customer.last_name].filter(Boolean).join(' ');
   const payload = {
     customerName,
@@ -84,6 +84,10 @@ export async function notifyOrderPlaced({ order, baker, customer }) {
     flavours:          order.flavours,
     specialInstructions: order.special_instructions,
     thumbnailUrl:      order.design_thumbnail_url ?? null,
+    // Who put this order in. The customer's email thanks them for designing it only when they did —
+    // a baker designing for a customer must not be thanked on their behalf. Defaults to 'customer'
+    // so an older caller that does not pass it keeps the wording it has always had.
+    authoredBy,
   };
 
   const jobs = [];
