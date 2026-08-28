@@ -50,6 +50,48 @@ export async function idsForKeys(keys) {
     .filter(id => id != null);
 }
 
+/* ── The egg choice ────────────────────────────────────────────────────────────
+ * `egg` is the one key here that RESTRICTS nothing — it is the customer choosing the
+ * ordinary cake, asked outright rather than inferred from their not mentioning it.
+ * See migrations/078_egg_choice.sql for why it lives in this vocabulary at all.
+ *
+ * ⚠️ Vegan and Jain CONTAIN the eggless rule — vegan excludes every animal product and
+ * Jainism excludes eggs outright — so neither can coexist with `egg`. Named here rather
+ * than carried as an `implies` column: it is a fact about those diets, not about our
+ * table, and two cases do not pay for a column and a resolution path. Adding a diet
+ * that implies eggless needs a line here; halal and kosher, the obvious candidates, do
+ * not, so the third case may never arrive. */
+export const EGG_KEY         = 'egg';
+export const EGGLESS_KEY     = 'eggless';
+export const IMPLIES_EGGLESS = ['vegan', 'jain'];
+
+/* Contradictions, refused rather than silently stored.
+ *
+ * ⚠️ This checks COHERENCE, never PRESENCE. An order with no egg answer is accepted:
+ * whether the question was even asked depends on what the baker deals in — a fully
+ * eggless kitchen is told to the customer as a fact and records nothing — so requiring
+ * one here would mean loading that baker's exclusions on the order path and refusing
+ * real orders whenever the two disagreed, including orders placed while a baker was
+ * mid-edit in Settings. The form is what asks; this is what refuses an answer that
+ * cannot be true. That split matches the rest of the feature, which warns about
+ * flavour conflicts and never blocks on them.
+ *
+ * Returns an error STRING (the house convention — see validateOrderBody) or null. */
+export function validateDietaryCoherence(keys) {
+  if (!Array.isArray(keys) || !keys.length) return null;
+
+  if (keys.includes(EGG_KEY) && keys.includes(EGGLESS_KEY)) {
+    return 'An order cannot be both with egg and eggless — choose one.';
+  }
+  if (keys.includes(EGG_KEY)) {
+    const clash = IMPLIES_EGGLESS.filter(k => keys.includes(k));
+    if (clash.length) {
+      return `A ${clash.join(' / ')} cake cannot be made with egg — remove “with egg” or the ${clash.join(' / ')} requirement.`;
+    }
+  }
+  return null;
+}
+
 // Validate a requested set of keys. Returns an error STRING (the house convention —
 // see validateOrderBody) or null when the input is acceptable.
 //
@@ -64,7 +106,9 @@ export async function validateDietaryKeys(keys) {
   if (unknown.length) {
     return `Unknown dietary requirement key(s): ${unknown.join(', ')}. Valid: ${valid.join(', ')}`;
   }
-  return null;
+  // Known keys that cannot all be true at once. Checked AFTER the vocabulary, so a
+  // typo is reported as a typo rather than as a contradiction.
+  return validateDietaryCoherence(keys);
 }
 
 // Replace the requirement set on an order. Used on create and on edit — a set has no

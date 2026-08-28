@@ -58,7 +58,14 @@ CREATE TABLE IF NOT EXISTS dietary_requirements (
 
 -- Seed. ON CONFLICT keeps labels/ordering editable by re-running this file; ids, once
 -- assigned by the identity sequence, are stable because `key` is the conflict target.
+-- ⚠️ `egg` is the one row here that RESTRICTS NOTHING — it is the customer choosing the
+-- ordinary cake. It lives here so `baker_dietary_exclusions` can express "we are a
+-- pure-veg bakery" (a row against `egg`), which was previously unsayable, and so that
+-- "with egg" is distinguishable from "nobody asked". Every surface that flags a
+-- DEVIATION must filter it out or it fires on nearly every order and stops being read.
+-- See migrations/078_egg_choice.sql and `restrictions()` in spattoo-core.
 INSERT INTO dietary_requirements (key, label, kind, sort_order) VALUES
+  ('egg',         'With egg',     'diet',      5),
   ('eggless',     'Eggless',      'diet',     10),
   ('vegan',       'Vegan',        'diet',     20),
   ('jain',        'Jain',         'diet',     30),
