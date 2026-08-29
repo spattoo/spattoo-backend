@@ -14,18 +14,25 @@
 -- 065 ran separately in each environment, so every category has a different uuid on each side. An id
 -- is a LOCAL fact; what must agree is the SLUG, which is what element bundles key on.
 --
--- ── sort_order 118 ─────────────────────────────────────────────────────────────────────────────
--- Between Toppers (115) and Finishes (120), in the gaps 065 left so a category can be inserted
--- without renumbering its neighbours. A PLACEHOLDER position, not a judgement: the menu order is a
--- deliberate choice and the arrows on the Element Categories screen are where it gets made.
+-- ── sort_order 118, and ⚠️ ONLY IF THE ROW IS NEW ───────────────────────────────────────────────
+-- 118 sits between Toppers and Finishes, in the gaps 065 left so a category can be inserted without
+-- renumbering its neighbours. It is a PLACEHOLDER for an environment that has no Art category yet.
 --
--- ON CONFLICT DO UPDATE, not DO NOTHING: if an 'art' slug already exists — created by hand, or minted
--- by an element import that carried it — this reconciles it rather than leaving whatever is there.
+-- ⚠️ DO NOTHING, NOT DO UPDATE — the opposite of 069, deliberately. This category already exists in
+-- dev, created by hand, at sort_order 150. DO UPDATE would have dragged it to 118 and renamed it, in
+-- an environment where somebody had already decided where it goes. The menu order is a real choice
+-- made with the arrows on the Element Categories screen — the same screen 069's own comment points
+-- at — and the sort_orders there have already drifted from every number in these migrations
+-- (Toppers was written as 115 and now reads 140). A migration that "reconciles" them is not fixing
+-- drift, it is overruling an admin.
+--
+-- 069's DO UPDATE was right for ITS case: reconciling a row that an element import had minted as a
+-- side effect, where no human had chosen anything. The test is whether a person decided, not whether
+-- the row happens to differ from the file.
 
 INSERT INTO public.element_categories (slug, name, sort_order)
 VALUES ('art', 'Art', 118)
-ON CONFLICT (slug) DO UPDATE
-  SET name = EXCLUDED.name, sort_order = EXCLUDED.sort_order;
+ON CONFLICT (slug) DO NOTHING;
 
 -- ⚠️ THE ELEMENT ROWS ARE NOT CREATED HERE, and that is deliberate rather than an omission. No
 -- migration in this repo inserts into cake_elements: rows are master data an admin authors on
