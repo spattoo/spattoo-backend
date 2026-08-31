@@ -66,7 +66,7 @@
     "standardwebhooks": "^1.0.0"
   },
   "devDependencies": {
-    "jscpd": "^5.0.14",
+    "jscpd": "5.0.16",
     "nodemon": "^3.1.0"
   }
 }
