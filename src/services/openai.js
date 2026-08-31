@@ -680,7 +680,7 @@ function decodeImages(data) {
 // extend one end to form a tail", which is a lovely fondant animal and not the decoration on the
 // cake. The two crafts share almost no steps, so this is not a nuance — it is the difference
 // between a usable guide and a wrong one.
-export async function suggestBuildGuide({ imageUrl, name, description, focus = null, dimension = null }) {
+export async function suggestBuildGuide({ imageUrl, name, description, focus = null, dimension = null, roles = [] }) {
   const prompt = `You are a master sugar-artist writing a build guide for ONE decoration, so another baker can make it by hand.
 
 Decoration name: ${name || '(unnamed)'}
@@ -727,6 +727,22 @@ missed the point entirely.`
   : dimension === '3d'
     ? `THIS IS A 3D DECORATION, modelled in the round from shaped pieces of fondant.`
     : ''}
+
+${roles.length ? `THIS DECORATION'S PARTS ARE ALREADY KNOWN. They were authored, not observed, so they are FACT and
+the picture is only for shape and proportion. Use these exact role tokens, and these exact hexes:
+
+${roles.map(r => `- {${r.role}}  ${r.label}${r.hex ? `  ${r.hex}` : ''}`).join('\n')}
+
+EVERY role above must be MADE by at least one step. A part you cannot see clearly from this one
+angle is still part of the decoration — a doll's shoes under a hem, hair seen only from the front —
+and the baker has to make it either way. Describe how it is made from what you CAN see of it plus
+what the name and the part label tell you; do not skip it, and do not merge two of them into one
+step to save room.
+
+You MAY add a role you can see that is not listed (a bow, a button). You may NOT omit one that is.
+
+"colours" must carry exactly the hexes above for these roles — do not read them off the image. They
+are the authored values, and the baker mixes gel paste from them.` : ''}
 
 ANY STEP THAT CHANGES A PIECE'S SHAPE MUST SAY HOW THE SHAPE IS MADE AND HOW IT IS HELD.
 "Shape the loops", "form the petals", "curve the tail" are not instructions — they name the result

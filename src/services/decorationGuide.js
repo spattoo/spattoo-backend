@@ -3,7 +3,7 @@ import { suggestBuildGuide } from './openai.js';
 import { renderStageImage, elementStagesKey } from './decorationStages.js';
 import { archiveObject } from './r2.js';
 import { toPublicUrl } from '../routes/elements.js';
-import { visionImageKey, decorationDimension } from './decorationPolicy.js';
+import { visionImageKey, decorationDimension, knownRoles } from './decorationPolicy.js';
 
 // ── Building one element's decoration guide ──────────────────────────────────────────
 // Shared by the two callers that produce the same artefact for different reasons:
@@ -39,7 +39,16 @@ import { visionImageKey, decorationDimension } from './decorationPolicy.js';
 // requeue only the stale ones. The name keeps 'build-guide' rather than following the rename to
 // decoration steps, because this string identifies a PROMPT LINEAGE and renaming it would split one
 // history into two that were never different.
-export const GUIDE_PROMPT_VERSION = 'build-guide-v3';
+// v4 (2026-08-31) stops the guide guessing parts we already authored. A recomposed decoration
+// carries `placement_config._model.groups` — its recolourable areas, each with a label and a hex —
+// and the prompt was asking the model to reinvent exactly that from one thumbnail. Reported on a
+// fondant doll: no steps for the hair, no steps for the shoes (barely visible from the angle we
+// send), and a stage image that painted the dress colour across the face. v4 hands the roles over
+// as FACT, requires a step for every one of them, and takes the hexes from the authored values
+// rather than from what a model thinks it can see. A part being hard to see is now explicitly not a
+// reason to omit it. Unsegmented decorations are unchanged — they still have nothing to read.
+//
+export const GUIDE_PROMPT_VERSION = 'build-guide-v4';
 
 // Generate and store the guide for ONE element.
 //
@@ -58,8 +67,20 @@ export async function buildElementGuide(el, { ownerBakerId = null, quality = nul
   // Flat or in the round. A sticker is flat by definition; anything else we do not claim to know.
   const dimension = decorationDimension(el);
 
+  /* ⚠️ THE PARTS ARE READ, NOT GUESSED — where we have them.
+   *
+   * A recomposed decoration carries its own part map (placement_config._model.groups): the exact
+   * recolourable areas and the hex authored for each. The guide prompt was asking the model to
+   * invent that same list by looking at ONE thumbnail, and it showed: a fondant doll came back with
+   * no steps for its hair and none for its shoes, and the stage picture put the dress colour on its
+   * face because nothing tied the illustration to a real part.
+   *
+   * Empty for anything never segmented, and the prompt falls back to looking — which is still the
+   * only option for a decoration nobody has taken apart. */
+  const roles = knownRoles(el);
+
   const { guide, usage, model } = await suggestBuildGuide({
-    imageUrl: toPublicUrl(imageKey), name: el.name, description: el.description, dimension,
+    imageUrl: toPublicUrl(imageKey), name: el.name, description: el.description, dimension, roles,
   });
   const calls = [{ model, usage }];
 
