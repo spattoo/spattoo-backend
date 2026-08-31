@@ -139,6 +139,13 @@ function rawEmail(from) {
 
 // Exported for `check:email-design-claims`, the same reason buildPush is: these strings are the
 // product, and the only way to assert what they say is to render them.
+// Which notifications Spattoo is blind-copied on. Deliberately a SHORT, EXPLICIT list: every entry
+// is a mail a real person reads, so anything high-volume added here turns a signal into noise and
+// makes an inbox somebody stops looking at.
+//
+// `baker_welcome` fires exactly once per bakery, from createBakerForUser — that is the signup.
+export const BCC_TYPES = new Set(['baker_welcome']);
+
 export function buildEmail(typeSlug, recipientEmail, payload) {
   const p = payload;
 
@@ -728,8 +735,26 @@ export async function sendNotification({ notificationId }) {
   const typeSlug = notification.notification_types.slug;
   const mail = buildEmail(typeSlug, notification.recipient_email, notification.payload);
 
+  /* ── Copy us in on the few that matter ────────────────────────────────────────────────────────
+   *
+   * A blind copy on a SHORT LIST of types, decided here rather than in mailer.js. A bcc down there
+   * would copy us on every quote, order update and reminder any customer ever receives — a flood,
+   * and somebody else's mail.
+   *
+   * BCC rather than a second internal message because everything worth knowing is already in the
+   * one the baker gets: the To header is who signed up, and the body carries their bakery name and
+   * storefront slug. A separate mail would restate all of it and become a second template to keep
+   * in step with the first.
+   *
+   * ⚠️ It rides the SAME send. If the copy is going to fail — a bad address in the variable — the
+   * baker's own welcome fails with it, and the outbox records the whole thing as failed. That is
+   * the honest trade for not sending twice, and the reason this stays a short list of low-volume
+   * types rather than something that could be switched on broadly.
+   */
+  const bcc = BCC_TYPES.has(typeSlug) ? (config.smtp.internalBcc || null) : null;
+
   try {
-    const result = await sendEmail(mail);
+    const result = await sendEmail({ ...mail, ...(bcc ? { bcc } : {}) });
     // 'sent' only means the provider ACCEPTED the message — not that it reached the inbox. Log
     // what the provider actually said (normalized id + response + any rejected recipients) so
     // deliverability problems (sandbox, SPF/DKIM, bounces) are diagnosable from Render logs
