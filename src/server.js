@@ -4,6 +4,7 @@ import healthRouter from './routes/health.js';
 import demoRequestRouter from './routes/demoRequest.js';
 import elementsRouter from './routes/elements.js';
 import uploadsRouter from './routes/uploads.js';
+import garnishesRouter from './routes/garnishes.js';
 import templatesRouter from './routes/templates.js';
 import tagsRouter from './routes/tags.js';
 import storageRouter from './routes/storage.js';
@@ -71,6 +72,7 @@ app.use(healthRouter);
 app.use('/api', demoRequestRouter);
 app.use('/api', elementsRouter);
 app.use('/api', uploadsRouter);       // uploads: baker/customer-owned images (NOT /api/admin)
+app.use('/api', garnishesRouter);     // garnishes: chocolate pieces someone drew (paths, not images)
 app.use('/api', templatesRouter);
 app.use('/api', tagsRouter);
 app.use('/api', storageRouter);
