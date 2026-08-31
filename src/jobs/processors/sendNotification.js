@@ -144,7 +144,16 @@ function rawEmail(from) {
 // makes an inbox somebody stops looking at.
 //
 // `baker_welcome` fires exactly once per bakery, from createBakerForUser — that is the signup.
-export const BCC_TYPES = new Set(['baker_welcome']);
+// `subscription_activated` fires from the Razorpay webhook when a plan actually starts being paid
+// for, which is the other event worth a person knowing about on the day it happens.
+//
+// ⚠️ DELIBERATELY NOT `subscription_renewed`. A renewal is the SAME baker every month, so its volume
+// grows with the customer base while carrying almost no news — it is the entry that would turn this
+// from a signal into a feed and get the whole thing filtered away. Churn (`subscription_cancelled`,
+// `subscription_expired`) is genuinely worth knowing and is a deliberate omission rather than an
+// oversight: it is a different question from "who joined", it wants somewhere it can be acted on,
+// and it should be added on purpose rather than because it was nearby.
+export const BCC_TYPES = new Set(['baker_welcome', 'subscription_activated']);
 
 export function buildEmail(typeSlug, recipientEmail, payload) {
   const p = payload;

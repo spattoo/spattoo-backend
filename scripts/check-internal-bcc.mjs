@@ -34,14 +34,26 @@ const conf   = read('../src/config.js');
   if (m) {
     const types = [...m[1].matchAll(/'([^']+)'/g)].map(x => x[1]);
     ok(types.includes('baker_welcome'), 'a new bakery is copied to us', types.join(', '));
+    ok(types.includes('subscription_activated'), 'a plan starting being paid for is copied to us', types.join(', '));
 
     // The number is the point. Every entry is a mail a person reads; this failing is the prompt to
     // ask whether the new one is really worth an inbox, not to raise the number.
     ok(types.length <= 3, 'the copied list is still short', `${types.length} types: ${types.join(', ')}`);
 
-    // Named types that would drown it. A signup happens rarely; an order does not.
-    const HIGH_VOLUME = ['order_placed', 'order_status', 'quote_ready', 'order_ready',
-                         'delivery_digest', 'payment_received', 'design_shared'];
+    // ⚠️ THE REAL SLUGS, read off notification_types, not plausible-looking ones. The first draft
+    // of this list was invented — 'order_placed', 'quote_ready', 'design_shared' — and not one of
+    // them exists. Every assertion passed, and the guard would have waved through the actual
+    // dangerous entries because it was comparing against names nothing uses.
+    //
+    // These are the per-order, per-customer and recurring types: a signup happens once per bakery,
+    // an order happens all day, and a renewal happens to every customer every month for ever.
+    const HIGH_VOLUME = [
+      'order_placed_customer', 'design_updated_customer', 'quote_issued_customer',
+      'order_confirmed_customer', 'order_completed_customer', 'order_ready_customer',
+      'order_placed_baker', 'quote_accepted_baker', 'quote_question_baker', 'delivery_digest_baker',
+      'subscription_renewed', 'credits_low', 'credits_exhausted', 'credits_purchased',
+      'customer_invite', 'trial_ending', 'trial_ended',
+    ];
     for (const t of types) {
       ok(!HIGH_VOLUME.includes(t), `"${t}" is too high-volume to copy a person on`);
     }
