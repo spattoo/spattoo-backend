@@ -58,6 +58,10 @@ function invalidPayload(p) {
       }
     }
     if (s.fill != null && typeof s.fill !== 'string') return 'stroke.fill must be a pattern name or null';
+    /* A shape may carry its OWN chocolate — white inside dark — and absent means "follow the piece".
+       Checked as a CSS colour rather than left free: it is written straight into a material, where a
+       malformed value is a silent black piece on someone else's cake. */
+    if (s.color != null && !/^#[0-9a-f]{3,8}$/i.test(String(s.color))) return 'stroke.color must be a hex colour';
   }
   return null;
 }
