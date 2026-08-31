@@ -23,6 +23,41 @@ export function visionImageKey(el) {
   return [el?.image_url, el?.thumbnail_url, el?.thumb_key].find(k => k && VISION_FORMATS.test(k)) ?? null;
 }
 
+// ── The parts we already know, because we authored them ──────────────────────────────
+//
+// A decoration recomposed in admin carries its own part map: `placement_config._model.groups`, one
+// entry per recolourable area, with the label and the hex that was authored for it. A fondant doll
+// has six — Hair, Body, Dress, Shoe, Eyes, Eyebrows.
+//
+// ⚠️ THE BUILD GUIDE WAS GUESSING ALL OF THAT FROM A THUMBNAIL. The prompt asks the model to invent
+// `roles` and to read one hex per role "you can SEE on this decoration" — which is exactly this
+// list, derived by looking instead of by reading. The reported result: no steps for the hair, no
+// steps for the shoes (they are barely visible from the one angle we send), and a stage picture
+// that put the dress colour on the doll's face because nothing anchored it to a real part.
+//
+// Returned as prompt-ready role TOKENS, because the guide's own contract is lowercase tokens
+// ("body", "inner_ear") written as {body} inside instructions — a role called "Hair" would not
+// match, and a mismatch is silent.
+//
+// Absent for anything not recomposed (most elements), and the caller falls back to the old
+// look-and-guess behaviour — which is right for a decoration nobody has segmented.
+export function knownRoles(el) {
+  const groups = el?.placement_config?._model?.groups;
+  if (!Array.isArray(groups)) return [];
+  const seen = new Set();
+  const out = [];
+  for (const g of groups) {
+    const role = String(g?.key ?? '').trim().toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_+|_+$/g, '');
+    if (!role || seen.has(role)) continue;
+    seen.add(role);
+    const hex = typeof g?.default === 'string' && /^#[0-9a-f]{6}$/i.test(g.default.trim())
+      ? g.default.trim().toLowerCase()
+      : null;
+    out.push({ role, label: String(g?.label ?? g?.key ?? '').trim() || role, hex });
+  }
+  return out;
+}
+
 // ── What may be offered for this decoration ──────────────────────────────────────────
 // ELEMENT TYPE IS THE PRIMARY SIGNAL, and `medium` only speaks where the type genuinely cannot.
 //

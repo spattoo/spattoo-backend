@@ -163,6 +163,19 @@ export const config = {
     user: process.env.SMTP_USER,
     pass: process.env.SMTP_PASS,
     from: process.env.SMTP_FROM || process.env.SMTP_USER,
+    // ── Who at Spattoo is copied on the emails we want to know about ──────────────────────────
+    // A blind copy on a SHORT LIST of notifications (sendNotification.js `BCC_TYPES`), not on every
+    // email — a BCC in mailer.js would copy us on every order, quote and reminder a customer gets,
+    // which is a flood and somebody else's mail.
+    //
+    // A blind copy rather than a second message because the useful facts are already in the one the
+    // baker gets: the To header names them, the body carries their bakery and their storefront
+    // slug. A separate internal mail would restate all of it and be a template to keep in step.
+    //
+    // Configurable per environment, with a default so dev and prod both work the day this ships
+    // rather than the day somebody remembers to set a variable. Set it empty to switch the copies
+    // off entirely.
+    internalBcc: process.env.INTERNAL_NOTIFY_EMAIL ?? 'sandeep@spattoo.com',
   },
   // Cloudflare Turnstile. The app's login has used the widget for a while, but Supabase verified
   // those tokens — this is the first SECRET we hold, for endpoints of our own with no such backstop.

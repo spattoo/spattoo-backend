@@ -26,13 +26,18 @@ export function mailConfigured() {
 // Send one email. Throws on provider failure — the caller decides how to react (the outbox
 // records status + retries; fire-and-forget callers swallow). `from` defaults to the platform
 // sender when omitted.
-export async function sendEmail({ from, to, subject, html, text }) {
+export async function sendEmail({ from, to, subject, html, text, bcc }) {
   const info = await transporter.sendMail({
     from: from || config.smtp.from,
     to,
     subject,
     html,
     ...(text ? { text } : {}),
+    // Blind copy, forwarded only when a caller asks for one. NOT defaulted from config here: a bcc
+    // applied at this level would copy somebody on every order, quote and reminder a CUSTOMER
+    // receives. Which notifications get copied is a decision for the caller that knows what the
+    // message is — see BCC_TYPES in jobs/processors/sendNotification.js.
+    ...(bcc ? { bcc } : {}),
   });
   return {
     id:       info?.messageId ?? null,
