@@ -159,4 +159,66 @@ router.delete('/garnishes/:id', requireAuth, requireCapability('element:manage')
   } catch (err) { serverError(res, err, 'Failed to remove the garnish'); }
 });
 
+// ── Publish one to the GLOBAL catalogue ──────────────────────────────────────────────────────────
+//
+// ⚠️ THE WIDEST BLAST RADIUS IN THE PRODUCT, and the gate is sized for that. A baker promoting an
+// upload puts it in ONE bakery's picker; this puts a piece in front of EVERY bakery and every one of
+// their customers. So it is `catalog:admin` — the author gate that guards element types and
+// categories — and never `element:manage`, which every baker holds.
+//
+// ⚠️ THE PATHS ARE THE ELEMENT, not a picture of one. A published garnish carries its strokes in
+// `placement_config`, so it arrives in the catalogue able to be re-coloured, re-filled and — the
+// reason any of this was built — to produce its own X-ray build guide. An image could do none of
+// that, which is the whole argument in supabase/baker_garnishes.sql.
+//
+// ⚠️ THE COPY IS DETACHED, deliberately, and this is the one decision here that cannot be undone
+// later. `baker_uploads` links its promoted copy back (`source_upload_id`) so erasure can reach it;
+// a garnish does not, because the audiences differ. An upload is one bakery's own image and its
+// owner may need it withdrawn; a published garnish is catalogue furniture that other bakeries have
+// designed cakes with, and letting the author's later "delete" reach into those is worse than the
+// storage it saves. Withdrawing one is `is_active = false` on the element, by an author.
+router.post('/garnishes/:id/publish', requireAuth, requireCapability('catalog:admin'), async (req, res) => {
+  try {
+    const { element_type_id, category_id, name, description } = req.body ?? {};
+    if (!element_type_id) return res.status(400).json({ error: 'element_type_id is required' });
+
+    /* ⚠️ NO TENANT FENCE HERE, and that is the point of the capability check above: an author works
+       across bakeries. Every other route in this file is fenced to `req.bakerId` because a baker may
+       only ever touch their own; this one is reached by a role that does not belong to a bakery. */
+    const { data: g, error } = await supabase
+      .from('baker_garnishes')
+      .select('id, name, payload, thumb_key')
+      .eq('id', req.params.id)
+      .is('deleted_at', null)
+      .maybeSingle();
+    if (error) throw new Error(error.message);
+    if (!g) return res.status(404).json({ error: 'Not found' });
+
+    const bad = invalidPayload(g.payload);
+    if (bad) return res.status(400).json({ error: `That piece cannot be published: ${bad}` });
+
+    const { data: el, error: insErr } = await supabase
+      .from('cake_elements')
+      .insert({
+        name: String(name ?? g.name ?? 'Chocolate garnish').trim().slice(0, MAX_NAME),
+        description: description ?? '',
+        element_type_id,
+        category_id: category_id ?? null,
+        thumbnail_url: g.thumb_key ? toPublicUrl(g.thumb_key) : null,
+        // The drawing itself. `garnish` is read by the designer to rebuild the piece.
+        placement_config: { garnish: g.payload },
+        allowed_zones: ['top_surface', 'board'],
+        allowed_actions: { resize: true, duplicate: true, color: true, delete: true },
+        medium: 'chocolate',
+        baker_id: null,              // global — this is what "catalogue" means
+        is_active: true,
+      })
+      .select('id')
+      .single();
+    if (insErr) throw new Error(insErr.message);
+
+    res.status(201).json({ id: el.id });
+  } catch (err) { serverError(res, err, 'Failed to publish the garnish'); }
+});
+
 export default router;
