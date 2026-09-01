@@ -159,6 +159,46 @@ router.delete('/garnishes/:id', requireAuth, requireCapability('element:manage')
   } catch (err) { serverError(res, err, 'Failed to remove the garnish'); }
 });
 
+// ── Every bakery's pieces, for an author choosing what to publish ────────────────────────────────
+//
+// ⚠️ NO TENANT FENCE, WHICH IS WHY IT IS `catalog:admin`. Every other list in this file is fenced to
+// the caller's own bakery and their own authorship, because a baker may only ever see their own work.
+// This one deliberately crosses that line — an author curating the catalogue has to be able to look
+// at what bakers have drawn — so it is gated on the capability that already means "you administer
+// the catalogue", and it must never be reachable with `element:manage`.
+//
+// `published` says whether this piece is ALREADY in the catalogue, so the screen can show it rather
+// than letting an author publish the same drawing twice and wonder why there are two.
+router.get('/admin/garnishes', requireAuth, requireCapability('catalog:admin'), async (req, res) => {
+  try {
+    const { data, error } = await supabase
+      .from('baker_garnishes')
+      .select('id, baker_id, name, payload, thumb_key, created_at')
+      .is('deleted_at', null)
+      .order('created_at', { ascending: false })
+      .limit(200);
+    if (error) throw new Error(error.message);
+
+    /* A published copy is DETACHED (see the publish route), so there is no foreign key to follow.
+       Matching on the stored drawing is what is left, and it is exact: the payload is the piece. */
+    const { data: published } = await supabase
+      .from('cake_elements')
+      .select('id, placement_config')
+      .eq('medium', 'chocolate')
+      .is('baker_id', null)
+      .is('deleted_at', null);
+    const seen = new Set((published ?? [])
+      .map(e => e.placement_config?.garnish && JSON.stringify(e.placement_config.garnish))
+      .filter(Boolean));
+
+    res.json((data ?? []).map(g => ({
+      ...shape(g),
+      bakerId: g.baker_id,
+      published: seen.has(JSON.stringify(g.payload)),
+    })));
+  } catch (err) { serverError(res, err, 'Failed to list garnishes'); }
+});
+
 // ── Publish one to the GLOBAL catalogue ──────────────────────────────────────────────────────────
 //
 // ⚠️ THE WIDEST BLAST RADIUS IN THE PRODUCT, and the gate is sized for that. A baker promoting an
@@ -204,7 +244,12 @@ router.post('/garnishes/:id/publish', requireAuth, requireCapability('catalog:ad
         description: description ?? '',
         element_type_id,
         category_id: category_id ?? null,
-        thumbnail_url: g.thumb_key ? toPublicUrl(g.thumb_key) : null,
+        /* ⚠️ THE BARE KEY, NOT A URL. The DB stores keys and `lib/publicUrl.js` expands them on the
+           way out — every other element row does this. Storing the expanded URL here would have been
+           double-expanded on read, and worse, invisible to the export walk, which recognises our
+           objects by their KEY prefix: the element would promote to prod carrying a dev URL that
+           prod's bucket never received a copy of. */
+        thumbnail_url: g.thumb_key ?? null,
         // The drawing itself. `garnish` is read by the designer to rebuild the piece.
         placement_config: { garnish: g.payload },
         allowed_zones: ['top_surface', 'board'],

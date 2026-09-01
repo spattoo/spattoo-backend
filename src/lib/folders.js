@@ -18,6 +18,12 @@ export const FOLDER_KIND = {
   'elements/files/2D':    'image',
   'elements/files/3D':    'model',
   'elements/thumbnails':  'image',
+  // A chocolate piece a baker drew in the garnish studio. Written SERVER-side (putObject) rather
+  // than through a signed upload, so it needs no ceiling here — but it must be in this list, because
+  // ⚠️ THIS LIST IS WHAT THE EXPORT WALK RECOGNISES AS ONE OF OUR OBJECTS. A folder missing from it
+  // is invisible to `assetKeysIn`, so the row promotes to prod and its picture never travels: the
+  // element arrives, renders, and has no thumbnail, with nothing failing anywhere.
+  'garnishes/thumbs':     'image',
   // A browsing category's own menu picture — typically a hand-made collage of three or four of the
   // decorations in it, which says what the category holds better than the one borrowed element
   // thumbnail it falls back to. See migration 068.
