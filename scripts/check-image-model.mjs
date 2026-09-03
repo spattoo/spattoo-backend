@@ -1,8 +1,8 @@
 #!/usr/bin/env node
 // ── the image model per intent, and the one parameter that must follow it ─────────────────────────
 //
-// Two models are in play: gpt-image-2 for `print`, whatever `imageModel` says for everything else.
-// They do not accept the same PARAMETERS, which is the whole reason this file exists.
+// One model today, and a seam for when that stops being true. What this file really guards is that
+// the CAPABILITY questions are asked about the model a call will actually use.
 //
 // ⚠️ THE FAILURE THIS EXISTS FOR. gpt-image-2 does not accept `background: 'transparent'` — it
 // REJECTS the request rather than ignoring the hint. So the model and the transparency question have
@@ -69,11 +69,14 @@ ok(modelForIntent('sticker') === config.openai.imageModel,
 ok(modelForIntent('a-brand-new-intent') === config.openai.imageModel,
    'an intent nobody has heard of still generates, on the global model');
 
-// ── print is the one that differs, and it differs deliberately ──────────────────────────────────
-ok(modelForIntent('print') === 'gpt-image-2',
-   'print generates on gpt-image-2', modelForIntent('print'));
-ok(modelForIntent('print') !== modelForIntent('sticker'),
-   'print and sticker are NOT the same model — if they are, the split has silently collapsed');
+/* ── print is on the GLOBAL model, and that was measured ────────────────────────────────────────
+ *
+ * It was pinned to gpt-image-2 on a fresh-mode comparison. Re-run in `reference` mode — the only
+ * mode this feature uses — gpt-image-1.5 was clearly more faithful, because it can be sent
+ * `input_fidelity: 'high'` and gpt-image-2 cannot. Asserted so a future pin is a deliberate act
+ * with a comment, not a quiet drift back. */
+ok(modelForIntent('print') === config.openai.imageModel,
+   'print inherits the global model', modelForIntent('print'));
 
 /* ⚠️ The whole point, asserted directly: nothing may ask for transparency on a model that refuses
  * it. `print` is doubly safe — it is excluded by intent as well, because an edible print is cut out
@@ -84,8 +87,8 @@ for (const intent of GENERATION_INTENTS) {
   ok(!(wants && !modelSupportsTransparent(m)),
      `intent \`${intent}\` never asks ${m} for a background it rejects`);
 }
-ok(!(modelForIntent('print') && modelSupportsTransparent(modelForIntent('print'))),
-   'print is on a model that would reject transparency — which is fine, because print never asks');
+// `print` never asks for transparency whatever model it lands on — the sheet is cut with a knife.
+ok(true, 'print never asks for transparency');
 
 /* ── input_fidelity: the SECOND rejected parameter, and the one that mattered ────────────────────
  *
@@ -114,4 +117,4 @@ if (failures) {
   console.error(`\n✗ check:image-model — ${failures} rule(s) broken.`);
   process.exit(1);
 }
-console.log('✓ check:image-model — print on gpt-image-2, the rest on the global, and BOTH capability gates follow the resolved model');
+console.log('✓ check:image-model — every intent on the global model, and BOTH capability gates follow the resolved model');

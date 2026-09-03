@@ -41,37 +41,32 @@ export const config = {
     // before this feeds a credit cost.
     // Quality on 1024x1024 (gpt-image-1.5): low ≈ $0.009, medium ≈ $0.034, high ≈ $0.133 per image.
     imageModel:   process.env.OPENAI_IMAGE_MODEL   || 'gpt-image-1.5',
-    /* ── A better model where the BAKER pays, the cheaper one where WE do ────────────────────────
+    /* ── A per-intent model override. Currently EMPTY, and that is a finding, not an oversight ───
      *
-     * Per INTENT, not one global, because the two jobs are not alike:
+     * `print` was pinned to gpt-image-2 on the argument that it obeys the flat-artwork recipe more
+     * reliably. Measured, that was true — IN THE WRONG MODE.
      *
-     *   Extract Elements (sticker/relief/model) — admin building the catalogue. Spattoo pays, staff
-     *   ask for several variants and pick the best, and a bad one is simply not saved.
+     * ⚠️ Those runs used `fresh` (generate from a description, send nothing of the photo). This
+     * feature never uses fresh: a baker handing us a reference is asking for THAT plaque, so it
+     * uses `reference` — crop the subject, reproduce it. Re-run properly against the real cake
+     * (2026-09-04, plaque and goose), gpt-image-1.5 was CLEARLY more faithful on both: it held the
+     * plaque's squarish frame and fine gold line where gpt-image-2 ballooned the corners and
+     * thickened the border, and it held the goose's soft pencil linework and die-cut edge where
+     * gpt-image-2 redrew it in bold vector outlines — its own house style, not the baker's.
      *
-     *   print — a baker pressing "generate this" on their own order. Their credits, one attempt,
-     *   and it goes straight onto a cake in front of a customer. Higher stakes per call, and the
-     *   person bearing the cost is the one who gets the better model.
+     * The mechanism is right there in the API: `input_fidelity: 'high'` exists to preserve a
+     * reference's identity, gpt-image-1.5 takes it, and GPT-IMAGE-2 REJECTS IT
+     * (`modelSupportsInputFidelity`). Asking the model that cannot be told to stay faithful to be
+     * faithful was always going to lose.
      *
-     * ⚠️ THE DECIDING FACTOR IS NOT TEXT, though that was the original argument. Four side-by-side
-     * runs (`npm run try:print-model`, 2026-09-04) had both models spell every plaque correctly,
-     * including a 49-character line with an ampersand. Taken from a model card, disproved by trying
-     * it.
+     * So the global serves every intent, which is also 2-3x faster and ~35% cheaper. The map stays
+     * because the seam is sound and the next difference will be real — an intent with no entry
+     * inherits `imageModel`, so adding one is a config change and needing none costs nothing.
      *
-     * What actually differs is whether the model OBEYS THE RECIPE. The `print` recipe says "NO
-     * photographic shading, NO gloss, NO drop shadow" and was appended to all eight calls;
-     * gpt-image-1.5 IGNORED IT THREE TIMES IN FOUR, obeying only when the subject description
-     * itself repeated the instruction. gpt-image-2 obeyed every time. In production the subject
-     * description comes from reading a customer's photo — rich and descriptive, never
-     * hand-tightened — and an embossed metallic plaque prints as grey mud on icing sheet.
-     *
-     * Bought, not free: gpt-image-1.5 is 2-3x faster (12-20s vs 34-43s) and ~35% cheaper.
-     *
-     * ⚠️ Unset falls back to `imageModel`, so this is additive — an intent nobody has an opinion
-     * about keeps whatever the global is, and no future intent needs an entry here to work.
+     * ⚠️ Anything pinned here MUST be re-measured in `reference` mode. A fresh-mode result says
+     * nothing about the mode that ships. That is the whole lesson of this comment.
      */
-    imageModelByIntent: {
-      print: process.env.OPENAI_IMAGE_MODEL_PRINT || 'gpt-image-2',
-    },
+    imageModelByIntent: {},
     imageQuality: process.env.OPENAI_IMAGE_QUALITY || 'medium',
     // The GUIDE SHEET's quality. LOW BY DEFAULT, and deliberately not inheriting OPENAI_IMAGE_QUALITY
     // — the two do different jobs. An extracted element becomes a permanent library asset; a guide

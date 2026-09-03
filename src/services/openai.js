@@ -593,10 +593,13 @@ const RECIPES = {
    *   drawn, not photographed.
    *
    *   THE TEXT HAS TO BE RIGHT. Half of what a baker prints is words — "Our little goose is on the
-   *   way" on a plaque — so the instruction is explicit. ⚠️ It is NOT what earns this intent its own
-   *   model, though: measured, both models spell correctly every time. What earns it is that
-   *   gpt-image-1.5 IGNORES the "no shading, no gloss" instruction below whenever the subject
-   *   description is rich, and gpt-image-2 does not. See config.imageModelByIntent.
+   *   way" on a plaque — so the instruction is explicit rather than assumed. (Measured, both models
+   *   spell correctly every time; the instruction costs nothing and the day one of them slips it is
+   *   the only thing standing there.)
+   *
+   * ⚠️ This intent does NOT carry its own model. It briefly did — see config.imageModelByIntent for
+   * why that was measured in the wrong mode and reversed. What the intent carries is this recipe,
+   * which was right all along.
    */
   print:
     `${FRAMING} Flat 2D artwork for printing on edible icing sheet: even fill colours, clean crisp ` +
