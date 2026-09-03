@@ -1,9 +1,8 @@
 #!/usr/bin/env node
 // ── the image model per intent, and the one parameter that must follow it ─────────────────────────
 //
-// Two models are in play: gpt-image-2 for `print`, because half of what a baker prints is words and
-// it renders text far more reliably; whatever `imageModel` says for everything else, because that
-// work is admin building the catalogue on our money.
+// Two models are in play: gpt-image-2 for `print`, whatever `imageModel` says for everything else.
+// They do not accept the same PARAMETERS, which is the whole reason this file exists.
 //
 // ⚠️ THE FAILURE THIS EXISTS FOR. gpt-image-2 does not accept `background: 'transparent'` — it
 // REJECTS the request rather than ignoring the hint. So the model and the transparency question have
@@ -36,7 +35,7 @@ const STUB = {
 await import('dotenv/config');
 for (const [key, value] of Object.entries(STUB)) process.env[key] ||= value;
 
-const { modelSupportsTransparent, modelForIntent, GENERATION_INTENTS } =
+const { modelSupportsTransparent, modelSupportsInputFidelity, modelForIntent, GENERATION_INTENTS } =
   await import('../src/services/openai.js');
 const { config } = await import('../src/config.js');
 
@@ -88,8 +87,31 @@ for (const intent of GENERATION_INTENTS) {
 ok(!(modelForIntent('print') && modelSupportsTransparent(modelForIntent('print'))),
    'print is on a model that would reject transparency — which is fine, because print never asks');
 
+/* ── input_fidelity: the SECOND rejected parameter, and the one that mattered ────────────────────
+ *
+ * ⚠️ Found by running the real path, not by reading: `does not support the 'input_fidelity'
+ * parameter`. It was sent unconditionally on every reference-mode call, so gpt-image-2 could not do
+ * a reference edit AT ALL — which is the only mode this feature uses. The transparency gate existed
+ * and this one did not, because nobody had tried reference mode on the new model.
+ *
+ * Same deny-list shape. The lesson these two share: a capability difference between models is not
+ * discovered by reading a model card. */
+ok(modelSupportsInputFidelity('gpt-image-1'),   'gpt-image-1 takes input_fidelity');
+ok(modelSupportsInputFidelity('gpt-image-1.5'), 'gpt-image-1.5 takes input_fidelity');
+ok(!modelSupportsInputFidelity('gpt-image-2'),  'gpt-image-2 does NOT — it rejects the request');
+ok(!modelSupportsInputFidelity('gpt-image-2-2026-04-21'), 'a dated gpt-image-2 snapshot too');
+ok(modelSupportsInputFidelity('gpt-image-3'),   'an unknown future model is assumed to take it');
+ok(modelSupportsInputFidelity(''),              'an empty model does not crash the gate');
+
+// Both gates must be asked about the SAME resolved model, for every intent.
+for (const intent of GENERATION_INTENTS) {
+  const m = modelForIntent(intent);
+  ok(typeof modelSupportsTransparent(m) === 'boolean' && typeof modelSupportsInputFidelity(m) === 'boolean',
+     `intent \`${intent}\` can be asked both capability questions about ${m}`);
+}
+
 if (failures) {
   console.error(`\n✗ check:image-model — ${failures} rule(s) broken.`);
   process.exit(1);
 }
-console.log('✓ check:image-model — print on gpt-image-2, the rest on the global, and transparency follows the resolved model');
+console.log('✓ check:image-model — print on gpt-image-2, the rest on the global, and BOTH capability gates follow the resolved model');

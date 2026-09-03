@@ -620,6 +620,23 @@ const NO_TRANSPARENT_BACKGROUND = ['gpt-image-2'];
 export const modelSupportsTransparent = (model = '') =>
   !NO_TRANSPARENT_BACKGROUND.some(m => String(model).startsWith(m));
 
+/* ⚠️ `input_fidelity` is the SECOND parameter gpt-image-2 rejects, and it matters far more than the
+ * first. It is what makes a reference edit reproduce THAT object instead of reinterpreting it —
+ * the whole difference between "recreate this baker's plaque" and "draw a nice plaque".
+ *
+ * Found the same way as the transparency one: by trying it. `does not support the 'input_fidelity'
+ * parameter` / `invalid_input_fidelity_model`. Sent unconditionally, so every reference-mode call on
+ * gpt-image-2 was a rejected request — which means the model could not do the one job this feature
+ * needs, and nobody would have known until a baker pressed the button.
+ *
+ * Omitting it is NOT equivalent to sending it. The request then succeeds at whatever fidelity the
+ * model defaults to, which is a real behavioural difference and has to be judged by looking at the
+ * output, not assumed. Same deny-list shape and the same reasoning as above.
+ */
+const NO_INPUT_FIDELITY = ['gpt-image-2'];
+export const modelSupportsInputFidelity = (model = '') =>
+  !NO_INPUT_FIDELITY.some(m => String(model).startsWith(m));
+
 /* Which model this intent is generated with — see config.imageModelByIntent for why they differ.
  *
  * ⚠️ EVERY read of the model goes through here, including the transparency check. The gate takes a
@@ -706,7 +723,8 @@ export async function generateDecorationImage(
   form.append('quality', config.openai.imageQuality);
   if (wantsTransparent) form.append('background', 'transparent');
   form.append('output_format', 'png');        // must be png/webp — jpeg cannot carry alpha
-  form.append('input_fidelity', 'high');      // preserve the reference decoration's identity
+  // preserve the reference decoration's identity — where the model takes the parameter at all.
+  if (modelSupportsInputFidelity(imageModel)) form.append('input_fidelity', 'high');
   form.append('n', String(n));
 
   const res = await fetch('https://api.openai.com/v1/images/edits', {

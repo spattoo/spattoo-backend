@@ -46,6 +46,36 @@ for (const [key, value] of Object.entries({
 
 const { config } = await import('../src/config.js');
 const { generateDecorationImage } = await import('../src/services/openai.js');
+const { composeReference } = await import('../src/services/imageCrop.js');
+const sharp = (await import('sharp')).default;
+
+/* ── REFERENCE MODE, which is what the feature actually does ─────────────────────────────────────
+ *
+ * ⚠️ The first four runs of this script used `fresh` — generate from a description, send nothing of
+ * the source photo — and produced handsome plaques that were nothing like the one on the cake. That
+ * is the wrong question. A baker handing us a reference photo is not asking for "a plaque"; they are
+ * asking for THAT plaque, in that shape, so it can be printed and stuck back on.
+ *
+ * So: REF=<photo> BBOX=x,y,w,h (fractions 0..1) crops the subject out and reproduces it, through the
+ * same two steps extractImage.js uses — composeReference for the framing, then fidelity 'reference'
+ * with input_fidelity high. A test that skips the production path measures something nobody ships.
+ *
+ * Err GENEROUS on the box: the identify prompt says so too — including a little surrounding cake is
+ * harmless (the model is told to exclude it) while clipping the subject is not recoverable.
+ */
+async function buildReference() {
+  if (!process.env.REF) return { reference: null, size: '1024x1024', fidelity: 'fresh' };
+  const [x, y, w, h] = (process.env.BBOX || '0,0,1,1').split(',').map(Number);
+  const meta = await sharp(process.env.REF).metadata();
+  const crop = await sharp(process.env.REF).extract({
+    left:   Math.max(0, Math.round(x * meta.width)),
+    top:    Math.max(0, Math.round(y * meta.height)),
+    width:  Math.min(meta.width,  Math.round(w * meta.width)),
+    height: Math.min(meta.height, Math.round(h * meta.height)),
+  }).png().toBuffer();
+  const { buffer, size } = await composeReference(crop);
+  return { reference: buffer, size, fidelity: 'reference', crop };
+}
 
 const [textArg, ...modelArgs] = process.argv.slice(2);
 const TEXT   = textArg || 'Our little goose is on the way';
@@ -62,10 +92,19 @@ const PROMPT = process.env.PROMPT
  * model's. PROMPT= overrides it, so "does this model embellish?" can be asked with a prompt that
  * does not ask it to. Use {TEXT} as the placeholder. */
 
+// The subject, as a filename. Also what tells two runs apart on disk.
+const slug = (TEXT || 'subject').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 48);
+
 const OUT = resolve(process.cwd(), 'tmp/print-model-test');
 mkdirSync(OUT, { recursive: true });
 
-console.log(`\n  text    "${TEXT}"`);
+const { reference, size, fidelity, crop } = await buildReference();
+// The crop is written out too — if the output is wrong, the first question is always whether the
+// box was wrong, and that cannot be answered from the result alone.
+if (crop) writeFileSync(resolve(OUT, `${slug}--00-crop.png`), crop);
+
+console.log(`\n  subject "${TEXT}"`);
+console.log(`  mode    ${fidelity}${reference ? `  (crop from ${process.env.REF}, framed to ${size})` : '  (nothing of a source photo is sent)'}`);
 console.log(`  models  ${MODELS.join('  vs  ')}`);
 console.log(`  out     ${OUT}\n`);
 
@@ -81,8 +120,12 @@ for (const model of MODELS) {
   try {
     // `fresh` — no reference image. Nothing of a source photo is sent, which is both what a
     // generated plaque actually is and cheaper (no input image to tokenise).
-    const [png] = await generateDecorationImage(null, PROMPT, '1024x1024', 'print', 'fresh', 1);
-    const file = resolve(OUT, `${model.replace(/[^\w.-]/g, '_')}.png`);
+    const [png] = await generateDecorationImage(reference, PROMPT, size, 'print', fidelity, 1);
+    /* ⚠️ Named for the SUBJECT as well as the model. The first version wrote `${model}.png` and
+     * nothing else, so four runs quietly overwrote each other and three pairs were lost — the
+     * comparison they existed for could not be reopened. An image that costs money to make should
+     * not be destroyed by the next one. */
+    const file = resolve(OUT, `${slug}--${model.replace(/[^\w.-]/g, '_')}.png`);
     writeFileSync(file, png);
     console.log(`ok  ${((Date.now() - started) / 1000).toFixed(1)}s  ${(png.length / 1024).toFixed(0)}KB`);
     console.log(`  ${' '.repeat(16)} ${file}`);
