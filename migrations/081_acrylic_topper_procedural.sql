@@ -28,10 +28,10 @@
 -- Idempotent, and it will not overwrite a key somebody set deliberately: only rows where the field
 -- is genuinely absent are updated.
 
--- No `updated_at`: cake_elements does not have one, and that is the schema's normal state rather
--- than a gap — only 17 of 69 tables carry one. This table stamps `created_at` and then only
--- SPECIFIC events, `optimized_at` and `promoted_at`. A first draft set `updated_at = now()` here
--- out of habit and failed on the first run.
+-- No `updated_at` set here, for two reasons. When this was written cake_elements HAD no such column
+-- — a first draft set it out of habit and failed on the first run. 082 then adds one, with a
+-- BEFORE UPDATE trigger that maintains it, so naming it here would be both unnecessary and a way
+-- for the two to disagree. Whichever order these run in, the column ends up right.
 UPDATE public.cake_elements
    SET placement_config = jsonb_set(placement_config, '{procedural}', '"writing"'::jsonb, true)
  WHERE placement_config ? 'acrylic'
