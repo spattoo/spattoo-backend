@@ -26,10 +26,20 @@ export const config = {
   openai: {
     apiKey: process.env.OPENAI_API_KEY,
     // Image model for "Extract Elements" decoration regeneration. Env-driven because this family
-    // churns: dall-e-3 was REMOVED (2026-05-12) and gpt-image-1 is deprecated (2026-10-23). The
-    // successor gpt-image-2 does NOT support transparent backgrounds, so it can't be swapped in
-    // blindly for cut-out assets — see services/openai.js generateDecorationImage.
-    // Quality on 1024x1024: low ≈ $0.009, medium ≈ $0.034, high ≈ $0.133 per image.
+    // churns: dall-e-3 was REMOVED (2026-05-12) and gpt-image-1 is deprecated (2026-10-23).
+    //
+    // ⚠️ gpt-image-2 (2026-04-21) is now OpenAI's recommended default and this comment used to say
+    // it "can't be swapped in blindly" because it has no transparent-background support. That was
+    // true of the CODE, not of the model: the parameter was sent unconditionally, so the swap was a
+    // rejected request. `modelSupportsTransparent` in services/openai.js now asks first, and the
+    // swap is what it always claimed to be — set OPENAI_IMAGE_MODEL and nothing else.
+    //
+    // ⚠️ CHECK THE PRICE BEFORE SWITCHING. The figures below are gpt-image-1.5's, measured. Public
+    // numbers for gpt-image-2 sit around $0.053 for a medium 1024x1024, which is CHEAPER than
+    // gpt-image-1 (~$0.07) and DEARER than the 1.5 we run. Third-party sources contradict each
+    // other and OpenAI's own pricing page is the only thing worth believing here, so confirm there
+    // before this feeds a credit cost.
+    // Quality on 1024x1024 (gpt-image-1.5): low ≈ $0.009, medium ≈ $0.034, high ≈ $0.133 per image.
     imageModel:   process.env.OPENAI_IMAGE_MODEL   || 'gpt-image-1.5',
     imageQuality: process.env.OPENAI_IMAGE_QUALITY || 'medium',
     // The GUIDE SHEET's quality. LOW BY DEFAULT, and deliberately not inheriting OPENAI_IMAGE_QUALITY

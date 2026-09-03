@@ -505,6 +505,11 @@ Return ONLY JSON: { "description": "<comma-separated keywords>" }`;
 // background removed by the standard 2D element pipeline (AddElement) if and when it is actually
 // saved as an element. A transparent result here is a nice-to-have, not a dependency.
 //
+// ⚠️ It DID block one until now, though — not for the reason the comment gives. The parameter was
+// sent unconditionally on both endpoints, so pointing OPENAI_IMAGE_MODEL at gpt-image-2 produced a
+// rejected request. `modelSupportsTransparent` below is what makes the swap the config change it
+// was always described as.
+//
 // Returns a PNG Buffer (GPT image models ALWAYS return base64 — `response_format` is a DALL·E-only
 // param and there is no `url` to read).
 // ── Generation RECIPES, by what the element will BECOME ───────────────────────────────────────
@@ -576,6 +581,19 @@ const RECIPES = {
     'photographed sharply from front to back.',
 };
 
+/* Which image models accept `background: 'transparent'`.
+ *
+ * A DENY list, not an allow list, and deliberately: the next model in this family should work the
+ * day it is set, not the day somebody remembers to add it here. Everything before gpt-image-2 took
+ * the parameter, so naming the exception is both shorter and the thing that will age correctly —
+ * an allow list would silently drop transparency from every future model instead.
+ *
+ * Matched by prefix because OpenAI dates its snapshots (`gpt-image-2-2026-04-21`).
+ */
+const NO_TRANSPARENT_BACKGROUND = ['gpt-image-2'];
+export const modelSupportsTransparent = (model = '') =>
+  !NO_TRANSPARENT_BACKGROUND.some(m => String(model).startsWith(m));
+
 // Returns an ARRAY of PNG buffers, one per variant. `variants` asks the API for n images in ONE
 // call rather than n calls: the rate limit counts IMAGES per minute either way, so looping would
 // buy nothing and cost n round trips.
@@ -594,7 +612,17 @@ export async function generateDecorationImage(
   // model ignores it. NOT for `model`: image-to-3D wants a plain backdrop it can separate the
   // subject from, and an alpha channel there is a hard silhouette with nothing behind it — the
   // opposite of the shading cue that recipe asks for.
-  const wantsTransparent = intent !== 'model';
+  //
+  // ⚠️ AND ONLY IF THE MODEL TAKES THE PARAMETER. `gpt-image-2` does not support
+  // `background: 'transparent'`, so sending it is a rejected request rather than an ignored hint —
+  // which is what made switching model a breaking change instead of an env var. Asked here, so the
+  // swap is a config change and not a code change.
+  //
+  // Losing the native cut-out costs us nothing that matters: remove.bg was always the fallback, and
+  // a 2D element gets its background removed by `prepareElementImage` on the way in regardless. For
+  // an EDIBLE PRINT it is not wanted at all — the sheet is printed and cut with a knife, so a white
+  // background never survives (see plans/edible-prints-from-a-reference-photo.md).
+  const wantsTransparent = intent !== 'model' && modelSupportsTransparent(config.openai.imageModel);
 
   // ── fresh: generate from the description, send nothing of the source ───────────────────────────
   // A different ENDPOINT, not a flag. images/edits always conditions on the image it is given, so
