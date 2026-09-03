@@ -52,8 +52,19 @@ export const config = {
      *   and it goes straight onto a cake in front of a customer. Higher stakes per call, and the
      *   person bearing the cost is the one who gets the better model.
      *
-     * The deciding factor is TEXT: half of what a baker prints is words, gpt-image-2 renders text
-     * far more reliably, and a misspelt plaque is the way this feature embarrasses a bakery.
+     * ⚠️ THE DECIDING FACTOR IS NOT TEXT, though that was the original argument. Four side-by-side
+     * runs (`npm run try:print-model`, 2026-09-04) had both models spell every plaque correctly,
+     * including a 49-character line with an ampersand. Taken from a model card, disproved by trying
+     * it.
+     *
+     * What actually differs is whether the model OBEYS THE RECIPE. The `print` recipe says "NO
+     * photographic shading, NO gloss, NO drop shadow" and was appended to all eight calls;
+     * gpt-image-1.5 IGNORED IT THREE TIMES IN FOUR, obeying only when the subject description
+     * itself repeated the instruction. gpt-image-2 obeyed every time. In production the subject
+     * description comes from reading a customer's photo — rich and descriptive, never
+     * hand-tightened — and an embossed metallic plaque prints as grey mud on icing sheet.
+     *
+     * Bought, not free: gpt-image-1.5 is 2-3x faster (12-20s vs 34-43s) and ~35% cheaper.
      *
      * ⚠️ Unset falls back to `imageModel`, so this is additive — an intent nobody has an opinion
      * about keeps whatever the global is, and no future intent needs an entry here to work.

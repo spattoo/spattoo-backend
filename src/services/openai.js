@@ -593,8 +593,10 @@ const RECIPES = {
    *   drawn, not photographed.
    *
    *   THE TEXT HAS TO BE RIGHT. Half of what a baker prints is words — "Our little goose is on the
-   *   way" on a plaque. A misspelt plaque is the single most likely way this feature embarrasses a
-   *   bakery in front of a customer, which is what earns this intent the better model.
+   *   way" on a plaque — so the instruction is explicit. ⚠️ It is NOT what earns this intent its own
+   *   model, though: measured, both models spell correctly every time. What earns it is that
+   *   gpt-image-1.5 IGNORES the "no shading, no gloss" instruction below whenever the subject
+   *   description is rich, and gpt-image-2 does not. See config.imageModelByIntent.
    */
   print:
     `${FRAMING} Flat 2D artwork for printing on edible icing sheet: even fill colours, clean crisp ` +

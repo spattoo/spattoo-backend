@@ -53,9 +53,14 @@ const MODELS = modelArgs.length ? modelArgs : [config.openai.imageModel, 'gpt-im
 
 /* The prompt a real print would carry. Deliberately the SAME wording the feature will use — a test
  * that quietly writes a better prompt than production tells you nothing about production. */
-const PROMPT =
-  `a decorative baby-shower plaque: an ornate gold-outlined frame on a cream background, ` +
-  `with the words "${TEXT}" inside it in an elegant gold script`;
+const PROMPT = process.env.PROMPT
+  ? process.env.PROMPT.replace('{TEXT}', TEXT)
+  : `a decorative baby-shower plaque: an ornate gold-outlined frame on a cream background, ` +
+    `with the words "${TEXT}" inside it in an elegant gold script`;
+/* ⚠️ The default says "ornate" and "baby-shower", which INVITES decoration — the first run came
+ * back with a goose and foliage nobody asked for, and that was the prompt's doing as much as the
+ * model's. PROMPT= overrides it, so "does this model embellish?" can be asked with a prompt that
+ * does not ask it to. Use {TEXT} as the placeholder. */
 
 const OUT = resolve(process.cwd(), 'tmp/print-model-test');
 mkdirSync(OUT, { recursive: true });
