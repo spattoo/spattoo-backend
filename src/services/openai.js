@@ -549,7 +549,7 @@ const FRAMING =
   'Show ONLY that one decoration — remove the cake, the frosting behind it, any board, hands or ' +
   'props, and any OTHER decoration that happens to be nearby.';
 
-export const GENERATION_INTENTS = ['sticker', 'relief', 'model'];
+export const GENERATION_INTENTS = ['sticker', 'relief', 'model', 'print'];
 
 // How closely the output copies the reference crop.
 //
@@ -579,6 +579,30 @@ const RECIPES = {
     'the form reads as solid and its depth is visible. Soft even studio lighting with no harsh ' +
     'shadows. Matte, clay-like, non-reflective surface. A single object, sitting upright, ' +
     'photographed sharply from front to back.',
+
+  /* ── An EDIBLE PRINT: ink on an icing sheet, cut out with a knife ─────────────────────────────
+   *
+   * Not a sticker with a different name. Three things differ, and each is why this is its own key
+   * rather than a flag on `sticker`:
+   *
+   *   NO TRANSPARENCY WANTED. The sheet is printed and then cut around, so a white background never
+   *   survives the knife. Asking for alpha buys nothing and costs us the model choice below.
+   *
+   *   FLAT, NOT PHOTOGRAPHIC. `sticker` asks for photorealism and studio lighting, which prints as
+   *   grey mush on icing sheet — edible ink has no gloss and a narrow gamut. Printed artwork is
+   *   drawn, not photographed.
+   *
+   *   THE TEXT HAS TO BE RIGHT. Half of what a baker prints is words — "Our little goose is on the
+   *   way" on a plaque. A misspelt plaque is the single most likely way this feature embarrasses a
+   *   bakery in front of a customer, which is what earns this intent the better model.
+   */
+  print:
+    `${FRAMING} Flat 2D artwork for printing on edible icing sheet: even fill colours, clean crisp ` +
+    'outlines, NO photographic shading, NO gloss, NO drop shadow and no gradient background. ' +
+    'Plain solid white background behind the subject. Colours bold and saturated rather than pale ' +
+    '— edible ink prints lighter than it looks on screen. ' +
+    'If the subject contains any TEXT, reproduce it EXACTLY as given, spelled correctly, fully ' +
+    'legible, with no invented, repeated or decorative extra lettering.',
 };
 
 /* Which image models accept `background: 'transparent'`.
@@ -593,6 +617,16 @@ const RECIPES = {
 const NO_TRANSPARENT_BACKGROUND = ['gpt-image-2'];
 export const modelSupportsTransparent = (model = '') =>
   !NO_TRANSPARENT_BACKGROUND.some(m => String(model).startsWith(m));
+
+/* Which model this intent is generated with — see config.imageModelByIntent for why they differ.
+ *
+ * ⚠️ EVERY read of the model goes through here, including the transparency check. The gate takes a
+ * model and the config holds two of them, so anything that asks the GLOBAL what it supports will be
+ * right about the common case and wrong about the one intent that differs — sending gpt-image-2 the
+ * one parameter it rejects. One resolver, used for both, is what stops that.
+ */
+export const modelForIntent = (intent) =>
+  config.openai.imageModelByIntent?.[intent] || config.openai.imageModel;
 
 // Returns an ARRAY of PNG buffers, one per variant. `variants` asks the API for n images in ONE
 // call rather than n calls: the rate limit counts IMAGES per minute either way, so looping would
@@ -622,7 +656,14 @@ export async function generateDecorationImage(
   // a 2D element gets its background removed by `prepareElementImage` on the way in regardless. For
   // an EDIBLE PRINT it is not wanted at all — the sheet is printed and cut with a knife, so a white
   // background never survives (see plans/edible-prints-from-a-reference-photo.md).
-  const wantsTransparent = intent !== 'model' && modelSupportsTransparent(config.openai.imageModel);
+  // The model this intent is generated with — resolved ONCE and used for the request, the
+  // transparency question and the error message, so the three cannot disagree.
+  const imageModel = modelForIntent(intent);
+  /* ⚠️ `print` never wants transparency even on a model that offers it: the sheet is printed and cut
+   * with a knife, so alpha buys nothing — and asking for it would rule out the very model this
+   * intent exists to use. */
+  const wantsTransparent = intent !== 'model' && intent !== 'print'
+    && modelSupportsTransparent(imageModel);
 
   // ── fresh: generate from the description, send nothing of the source ───────────────────────────
   // A different ENDPOINT, not a flag. images/edits always conditions on the image it is given, so
@@ -634,7 +675,7 @@ export async function generateDecorationImage(
       method: 'POST',
       headers: { 'Authorization': `Bearer ${config.openai.apiKey}`, 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        model: config.openai.imageModel,
+        model: imageModel,
         prompt: `An isolated product photo of a single cake decoration: ${prompt}. ${recipe}`,
         size,
         quality: config.openai.imageQuality,
@@ -643,13 +684,13 @@ export async function generateDecorationImage(
         ...(wantsTransparent ? { background: 'transparent' } : {}),
       }),
     });
-    if (!res.ok) throw new Error(`${config.openai.imageModel} generation failed: ${await res.text()}`);
+    if (!res.ok) throw new Error(`${imageModel} generation failed: ${await res.text()}`);
     return decodeImages(await res.json());
   }
 
   // ── reference: reproduce THAT object ───────────────────────────────────────────────────────────
   const form = new FormData();
-  form.append('model', config.openai.imageModel);
+  form.append('model', imageModel);
   form.append('image', new Blob([referenceBuffer], { type: 'image/png' }), 'reference.png');
   // "the decoration shown in the reference image" is ambiguous the moment the crop holds more than
   // one — and with input_fidelity high, ambiguity resolves as "copy all of it". Name the single
@@ -672,7 +713,9 @@ export async function generateDecorationImage(
     body: form,
   });
 
-  if (!res.ok) throw new Error(`${config.openai.imageModel} edit failed: ${await res.text()}`);
+  // `imageModel`, not the global: a failure has to name the model that actually ran, or the one
+  // intent using a different one reports the wrong culprit at the exact moment somebody is debugging.
+  if (!res.ok) throw new Error(`${imageModel} edit failed: ${await res.text()}`);
   return decodeImages(await res.json());
 }
 
@@ -912,7 +955,7 @@ export async function generateDecorationStages(referenceBuffer, { title, steps =
 
   const flat = dimension === '2d';
   const form = new FormData();
-  form.append('model', config.openai.imageModel);
+  form.append('model', imageModel);
   form.append('image', new Blob([referenceBuffer], { type: 'image/png' }), 'reference.png');
   form.append('prompt',
     `Create a complete step-by-step tutorial sheet showing how to make the fondant decoration in ` +

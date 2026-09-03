@@ -41,6 +41,26 @@ export const config = {
     // before this feeds a credit cost.
     // Quality on 1024x1024 (gpt-image-1.5): low ≈ $0.009, medium ≈ $0.034, high ≈ $0.133 per image.
     imageModel:   process.env.OPENAI_IMAGE_MODEL   || 'gpt-image-1.5',
+    /* ── A better model where the BAKER pays, the cheaper one where WE do ────────────────────────
+     *
+     * Per INTENT, not one global, because the two jobs are not alike:
+     *
+     *   Extract Elements (sticker/relief/model) — admin building the catalogue. Spattoo pays, staff
+     *   ask for several variants and pick the best, and a bad one is simply not saved.
+     *
+     *   print — a baker pressing "generate this" on their own order. Their credits, one attempt,
+     *   and it goes straight onto a cake in front of a customer. Higher stakes per call, and the
+     *   person bearing the cost is the one who gets the better model.
+     *
+     * The deciding factor is TEXT: half of what a baker prints is words, gpt-image-2 renders text
+     * far more reliably, and a misspelt plaque is the way this feature embarrasses a bakery.
+     *
+     * ⚠️ Unset falls back to `imageModel`, so this is additive — an intent nobody has an opinion
+     * about keeps whatever the global is, and no future intent needs an entry here to work.
+     */
+    imageModelByIntent: {
+      print: process.env.OPENAI_IMAGE_MODEL_PRINT || 'gpt-image-2',
+    },
     imageQuality: process.env.OPENAI_IMAGE_QUALITY || 'medium',
     // The GUIDE SHEET's quality. LOW BY DEFAULT, and deliberately not inheriting OPENAI_IMAGE_QUALITY
     // — the two do different jobs. An extracted element becomes a permanent library asset; a guide
