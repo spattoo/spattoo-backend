@@ -28,6 +28,22 @@ if (!process.env.OPENAI_API_KEY) {
   process.exit(1);
 }
 
+/* config.js hard-fails on ANY missing required var, not just the one this script needs — so having
+ * the OpenAI key alone was not enough to run it. Placeholders for everything else, `||=` so a real
+ * value always wins, exactly as check-boot does it. OPENAI_API_KEY is deliberately absent from the
+ * list: it is the one thing here that must be real, and the guard above already refused without it. */
+for (const [key, value] of Object.entries({
+  SUPABASE_URL: 'https://stub.supabase.co',
+  SUPABASE_SERVICE_KEY: 'stub',
+  REMOVE_BG_API_KEY: 'stub',
+  REDIS_URL: 'redis://127.0.0.1:6379',
+  R2_ENDPOINT: 'https://stub.r2.cloudflarestorage.com',
+  R2_ACCESS_KEY_ID: 'stub',
+  R2_SECRET_ACCESS_KEY: 'stub',
+  R2_BUCKET: 'stub',
+  R2_PUBLIC_URL: 'https://stub.example',
+})) process.env[key] ||= value;
+
 const { config } = await import('../src/config.js');
 const { generateDecorationImage } = await import('../src/services/openai.js');
 
