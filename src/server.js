@@ -34,6 +34,7 @@ import accountRouter from './routes/account.js';
 import designSessionsRouter from './routes/designSessions.js';
 import aiCreditsRouter from './routes/aiCredits.js';
 import xraySpecRouter from './routes/xraySpec.js';
+import ediblePrintsRouter from './routes/ediblePrints.js';
 import { requestId } from './middleware/requestId.js';
 import { errorHandler } from './middleware/errorHandler.js';
 import { requireAuth } from './middleware/auth.js';
@@ -102,6 +103,7 @@ app.use('/api', accountRouter);
 app.use('/api', designSessionsRouter);
 app.use('/api', aiCreditsRouter);
 app.use('/api', xraySpecRouter);
+app.use('/api', ediblePrintsRouter);
 
 app.use(errorHandler);   // global safety net — must run last, after all routers
 
