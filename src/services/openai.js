@@ -49,7 +49,7 @@ Return ONLY a JSON object, no explanation:
       "element": "<rose|leaf|drip|topper|macaron|other>",
       "label": "<short name a baker would use, e.g. 'pink buttercream rosette'>",
       "color_hex": "<dominant hex colour>",
-      "material": "<buttercream|fondant|acrylic|sugar|chocolate|other>",
+      "material": "<buttercream|fondant|edible_print|acrylic|sugar|chocolate|other>",
       "bbox": { "x": <0..1>, "y": <0..1>, "w": <0..1>, "h": <0..1> },
       "licensed_ip": <true|false>,
       "ip_note": "<if licensed_ip, name the character/brand in a few words, e.g. 'Boss Baby (DreamWorks)'. Otherwise omit.>",
@@ -62,6 +62,13 @@ About "bbox": the axis-aligned box around that ONE decoration, as fractions of t
 (x,y = top-left corner; w,h = width/height; all 0..1). Err on the side of a slightly LARGER box —
 clipping part of the decoration is much worse than including a little cake around it.
 
+About "edible_print": a picture PRINTED on an icing/wafer sheet and cut out, then stuck flat on the
+cake. It is the flattest thing on any cake — no modelled depth, no sculpted edge, no brush marks —
+and it usually has a thin pale cut border where the scissors went. Illustrated characters, lettered
+plaques, banners and logos are almost always this. A fondant cut-out of the same subject would have
+a soft rounded edge and a slight dome; a printed one is paper-flat. When a flat illustrated
+character or a lettered sign is on a cake, PREFER edible_print over fondant.
+
 About "licensed_ip": true when the decoration depicts INTELLECTUAL PROPERTY someone owns — a
 recognisable cartoon/film/TV/game character (Boss Baby, Elsa, Spider-Man, Peppa Pig…), a brand or
 company logo, a sports team crest, or a film/show title treatment. Judge the SUBJECT, not the craft:
@@ -69,6 +76,13 @@ a fondant figurine of a licensed character is licensed_ip, while a generic fonda
 plain star, a bow or a number is NOT. When genuinely unsure, prefer false — a generic decoration
 wrongly flagged is a worse outcome than a licensed one slipping through, because a human reviews
 these anyway.
+
+⚠️ Do NOT read a licensed property out of the CAKE'S OWN LETTERING. A cake that says "Our little
+goose is on the way" is a baby-shower cake, not a Little Goose franchise; a "Happy Birthday Aarav"
+banner names a child, not a brand. Real licensed_ip is recognisable as someone else's character or
+logo INDEPENDENTLY of the words iced onto the cake. Measured: a plain baby-shower goose was flagged
+first as "generic goose design" — a self-contradiction — and then as "Little Goose illustration",
+which is the cake's own wording read back as a title.
 
 Rules:
 - List up to 12 decorations. Do NOT bundle things together to fit a smaller number.
