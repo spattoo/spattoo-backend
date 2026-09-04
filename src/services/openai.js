@@ -93,6 +93,15 @@ Rules:
 - One entry per DISTINCT decoration. Three identical lipsticks are ONE entry, not three — each
   entry becomes a reusable library asset that gets placed as many times as wanted.
 - Ignore the cake base, the board, plain frosting, sprinkles and pearls — they aren't standalone assets.
+- ⚠️ ONLY WHAT IS ON THE CAKE. A party photo shows a backdrop, a banner, balloons, flowers in vases,
+  props and table décor, and they are NOT decorations on this cake. This matters most when the SAME
+  design appears twice — a backdrop board reading "Our little goose is on the way" behind a cake
+  carrying a small plaque of the same words. Catalogue the one ON THE CAKE, and put the bbox on THAT
+  one: measured, the box came back on the backdrop, so the crop held a party banner and roses and no
+  plaque at all. If a subject appears both on the cake and behind it, the cake's copy is the smaller,
+  and it is the only one that counts.
+- The bbox is checked by cropping it, so it has to be right about WHICH object as well as roughly
+  where. A generous box around the correct object is fine; a tight box around the wrong one is not.
 - Pick decorations that would actually be reusable on another cake.
 - STILL list a licensed decoration (flagged), don't silently omit it — the human wants to see it was seen.`,
           },

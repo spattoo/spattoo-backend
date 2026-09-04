@@ -127,6 +127,10 @@ router.post('/orders/:id/edible-prints/identify',
     res.json({
       ok: true,
       sourceKey: photo.key,
+      // The photo itself, so the panel can show a CSS crop of each candidate's bbox. `orders/reference/`
+      // is public, and X-Ray already previews decorations this way — no second asset is cut, stored
+      // or swept.
+      photoUrl: photo.url,
       prints: elements.map((el, i) => ({
         // Index, not a stored row: identify is free and repeatable, so there is nothing to persist
         // and nothing to clean up. The client hands the whole candidate back to /generate.
@@ -140,6 +144,39 @@ router.post('/orders/:id/edible-prints/identify',
         ipWarning: ipWarning(el),
       })),
     });
+  } catch (err) {
+    serverError(req, res, err);
+  }
+});
+
+/* ── GET /api/orders/:id/edible-prints ───────────────────────────────────────────────────────────
+ *
+ * The prints already made for this order, so Print & cut-outs can show them beside the catalogue
+ * decorations. Cheap, unmetered, and safe to call on every open — it is one indexed read.
+ *
+ * Shaped like an ELEMENT (`image_url`), not like an upload, because that is what the cut sheet
+ * consumes: `elementSources` traces whatever carries an image and returns the printable pair. One
+ * shape means the sheet does not learn a second kind of thing.
+ */
+router.get('/orders/:id/edible-prints',
+  requireAuth, requireCapability('order:manage'), async (req, res) => {
+  try {
+    const order = await assertBakerOwns(req, 'orders', req.params.id, { select: 'id' });
+    if (!order) return res.status(404).json({ error: 'Order not found' });
+
+    const { data, error } = await supabase
+      .from('order_edible_prints')
+      .select('id, label, created_at, baker_uploads!inner(id, name, storage_key)')
+      .eq('order_id', order.id)
+      .eq('baker_id', req.bakerId)          // tenant fence on this table's own column, not via a join
+      .order('created_at');
+    if (error) return serverError(req, res, error);
+
+    res.json({ ok: true, prints: (data ?? []).map(r => ({
+      id:        `print:${r.baker_uploads.id}`,   // namespaced: the sheet keys on id alongside elements
+      name:      r.label || r.baker_uploads.name || 'Edible print',
+      image_url: toPublicUrl(r.baker_uploads.storage_key),
+    })) });
   } catch (err) {
     serverError(req, res, err);
   }
@@ -215,6 +252,20 @@ router.post('/orders/:id/edible-prints/generate',
             name:             label || 'Edible print',
           }).select('id, name, storage_key, cutout_key, created_at').single();
           if (error) throw error;
+
+          /* ⚠️ And LINK IT TO THIS ORDER. The print is the baker's and reusable — that is why it is
+           * an upload and not an order-owned asset — but the baker pressed Make it from inside an
+           * order and will look for it in that order's Print & cut-outs. Without this row it is only
+           * in the uploads picker, which is not where they are standing.
+           *
+           * A link, never a column on the upload: the same goose is printed for the next baby shower
+           * too, and that adds a row rather than overwriting an answer. See migration 086. */
+          const { error: linkErr } = await supabase.from('order_edible_prints').insert({
+            order_id: order.id, upload_id: row.id, baker_id: req.bakerId, label: label || null,
+          });
+          // A failed link must not lose the image the baker just paid for. The upload stands on its
+          // own; the print is in their library either way, and the order simply will not list it.
+          if (linkErr) console.error('order_edible_prints link failed:', linkErr.message);
 
           return { keep: true, value: row };
         },
