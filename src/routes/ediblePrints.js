@@ -196,7 +196,14 @@ router.post('/orders/:id/edible-prints/generate',
            * situation POST /uploads/:id/promote refuses — a customer's content becoming furniture
            * in other people's pickers, which ToS 6.2 does not license. The baker performed this
            * action, for her cake; the asset is the bakery's. */
-          const key = `uploads/${req.bakerId}/${randomUUID()}.png`;
+          /* ⚠️ `elements/files/2D`, which is where a baker's OWN uploads already go — the folder
+           * `uploadElementImage` signs for, and the one `ensureCutout` writes to. An invented
+           * `uploads/<bakerId>/` prefix looked tidier and was wrong twice over: it is not in
+           * ALLOWED_FOLDERS, and that list is what `assetKeysIn` recognises as one of our objects,
+           * so the print would have been INVISIBLE to the export walk — the row travels to prod and
+           * its picture does not, with nothing failing anywhere. Same folder as every other upload
+           * means it behaves like every other upload. */
+          const key = `elements/files/2D/${randomUUID()}.png`;
           await putObject(key, png, 'image/png');
 
           const { data: row, error } = await supabase.from('baker_uploads').insert({
@@ -215,6 +222,18 @@ router.post('/orders/:id/edible-prints/generate',
     } catch (err) {
       if (err instanceof InsufficientCreditsError) {
         return res.status(err.status).json({ error: err.message, code: err.code, ...err.detail });
+      }
+      /* ⚠️ An unpriced or inactive action is OUR data being wrong, and it must SAY so. It reached
+       * production as a bare "Internal server error" — the credit row is seeded by migrations
+       * 083/084 and switched on by 085, and until those run `reserve_ai_credits` answers
+       * UNKNOWN_ACTION for every press. A 500 with no code sends whoever is debugging into the
+       * image pipeline instead of the migration list. Still a 500 (it is not the caller's fault),
+       * but a named one. */
+      if (err?.code === 'UNKNOWN_AI_ACTION') {
+        return res.status(err.status ?? 500).json({
+          error: 'Edible prints are not priced on this environment yet.',
+          code: err.code, action: AI_ACTION.EDIBLE_PRINT_GENERATE,
+        });
       }
       throw err;
     }
