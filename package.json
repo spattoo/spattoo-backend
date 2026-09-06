@@ -20,7 +20,7 @@
     "check:ai-credit-pricing": "node scripts/check-ai-credit-pricing.mjs",
     "check:dup": "jscpd src",
     "check:feature-docs": "node ../spattoo-docs/bin/check-feature-docs.mjs --repo spattoo-api",
-    "check": "npm run check:migrations && npm run check:occasions && npm run check:boot && npm run check:schema && npm run check:admin-routes && npm run check:object-keys && npm run check:xray-spec && npm run check:ai-credit-pricing && npm run check:match-confidence && npm run check:sale-events && npm run check:credit-alerts && npm run check:bg-fallback && npm run check:decoration-policy && npm run check:build-guide-roles && npm run check:internal-bcc && npm run check:gst && npm run check:print-sheets && npm run check:likeness && npm run check:premium-themes && npm run check:delivery-digest && npm run check:trial-reminders && npm run check:shape-promotion && npm run check:dietary-egg && npm run check:push-copy && npm run check:email-design-claims && npm run check:dup && npm run check:feature-docs",
+    "check": "npm run check:migrations && npm run check:occasions && npm run check:boot && npm run check:schema && npm run check:admin-routes && npm run check:object-keys && npm run check:xray-spec && npm run check:ai-credit-pricing && npm run check:match-confidence && npm run check:sale-events && npm run check:credit-alerts && npm run check:bg-fallback && npm run check:decoration-policy && npm run check:build-guide-roles && npm run check:internal-bcc && npm run check:gst && npm run check:print-sheets && npm run check:likeness && npm run check:premium-themes && npm run check:delivery-digest && npm run check:trial-reminders && npm run check:shape-promotion && npm run check:dietary-egg && npm run check:push-copy && npm run check:email-design-claims && npm run check:image-model && npm run check:dup && npm run check:feature-docs",
     "check:match-confidence": "node scripts/check-match-confidence.mjs",
     "check:sale-events": "node scripts/check-sale-events.mjs",
     "check:credit-alerts": "node scripts/check-credit-alerts.mjs",
@@ -47,7 +47,9 @@
     "check:build-guide-roles": "node scripts/check-build-guide-roles.mjs",
     "check:internal-bcc": "node scripts/check-internal-bcc.mjs",
     "check:dietary-egg": "node scripts/check-dietary-egg.mjs",
-    "check:demo-request": "node scripts/check-demo-request.mjs"
+    "check:demo-request": "node scripts/check-demo-request.mjs",
+    "check:image-model": "node scripts/check-image-model.mjs",
+    "try:print-model": "node scripts/try-print-model.mjs"
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.1036.0",

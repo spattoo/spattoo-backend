@@ -24,6 +24,7 @@ export const AI_ACTION = {
   STICKER_GENERATE:       'sticker_generate',
   ELEMENT_BUILD_GUIDE:    'element_build_guide',
   BACKGROUND_REMOVAL:     'background_removal',
+  EDIBLE_PRINT_GENERATE:  'edible_print_generate',
 };
 
 // 402 rather than 403: the baker is authenticated and entitled to the FEATURE, they have just

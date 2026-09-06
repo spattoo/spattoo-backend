@@ -49,7 +49,7 @@ Return ONLY a JSON object, no explanation:
       "element": "<rose|leaf|drip|topper|macaron|other>",
       "label": "<short name a baker would use, e.g. 'pink buttercream rosette'>",
       "color_hex": "<dominant hex colour>",
-      "material": "<buttercream|fondant|acrylic|sugar|chocolate|other>",
+      "material": "<buttercream|fondant|edible_print|acrylic|sugar|chocolate|other>",
       "bbox": { "x": <0..1>, "y": <0..1>, "w": <0..1>, "h": <0..1> },
       "licensed_ip": <true|false>,
       "ip_note": "<if licensed_ip, name the character/brand in a few words, e.g. 'Boss Baby (DreamWorks)'. Otherwise omit.>",
@@ -62,6 +62,13 @@ About "bbox": the axis-aligned box around that ONE decoration, as fractions of t
 (x,y = top-left corner; w,h = width/height; all 0..1). Err on the side of a slightly LARGER box —
 clipping part of the decoration is much worse than including a little cake around it.
 
+About "edible_print": a picture PRINTED on an icing/wafer sheet and cut out, then stuck flat on the
+cake. It is the flattest thing on any cake — no modelled depth, no sculpted edge, no brush marks —
+and it usually has a thin pale cut border where the scissors went. Illustrated characters, lettered
+plaques, banners and logos are almost always this. A fondant cut-out of the same subject would have
+a soft rounded edge and a slight dome; a printed one is paper-flat. When a flat illustrated
+character or a lettered sign is on a cake, PREFER edible_print over fondant.
+
 About "licensed_ip": true when the decoration depicts INTELLECTUAL PROPERTY someone owns — a
 recognisable cartoon/film/TV/game character (Boss Baby, Elsa, Spider-Man, Peppa Pig…), a brand or
 company logo, a sports team crest, or a film/show title treatment. Judge the SUBJECT, not the craft:
@@ -69,6 +76,13 @@ a fondant figurine of a licensed character is licensed_ip, while a generic fonda
 plain star, a bow or a number is NOT. When genuinely unsure, prefer false — a generic decoration
 wrongly flagged is a worse outcome than a licensed one slipping through, because a human reviews
 these anyway.
+
+⚠️ Do NOT read a licensed property out of the CAKE'S OWN LETTERING. A cake that says "Our little
+goose is on the way" is a baby-shower cake, not a Little Goose franchise; a "Happy Birthday Aarav"
+banner names a child, not a brand. Real licensed_ip is recognisable as someone else's character or
+logo INDEPENDENTLY of the words iced onto the cake. Measured: a plain baby-shower goose was flagged
+first as "generic goose design" — a self-contradiction — and then as "Little Goose illustration",
+which is the cake's own wording read back as a title.
 
 Rules:
 - List up to 12 decorations. Do NOT bundle things together to fit a smaller number.
@@ -79,6 +93,15 @@ Rules:
 - One entry per DISTINCT decoration. Three identical lipsticks are ONE entry, not three — each
   entry becomes a reusable library asset that gets placed as many times as wanted.
 - Ignore the cake base, the board, plain frosting, sprinkles and pearls — they aren't standalone assets.
+- ⚠️ ONLY WHAT IS ON THE CAKE. A party photo shows a backdrop, a banner, balloons, flowers in vases,
+  props and table décor, and they are NOT decorations on this cake. This matters most when the SAME
+  design appears twice — a backdrop board reading "Our little goose is on the way" behind a cake
+  carrying a small plaque of the same words. Catalogue the one ON THE CAKE, and put the bbox on THAT
+  one: measured, the box came back on the backdrop, so the crop held a party banner and roses and no
+  plaque at all. If a subject appears both on the cake and behind it, the cake's copy is the smaller,
+  and it is the only one that counts.
+- The bbox is checked by cropping it, so it has to be right about WHICH object as well as roughly
+  where. A generous box around the correct object is fine; a tight box around the wrong one is not.
 - Pick decorations that would actually be reusable on another cake.
 - STILL list a licensed decoration (flagged), don't silently omit it — the human wants to see it was seen.`,
           },
@@ -505,6 +528,11 @@ Return ONLY JSON: { "description": "<comma-separated keywords>" }`;
 // background removed by the standard 2D element pipeline (AddElement) if and when it is actually
 // saved as an element. A transparent result here is a nice-to-have, not a dependency.
 //
+// ⚠️ It DID block one until now, though — not for the reason the comment gives. The parameter was
+// sent unconditionally on both endpoints, so pointing OPENAI_IMAGE_MODEL at gpt-image-2 produced a
+// rejected request. `modelSupportsTransparent` below is what makes the swap the config change it
+// was always described as.
+//
 // Returns a PNG Buffer (GPT image models ALWAYS return base64 — `response_format` is a DALL·E-only
 // param and there is no `url` to read).
 // ── Generation RECIPES, by what the element will BECOME ───────────────────────────────────────
@@ -544,7 +572,7 @@ const FRAMING =
   'Show ONLY that one decoration — remove the cake, the frosting behind it, any board, hands or ' +
   'props, and any OTHER decoration that happens to be nearby.';
 
-export const GENERATION_INTENTS = ['sticker', 'relief', 'model'];
+export const GENERATION_INTENTS = ['sticker', 'relief', 'model', 'print'];
 
 // How closely the output copies the reference crop.
 //
@@ -574,7 +602,76 @@ const RECIPES = {
     'the form reads as solid and its depth is visible. Soft even studio lighting with no harsh ' +
     'shadows. Matte, clay-like, non-reflective surface. A single object, sitting upright, ' +
     'photographed sharply from front to back.',
+
+  /* ── An EDIBLE PRINT: ink on an icing sheet, cut out with a knife ─────────────────────────────
+   *
+   * Not a sticker with a different name. Three things differ, and each is why this is its own key
+   * rather than a flag on `sticker`:
+   *
+   *   NO TRANSPARENCY WANTED. The sheet is printed and then cut around, so a white background never
+   *   survives the knife. Asking for alpha buys nothing and costs us the model choice below.
+   *
+   *   FLAT, NOT PHOTOGRAPHIC. `sticker` asks for photorealism and studio lighting, which prints as
+   *   grey mush on icing sheet — edible ink has no gloss and a narrow gamut. Printed artwork is
+   *   drawn, not photographed.
+   *
+   *   THE TEXT HAS TO BE RIGHT. Half of what a baker prints is words — "Our little goose is on the
+   *   way" on a plaque — so the instruction is explicit rather than assumed. (Measured, both models
+   *   spell correctly every time; the instruction costs nothing and the day one of them slips it is
+   *   the only thing standing there.)
+   *
+   * ⚠️ This intent does NOT carry its own model. It briefly did — see config.imageModelByIntent for
+   * why that was measured in the wrong mode and reversed. What the intent carries is this recipe,
+   * which was right all along.
+   */
+  print:
+    `${FRAMING} Flat 2D artwork for printing on edible icing sheet: even fill colours, clean crisp ` +
+    'outlines, NO photographic shading, NO gloss, NO drop shadow and no gradient background. ' +
+    'Plain solid white background behind the subject. Colours bold and saturated rather than pale ' +
+    '— edible ink prints lighter than it looks on screen. ' +
+    'If the subject contains any TEXT, reproduce it EXACTLY as given, spelled correctly, fully ' +
+    'legible, with no invented, repeated or decorative extra lettering.',
 };
+
+/* Which image models accept `background: 'transparent'`.
+ *
+ * A DENY list, not an allow list, and deliberately: the next model in this family should work the
+ * day it is set, not the day somebody remembers to add it here. Everything before gpt-image-2 took
+ * the parameter, so naming the exception is both shorter and the thing that will age correctly —
+ * an allow list would silently drop transparency from every future model instead.
+ *
+ * Matched by prefix because OpenAI dates its snapshots (`gpt-image-2-2026-04-21`).
+ */
+const NO_TRANSPARENT_BACKGROUND = ['gpt-image-2'];
+export const modelSupportsTransparent = (model = '') =>
+  !NO_TRANSPARENT_BACKGROUND.some(m => String(model).startsWith(m));
+
+/* ⚠️ `input_fidelity` is the SECOND parameter gpt-image-2 rejects, and it matters far more than the
+ * first. It is what makes a reference edit reproduce THAT object instead of reinterpreting it —
+ * the whole difference between "recreate this baker's plaque" and "draw a nice plaque".
+ *
+ * Found the same way as the transparency one: by trying it. `does not support the 'input_fidelity'
+ * parameter` / `invalid_input_fidelity_model`. Sent unconditionally, so every reference-mode call on
+ * gpt-image-2 was a rejected request — which means the model could not do the one job this feature
+ * needs, and nobody would have known until a baker pressed the button.
+ *
+ * Omitting it is NOT equivalent to sending it. The request then succeeds at whatever fidelity the
+ * model defaults to, which is a real behavioural difference and has to be judged by looking at the
+ * output, not assumed. Same deny-list shape and the same reasoning as above.
+ */
+const NO_INPUT_FIDELITY = ['gpt-image-2'];
+export const modelSupportsInputFidelity = (model = '') =>
+  !NO_INPUT_FIDELITY.some(m => String(model).startsWith(m));
+
+/* Which model this intent is generated with — see config.imageModelByIntent for why they differ.
+ *
+ * ⚠️ EVERY read of the model goes through here, including the transparency check. The gate takes a
+ * model and the config holds two of them, so anything that asks the GLOBAL what it supports will be
+ * right about the common case and wrong about the one intent that differs — sending gpt-image-2 the
+ * one parameter it rejects. One resolver, used for both, is what stops that.
+ */
+export const modelForIntent = (intent) =>
+  config.openai.imageModelByIntent?.[intent] || config.openai.imageModel;
 
 // Returns an ARRAY of PNG buffers, one per variant. `variants` asks the API for n images in ONE
 // call rather than n calls: the rate limit counts IMAGES per minute either way, so looping would
@@ -594,7 +691,24 @@ export async function generateDecorationImage(
   // model ignores it. NOT for `model`: image-to-3D wants a plain backdrop it can separate the
   // subject from, and an alpha channel there is a hard silhouette with nothing behind it — the
   // opposite of the shading cue that recipe asks for.
-  const wantsTransparent = intent !== 'model';
+  //
+  // ⚠️ AND ONLY IF THE MODEL TAKES THE PARAMETER. `gpt-image-2` does not support
+  // `background: 'transparent'`, so sending it is a rejected request rather than an ignored hint —
+  // which is what made switching model a breaking change instead of an env var. Asked here, so the
+  // swap is a config change and not a code change.
+  //
+  // Losing the native cut-out costs us nothing that matters: remove.bg was always the fallback, and
+  // a 2D element gets its background removed by `prepareElementImage` on the way in regardless. For
+  // an EDIBLE PRINT it is not wanted at all — the sheet is printed and cut with a knife, so a white
+  // background never survives (see plans/edible-prints-from-a-reference-photo.md).
+  // The model this intent is generated with — resolved ONCE and used for the request, the
+  // transparency question and the error message, so the three cannot disagree.
+  const imageModel = modelForIntent(intent);
+  /* ⚠️ `print` never wants transparency even on a model that offers it: the sheet is printed and cut
+   * with a knife, so alpha buys nothing — and asking for it would rule out the very model this
+   * intent exists to use. */
+  const wantsTransparent = intent !== 'model' && intent !== 'print'
+    && modelSupportsTransparent(imageModel);
 
   // ── fresh: generate from the description, send nothing of the source ───────────────────────────
   // A different ENDPOINT, not a flag. images/edits always conditions on the image it is given, so
@@ -606,7 +720,7 @@ export async function generateDecorationImage(
       method: 'POST',
       headers: { 'Authorization': `Bearer ${config.openai.apiKey}`, 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        model: config.openai.imageModel,
+        model: imageModel,
         prompt: `An isolated product photo of a single cake decoration: ${prompt}. ${recipe}`,
         size,
         quality: config.openai.imageQuality,
@@ -615,13 +729,13 @@ export async function generateDecorationImage(
         ...(wantsTransparent ? { background: 'transparent' } : {}),
       }),
     });
-    if (!res.ok) throw new Error(`${config.openai.imageModel} generation failed: ${await res.text()}`);
+    if (!res.ok) throw new Error(`${imageModel} generation failed: ${await res.text()}`);
     return decodeImages(await res.json());
   }
 
   // ── reference: reproduce THAT object ───────────────────────────────────────────────────────────
   const form = new FormData();
-  form.append('model', config.openai.imageModel);
+  form.append('model', imageModel);
   form.append('image', new Blob([referenceBuffer], { type: 'image/png' }), 'reference.png');
   // "the decoration shown in the reference image" is ambiguous the moment the crop holds more than
   // one — and with input_fidelity high, ambiguity resolves as "copy all of it". Name the single
@@ -635,7 +749,8 @@ export async function generateDecorationImage(
   form.append('quality', config.openai.imageQuality);
   if (wantsTransparent) form.append('background', 'transparent');
   form.append('output_format', 'png');        // must be png/webp — jpeg cannot carry alpha
-  form.append('input_fidelity', 'high');      // preserve the reference decoration's identity
+  // preserve the reference decoration's identity — where the model takes the parameter at all.
+  if (modelSupportsInputFidelity(imageModel)) form.append('input_fidelity', 'high');
   form.append('n', String(n));
 
   const res = await fetch('https://api.openai.com/v1/images/edits', {
@@ -644,7 +759,9 @@ export async function generateDecorationImage(
     body: form,
   });
 
-  if (!res.ok) throw new Error(`${config.openai.imageModel} edit failed: ${await res.text()}`);
+  // `imageModel`, not the global: a failure has to name the model that actually ran, or the one
+  // intent using a different one reports the wrong culprit at the exact moment somebody is debugging.
+  if (!res.ok) throw new Error(`${imageModel} edit failed: ${await res.text()}`);
   return decodeImages(await res.json());
 }
 
@@ -884,7 +1001,7 @@ export async function generateDecorationStages(referenceBuffer, { title, steps =
 
   const flat = dimension === '2d';
   const form = new FormData();
-  form.append('model', config.openai.imageModel);
+  form.append('model', imageModel);
   form.append('image', new Blob([referenceBuffer], { type: 'image/png' }), 'reference.png');
   form.append('prompt',
     `Create a complete step-by-step tutorial sheet showing how to make the fondant decoration in ` +

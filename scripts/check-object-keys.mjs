@@ -38,6 +38,7 @@ const REVIEWED = new Map([
   ['routes/uploads.js',              'randomUUID() per cutout'],
   ['routes/meshy.js',                'randomUUID() per generated GLB'],
   ['routes/elementExtract.js',       'randomUUID() per crop'],
+  ['routes/ediblePrints.js',         'randomUUID() per generated print — one press, one new key'],
   ['routes/bakers.js',               'randomUUID() per gallery copy'],
   ['jobs/processors/extractImage.js','randomUUID() per output'],
   // Derived keys. Safe because the key they are built FROM is minted once, so the derivation is too.

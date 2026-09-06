@@ -35,7 +35,11 @@ INSERT INTO capabilities (key, label, description, category, is_sensitive, sort_
   ('baker:support',         'Support access',            'View baker data for support',                        'platform', false, 22),
   ('billing:discount',      'Issue discounts',           'Apply discounts to a baker',                        'platform', true,  30),
   ('subscription:override', 'Override subscriptions',    'Comp / offer subscription upgrades',                'platform', true,  31),
-  ('admin:manage',          'Manage admins & RBAC',      'Add/remove admins, edit roles & capabilities',      'platform', true,  32)
+  ('admin:manage',          'Manage admins & RBAC',      'Add/remove admins, edit roles & capabilities',      'platform', true,  32),
+  -- Sensitive: publishing a version writes the row consent records point at, and flips is_current,
+  -- so it changes what every future consent binds to. Super admins only — see migration 090, which
+  -- adds it to environments that already exist.
+  ('legal:manage',          'Publish legal versions',    'Freeze and publish a version of a legal document',  'platform', true,  33)
 ON CONFLICT (key) DO NOTHING;
 
 -- ── 2. roles ──────────────────────────────────────────────────────────────────

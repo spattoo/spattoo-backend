@@ -14,7 +14,7 @@ const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 const ROUTES = join(ROOT, 'src', 'routes');
 
 // Capabilities only INTERNAL admins should hold. A route guarded by one is a privileged/admin route.
-const ADMIN_CAPS = new Set(['catalog:admin', 'subscription:override', 'baker:onboard']);
+const ADMIN_CAPS = new Set(['catalog:admin', 'subscription:override', 'baker:onboard', 'legal:manage']);
 // Documented exceptions: privileged routes not under /admin. Currently NONE — every admin-capability
 // route lives under /api/admin. (SEC-15 relocated the last straggler, the old /jobs/extract; that
 // route has since been superseded by /admin/element-extract/*.) Kept as the

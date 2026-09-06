@@ -4,6 +4,7 @@ import { supabase } from '../services/supabase.js';
 import { requireAuth } from '../middleware/auth.js';
 import { requireCapability, resolvePrincipal } from '../middleware/rbac.js';
 import { legalContentHash } from '../lib/legalHash.js';
+import { config } from '../config.js';
 import {
   LEGAL_DOC_KEYS,
   PUBLISHABLE_DOC_KEYS,
@@ -12,6 +13,21 @@ import {
   CONSENT_SOURCE,
 } from '../constants/legalDocuments.js';
 import { getCurrentVersions, recordConsent, withdrawConsent, consentHistory, publishVersion } from '../services/legalConsent.js';
+
+/**
+ * A human date ("6 September 2026") as `YYYY-MM-DD`, or null if it cannot be parsed.
+ *
+ * Deliberately NOT `new Date(s).toISOString().slice(0,10)`. That parses to LOCAL midnight and then
+ * converts to UTC, so on any server east of Greenwich it lands on the previous day — measured, it
+ * turned "6 September 2026" into 2026-09-05. Reading the calendar fields back on the same local
+ * basis they were parsed in returns the date the string actually names, in any zone.
+ */
+function isoDateOf(human) {
+  if (!human || Number.isNaN(Date.parse(human))) return null;
+  const d = new Date(human);
+  const pad = (n) => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+}
 
 // Resolve the consenting subject (baker app-user vs invited customer) from the authed principal.
 // Shared by consent / withdraw / history so the mapping never drifts. Returns a smallint or null.
@@ -23,6 +39,98 @@ function subjectTypeFor(role) {
 
 // Consent capture (DPDP "Layer 2"). See docs/CONSENT_CAPTURE_PLAN.md.
 const router = Router();
+
+// ── GET /api/admin/legal/preview?doc=privacy ──────────────────────────────────
+// What the marketing site is SERVING right now, next to what is FROZEN in the database.
+//
+// The problem it solves: legal text is authored in git and rendered by the marketing site, but the
+// evidence a consent record points at lives in `legal_document_versions`. Those are two stores, and
+// a deploy updates only the first. Privacy v1.1 shipped to the website while the database still said
+// v1.0 — the site showed the analytics disclosure and the in-app modal served the old text that said
+// the opposite, with nothing anywhere reporting the split.
+//
+// Until now the only way to close it was scripts/publish-legal-version.mjs, run by hand with every
+// {{TOKEN}} passed on the command line. That works and is easy to get subtly wrong: a mistyped
+// token or a stale --version produces a frozen document that does not match the page, and a hash
+// nobody notices is wrong until somebody disputes a consent.
+//
+// So the API fetches the site's own canonical text SERVER-SIDE (no CORS, no credentials — those are
+// published legal documents) and hands back both sides plus the hash. The admin screen shows the
+// difference; the publish button below freezes exactly these bytes. Nothing is retyped, so nothing
+// can be mistyped.
+router.get('/admin/legal/preview', requireAuth, requireCapability('legal:manage'), async (req, res) => {
+  try {
+    const docKey = String(req.query.doc ?? '');
+    if (!PUBLISHABLE_DOC_KEYS.includes(docKey)) return res.status(400).json({ error: 'Invalid doc' });
+
+    // The marketing site is the authoring source of truth, derived from the same base domain
+    // everything else here is, so dev reads dev and prod reads prod with no extra variable to set
+    // wrong. `content-rights` is authored in THIS repo, not on the site — it has no page.
+    const base = config.marketing?.url;
+    if (!base) return res.status(501).json({ error: 'No marketing URL configured for this environment' });
+
+    let site = null;
+    let fetchError = null;
+    try {
+      const r = await fetch(`${base}/api/legal/${encodeURIComponent(docKey)}`, {
+        headers: { accept: 'application/json' },
+        signal: AbortSignal.timeout(10_000),
+      });
+      if (r.ok) site = await r.json();
+      else fetchError = `site returned HTTP ${r.status}`;
+    } catch (err) {
+      fetchError = err?.message ?? String(err);
+    }
+
+    const [current] = await getCurrentVersions([docKey]);
+
+    // Hash the site's bytes with the SAME function publishVersion uses, so "identical" here means
+    // identical there — never a second implementation that can drift from the one that matters.
+    const siteHash = site?.content ? legalContentHash(site.content) : null;
+
+    res.json({
+      docKey,
+      // What the database holds today. Null when this document has never been published.
+      published: current
+        ? { version: current.version, effectiveAt: current.effective_at, contentHash: current.content_hash }
+        : null,
+      // What the website is serving today. Null if the site could not be reached.
+      site: site
+        ? {
+            version: site.version,
+            effectiveDate: site.effectiveDate,
+            // Normalised HERE, not in the browser. The site carries a human date ("6 September
+            // 2026") because that is what a reader should see; POST /versions needs something
+            // Date.parse accepts. Doing the conversion server-side means one implementation, and a
+            // date that cannot be parsed surfaces as null on the screen — which disables the
+            // publish button — instead of failing at the moment of writing evidence.
+            //
+            // ⚠️ NOT toISOString(). `new Date('6 September 2026')` is LOCAL midnight, and
+            // toISOString() then converts to UTC — which in IST (+05:30) rolls back to the 5th.
+            // Verified: it produced 2026-09-05, one day before the date the document itself states.
+            // An effective date is the moment a legal document binds; a silent day-early is exactly
+            // the kind of wrong that only surfaces in a dispute. Reading the calendar fields back
+            // with the same local basis they were parsed in keeps the date the string denoted,
+            // whatever zone the server runs in.
+            effectiveAtIso: isoDateOf(site.effectiveDate),
+            status: site.status,
+            publishable: site.publishable,
+            unresolvedTokens: site.unresolvedTokens ?? [],
+            contentHash: siteHash,
+            bytes: Buffer.byteLength(site.content, 'utf8'),
+            content: site.content,
+          }
+        : null,
+      fetchError,
+      // The single question the screen exists to answer. Compared on the HASH, not the version
+      // string: a version can be edited in place before publication, and it is the bytes that a
+      // consent record is evidence of.
+      inSync: Boolean(current && siteHash && current.content_hash === siteHash),
+    });
+  } catch (err) {
+    serverError(req, res, err);
+  }
+});
 
 // ── POST /api/admin/legal/versions ── register (publish) a legal document version.
 // Under the /api/admin boundary (requireAuth + requireAdmin at the mount, server.js);

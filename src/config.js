@@ -26,11 +26,47 @@ export const config = {
   openai: {
     apiKey: process.env.OPENAI_API_KEY,
     // Image model for "Extract Elements" decoration regeneration. Env-driven because this family
-    // churns: dall-e-3 was REMOVED (2026-05-12) and gpt-image-1 is deprecated (2026-10-23). The
-    // successor gpt-image-2 does NOT support transparent backgrounds, so it can't be swapped in
-    // blindly for cut-out assets — see services/openai.js generateDecorationImage.
-    // Quality on 1024x1024: low ≈ $0.009, medium ≈ $0.034, high ≈ $0.133 per image.
+    // churns: dall-e-3 was REMOVED (2026-05-12) and gpt-image-1 is deprecated (2026-10-23).
+    //
+    // ⚠️ gpt-image-2 (2026-04-21) is now OpenAI's recommended default and this comment used to say
+    // it "can't be swapped in blindly" because it has no transparent-background support. That was
+    // true of the CODE, not of the model: the parameter was sent unconditionally, so the swap was a
+    // rejected request. `modelSupportsTransparent` in services/openai.js now asks first, and the
+    // swap is what it always claimed to be — set OPENAI_IMAGE_MODEL and nothing else.
+    //
+    // ⚠️ CHECK THE PRICE BEFORE SWITCHING. The figures below are gpt-image-1.5's, measured. Public
+    // numbers for gpt-image-2 sit around $0.053 for a medium 1024x1024, which is CHEAPER than
+    // gpt-image-1 (~$0.07) and DEARER than the 1.5 we run. Third-party sources contradict each
+    // other and OpenAI's own pricing page is the only thing worth believing here, so confirm there
+    // before this feeds a credit cost.
+    // Quality on 1024x1024 (gpt-image-1.5): low ≈ $0.009, medium ≈ $0.034, high ≈ $0.133 per image.
     imageModel:   process.env.OPENAI_IMAGE_MODEL   || 'gpt-image-1.5',
+    /* ── A per-intent model override. Currently EMPTY, and that is a finding, not an oversight ───
+     *
+     * `print` was pinned to gpt-image-2 on the argument that it obeys the flat-artwork recipe more
+     * reliably. Measured, that was true — IN THE WRONG MODE.
+     *
+     * ⚠️ Those runs used `fresh` (generate from a description, send nothing of the photo). This
+     * feature never uses fresh: a baker handing us a reference is asking for THAT plaque, so it
+     * uses `reference` — crop the subject, reproduce it. Re-run properly against the real cake
+     * (2026-09-04, plaque and goose), gpt-image-1.5 was CLEARLY more faithful on both: it held the
+     * plaque's squarish frame and fine gold line where gpt-image-2 ballooned the corners and
+     * thickened the border, and it held the goose's soft pencil linework and die-cut edge where
+     * gpt-image-2 redrew it in bold vector outlines — its own house style, not the baker's.
+     *
+     * The mechanism is right there in the API: `input_fidelity: 'high'` exists to preserve a
+     * reference's identity, gpt-image-1.5 takes it, and GPT-IMAGE-2 REJECTS IT
+     * (`modelSupportsInputFidelity`). Asking the model that cannot be told to stay faithful to be
+     * faithful was always going to lose.
+     *
+     * So the global serves every intent, which is also 2-3x faster and ~35% cheaper. The map stays
+     * because the seam is sound and the next difference will be real — an intent with no entry
+     * inherits `imageModel`, so adding one is a config change and needing none costs nothing.
+     *
+     * ⚠️ Anything pinned here MUST be re-measured in `reference` mode. A fresh-mode result says
+     * nothing about the mode that ships. That is the whole lesson of this comment.
+     */
+    imageModelByIntent: {},
     imageQuality: process.env.OPENAI_IMAGE_QUALITY || 'medium',
     // The GUIDE SHEET's quality. LOW BY DEFAULT, and deliberately not inheriting OPENAI_IMAGE_QUALITY
     // — the two do different jobs. An extracted element becomes a permanent library asset; a guide
@@ -293,10 +329,32 @@ export const config = {
     otpChannels: (process.env.STOREFRONT_OTP_CHANNELS || 'email')
       .split(',').map(c => c.trim().toLowerCase())
       .filter(c => ['sms', 'email'].includes(c)),
+    // Which timezone a storefront view is dated in (services/storefrontViews.js). The API runs in
+    // UTC, where the day rolls over at 05:30 IST — so a server-clock answer files the first five and
+    // a half hours of every Indian morning under YESTERDAY, and nothing fails while it does it. Same
+    // class of bug the digest carries a long comment about; same fix.
+    //
+    // One value, not per-baker, because every baker is in India today. The day that stops being true
+    // this becomes a column on bakers — which is why the counter reads it from config rather than
+    // hardcoding a string it would then have to go and find.
+    viewsTz: process.env.STOREFRONT_VIEWS_TZ || 'Asia/Kolkata',
   },
   // Baker-facing app base URL, for deep links in lifecycle emails (billing/settings). Optional —
   // the email CTA is omitted when unset, so no broken links. e.g. https://app.spattoo.com
   app: { url: process.env.APP_URL || '' },
+  // Marketing site base URL. The legal documents are AUTHORED there (apps/marketing/content/legal),
+  // and GET /api/admin/legal/preview fetches their canonical text from it so the admin publish
+  // screen freezes exactly what the site serves rather than something retyped by hand.
+  //
+  // DERIVED from the storefront template by default, exactly as cors.baseDomain is, so dev reads
+  // dev and prod reads prod with no extra variable that can be set wrong on its own. `www` because
+  // that is the canonical marketing host — the apex 308-redirects to it, and a redirect would be
+  // followed silently here, which is fine but slower and one more thing to reason about.
+  marketing: {
+    url: process.env.MARKETING_URL
+      || `https://www.${(process.env.STOREFRONT_URL_TEMPLATE || 'https://{slug}.spattoo.com')
+            .replace('{slug}.', '').replace(/^https?:\/\//, '').replace(/[:/].*$/, '')}`,
+  },
   // SEC-8 — CORS allowlist. `baseDomain` is derived from the storefront template so ALL storefront
   // subdomains ({slug}.<base>) + app/marketing match ONE wildcard rule (O(1) in tenants, never a
   // per-baker list). Override with CORS_BASE_DOMAIN if the API host differs. `allowLocalhost` keeps

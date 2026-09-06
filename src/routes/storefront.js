@@ -9,6 +9,8 @@ import { rateLimit } from '../middleware/rateLimit.js';
 import { normalizePhone } from '../lib/phone.js';
 import { signUpload } from '../lib/signUpload.js';
 import { requireAuth } from '../middleware/auth.js';
+import { recordStorefrontView, daysAgoIn } from '../services/storefrontViews.js';
+import { requireCapability } from '../middleware/rbac.js';
 
 const router = Router();
 
@@ -230,6 +232,26 @@ router.get('/storefront/:slug', async (req, res) => {
       whatsapp:         owner?.whatsapp_number ?? null,
       phone:            owner?.phone ?? null,
     });
+
+    // ── Count the visit — AFTER the response, and never in its way ──────────────────────────────
+    // This is the ONE place a storefront visit is counted. It sits here, below res.json and below
+    // every 404 gate above, for two reasons:
+    //
+    //   1. Only a storefront that was actually SERVED is a visit. An unknown slug, a draft, or a
+    //      lapsed baker returned 404 above and never reaches this line.
+    //   2. The response has already been sent, so nothing this does can reach the customer. The
+    //      function is also fire-and-forget and cannot throw or reject — see the contract at the
+    //      top of services/storefrontViews.js. Both halves matter: if it could throw here, the
+    //      catch below would call serverError on an already-sent response.
+    //
+    // ⚠️ Count on THIS route only. /storefront/:slug/settings and /storefront/:slug/templates also
+    // fire once per visit, so incrementing in those too would triple every number.
+    //
+    // Deliberately NOT rate limited. The obvious guard against inflation is a limiter on this
+    // endpoint, but this endpoint is what RENDERS the storefront — a limiter that trips would stop
+    // serving a shop to real customers to protect the accuracy of a number. That trade is the wrong
+    // way round. See plans/analytics.md for what inflation control would look like instead.
+    recordStorefrontView(baker.id, req);
   } catch (err) {
     serverError(req, res, err);
   }
@@ -649,6 +671,52 @@ router.post('/invite/:id/verify-otp', verifyOtpPerInvite, async (req, res) => {
       // the authenticated moment, so the storefront can seed the designer. Absent =
       // blank start. NULL-safe: a plain invite has no design_snapshot.
       design_snapshot: invite.design_snapshot ?? null,
+    });
+  } catch (err) {
+    serverError(req, res, err);
+  }
+});
+
+// ── GET /api/admin/storefront-usage?days=30 ───────────────────────────────────
+// The read side of storefront_views — "which bakers' shops are being visited, and which are not".
+// Lives here rather than in bakers.js so the read and the write of this table sit in one file.
+//
+// Under /admin so the boundary in server.js (requireAuth + requireAdmin) covers it, which
+// `npm run check:admin-routes` enforces. `baker:onboard` is the existing platform capability for
+// baker-account administration — the same one /admin/bakers uses — and this is a read-only view of
+// baker health, so it needs no new capability of its own.
+//
+// ⚠️ Returns EVERY active baker, including those with no rows at all. That is the entire point: a
+// dormant storefront has no rows in storefront_views, so anything that filters or aggregates the
+// views table alone would answer a question nobody asked and silently omit the bakers being looked
+// for. The LEFT JOIN lives in admin_storefront_usage (migration 089).
+router.get('/admin/storefront-usage', requireAuth, requireCapability('baker:onboard'), async (req, res) => {
+  try {
+    // Clamped, not trusted: `days` reaches a date computation and then a query window.
+    const requested = Number.parseInt(req.query.days, 10);
+    const days = Number.isFinite(requested) ? Math.min(Math.max(requested, 1), 365) : 30;
+
+    // Through the same helper that WRITES the rows, so the window edge cannot drift from the dates
+    // it is being compared against.
+    const since = daysAgoIn(days);
+
+    const { data, error } = await supabase.rpc('admin_storefront_usage', { p_since: since });
+    if (error) return serverError(req, res, error);
+
+    const rows = data ?? [];
+    res.json({
+      days,
+      since,
+      // Computed here rather than in the client so every consumer counts "dormant" the same way.
+      // Only PUBLISHED storefronts count: an unpublished one 404s to the world, so it having no
+      // visits is correct behaviour rather than a problem to look at.
+      summary: {
+        bakers: rows.length,
+        published: rows.filter(r => r.storefront_published).length,
+        dormant: rows.filter(r => r.storefront_published && !r.views).length,
+        never_seen: rows.filter(r => r.storefront_published && !r.last_seen).length,
+      },
+      rows,
     });
   } catch (err) {
     serverError(req, res, err);

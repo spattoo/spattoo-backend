@@ -4,6 +4,7 @@ import healthRouter from './routes/health.js';
 import demoRequestRouter from './routes/demoRequest.js';
 import elementsRouter from './routes/elements.js';
 import uploadsRouter from './routes/uploads.js';
+import garnishesRouter from './routes/garnishes.js';
 import templatesRouter from './routes/templates.js';
 import tagsRouter from './routes/tags.js';
 import storageRouter from './routes/storage.js';
@@ -33,6 +34,7 @@ import accountRouter from './routes/account.js';
 import designSessionsRouter from './routes/designSessions.js';
 import aiCreditsRouter from './routes/aiCredits.js';
 import xraySpecRouter from './routes/xraySpec.js';
+import ediblePrintsRouter from './routes/ediblePrints.js';
 import { requestId } from './middleware/requestId.js';
 import { errorHandler } from './middleware/errorHandler.js';
 import { requireAuth } from './middleware/auth.js';
@@ -71,6 +73,7 @@ app.use(healthRouter);
 app.use('/api', demoRequestRouter);
 app.use('/api', elementsRouter);
 app.use('/api', uploadsRouter);       // uploads: baker/customer-owned images (NOT /api/admin)
+app.use('/api', garnishesRouter);     // garnishes: chocolate pieces someone drew (paths, not images)
 app.use('/api', templatesRouter);
 app.use('/api', tagsRouter);
 app.use('/api', storageRouter);
@@ -100,6 +103,7 @@ app.use('/api', accountRouter);
 app.use('/api', designSessionsRouter);
 app.use('/api', aiCreditsRouter);
 app.use('/api', xraySpecRouter);
+app.use('/api', ediblePrintsRouter);
 
 app.use(errorHandler);   // global safety net — must run last, after all routers
 
