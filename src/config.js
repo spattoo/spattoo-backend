@@ -342,6 +342,19 @@ export const config = {
   // Baker-facing app base URL, for deep links in lifecycle emails (billing/settings). Optional —
   // the email CTA is omitted when unset, so no broken links. e.g. https://app.spattoo.com
   app: { url: process.env.APP_URL || '' },
+  // Marketing site base URL. The legal documents are AUTHORED there (apps/marketing/content/legal),
+  // and GET /api/admin/legal/preview fetches their canonical text from it so the admin publish
+  // screen freezes exactly what the site serves rather than something retyped by hand.
+  //
+  // DERIVED from the storefront template by default, exactly as cors.baseDomain is, so dev reads
+  // dev and prod reads prod with no extra variable that can be set wrong on its own. `www` because
+  // that is the canonical marketing host — the apex 308-redirects to it, and a redirect would be
+  // followed silently here, which is fine but slower and one more thing to reason about.
+  marketing: {
+    url: process.env.MARKETING_URL
+      || `https://www.${(process.env.STOREFRONT_URL_TEMPLATE || 'https://{slug}.spattoo.com')
+            .replace('{slug}.', '').replace(/^https?:\/\//, '').replace(/[:/].*$/, '')}`,
+  },
   // SEC-8 — CORS allowlist. `baseDomain` is derived from the storefront template so ALL storefront
   // subdomains ({slug}.<base>) + app/marketing match ONE wildcard rule (O(1) in tenants, never a
   // per-baker list). Override with CORS_BASE_DOMAIN if the API host differs. `allowLocalhost` keeps
