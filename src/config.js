@@ -329,6 +329,15 @@ export const config = {
     otpChannels: (process.env.STOREFRONT_OTP_CHANNELS || 'email')
       .split(',').map(c => c.trim().toLowerCase())
       .filter(c => ['sms', 'email'].includes(c)),
+    // Which timezone a storefront view is dated in (services/storefrontViews.js). The API runs in
+    // UTC, where the day rolls over at 05:30 IST — so a server-clock answer files the first five and
+    // a half hours of every Indian morning under YESTERDAY, and nothing fails while it does it. Same
+    // class of bug the digest carries a long comment about; same fix.
+    //
+    // One value, not per-baker, because every baker is in India today. The day that stops being true
+    // this becomes a column on bakers — which is why the counter reads it from config rather than
+    // hardcoding a string it would then have to go and find.
+    viewsTz: process.env.STOREFRONT_VIEWS_TZ || 'Asia/Kolkata',
   },
   // Baker-facing app base URL, for deep links in lifecycle emails (billing/settings). Optional —
   // the email CTA is omitted when unset, so no broken links. e.g. https://app.spattoo.com

@@ -9,6 +9,7 @@ import { rateLimit } from '../middleware/rateLimit.js';
 import { normalizePhone } from '../lib/phone.js';
 import { signUpload } from '../lib/signUpload.js';
 import { requireAuth } from '../middleware/auth.js';
+import { recordStorefrontView } from '../services/storefrontViews.js';
 
 const router = Router();
 
@@ -230,6 +231,26 @@ router.get('/storefront/:slug', async (req, res) => {
       whatsapp:         owner?.whatsapp_number ?? null,
       phone:            owner?.phone ?? null,
     });
+
+    // ── Count the visit — AFTER the response, and never in its way ──────────────────────────────
+    // This is the ONE place a storefront visit is counted. It sits here, below res.json and below
+    // every 404 gate above, for two reasons:
+    //
+    //   1. Only a storefront that was actually SERVED is a visit. An unknown slug, a draft, or a
+    //      lapsed baker returned 404 above and never reaches this line.
+    //   2. The response has already been sent, so nothing this does can reach the customer. The
+    //      function is also fire-and-forget and cannot throw or reject — see the contract at the
+    //      top of services/storefrontViews.js. Both halves matter: if it could throw here, the
+    //      catch below would call serverError on an already-sent response.
+    //
+    // ⚠️ Count on THIS route only. /storefront/:slug/settings and /storefront/:slug/templates also
+    // fire once per visit, so incrementing in those too would triple every number.
+    //
+    // Deliberately NOT rate limited. The obvious guard against inflation is a limiter on this
+    // endpoint, but this endpoint is what RENDERS the storefront — a limiter that trips would stop
+    // serving a shop to real customers to protect the accuracy of a number. That trade is the wrong
+    // way round. See plans/analytics.md for what inflation control would look like instead.
+    recordStorefrontView(baker.id, req);
   } catch (err) {
     serverError(req, res, err);
   }
