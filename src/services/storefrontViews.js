@@ -67,6 +67,23 @@ export function dayIn(timeZone = config.storefront.viewsTz) {
 }
 
 /**
+ * The date `n` days before today in the baker's timezone, as `YYYY-MM-DD`.
+ *
+ * The window cutoff for the admin view. It goes through `dayIn` rather than the server clock so it
+ * is anchored to the SAME day boundary the rows were written on — a cutoff derived in UTC would
+ * disagree with an IST-dated row by up to a day, quietly moving the edge of every window.
+ *
+ * The intermediate date is built at UTC midnight deliberately: arithmetic on a local-time Date can
+ * cross a DST boundary and land a day out. Asia/Kolkata has no DST so that cannot bite today; it is
+ * written this way so it still cannot if the zone ever changes.
+ */
+export function daysAgoIn(n, timeZone = config.storefront.viewsTz) {
+  const d = new Date(`${dayIn(timeZone)}T00:00:00Z`);
+  d.setUTCDate(d.getUTCDate() - n);
+  return d.toISOString().slice(0, 10);
+}
+
+/**
  * Count one storefront visit. Fire-and-forget: returns immediately, never throws, never rejects.
  *
  * Call it AFTER the response has been sent. See the header comment for why each of those matters.
