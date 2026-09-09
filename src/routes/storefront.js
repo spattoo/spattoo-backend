@@ -268,7 +268,16 @@ router.get('/storefront/:slug/settings', async (req, res) => {
 
     const s = baker.settings ?? {};
     res.json({
-      delivery:    { home_delivery: !!s.delivery?.home_delivery },
+      // ⚠️ `radius_km` was stored and never served, so the number a baker types in Settings could
+      // not be shown to anybody. The toggle alone tells a customer delivery EXISTS; the radius is
+      // what tells them whether it reaches them, which is the question they actually have.
+      //
+      // It is a PROMISE, not a gate: `bakers` holds a postal address and no lat/lng, and the
+      // enquiry asks for an area + pincode, which is a region rather than a point. Nothing can
+      // compute against it — the customer reads it, the baker judges. Do not word it in the UI as
+      // though the system were checking. See plans/delivery-address.md.
+      delivery:    { home_delivery: !!s.delivery?.home_delivery,
+                     radius_km: s.delivery?.home_delivery ? (s.delivery?.radius_km ?? null) : null },
       store_hours: s.store_hours ?? null,
       // Minimum notice, so the storefront's date picker can refuse dates inside the window
       // while the customer is still on the page. 0 = same-day is fine, which is the default
