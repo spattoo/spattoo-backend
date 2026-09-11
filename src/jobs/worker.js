@@ -10,6 +10,7 @@ import { relayBillingOutbox } from './processors/relayBillingOutbox.js';
 import { eraseExpiredAccounts } from './processors/eraseExpiredAccounts.js';
 import { sendDeliveryDigest } from './processors/sendDeliveryDigest.js';
 import { sendTrialReminders } from './processors/sendTrialReminders.js';
+import { sendRenewalReminders } from './processors/sendRenewalReminders.js';
 
 const processors = {
   extract_image:           extractImage,
@@ -22,6 +23,7 @@ const processors = {
   erase_expired_accounts:  eraseExpiredAccounts,
   send_delivery_digest:    sendDeliveryDigest,
   send_trial_reminders:    sendTrialReminders,
+  send_renewal_reminders:  sendRenewalReminders,
 };
 
 export function startWorker() {

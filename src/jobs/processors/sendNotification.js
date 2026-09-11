@@ -642,6 +642,43 @@ export function buildEmail(typeSlug, recipientEmail, payload) {
     };
   }
 
+  // ── "Your plan renews in two days" ────────────────────────────────────────────────────────────
+  // The one billing mail that is NOT triggered by a Razorpay webhook — see
+  // services/renewalReminders.js. It fires before anything has been charged, so it must not claim
+  // anything about a payment: nothing has been attempted yet.
+  //
+  // ⚠️ NO AMOUNT. Same rule the lapsed-access gate states and for the same reason: Checkout is the
+  // only place that knows the real figure, because it is the only place holding plan + period + GST
+  // together. A number this email worked out for itself is a number that can be wrong, about money.
+  if (typeSlug === 'subscription_renewing') {
+    const hiName = p.bakerName ? `, ${esc(p.bakerName)}` : '';
+    const plan   = p.planName ? `${esc(p.planName)} plan` : 'plan';
+    const when   = esc(p.when ?? 'soon');
+    const today  = Number(p.days) === 0;
+
+    return {
+      from:    config.smtp.from,
+      to:      recipientEmail,
+      // The subject carries the date, because most of these are read in a notification shade and
+      // never opened. No urgency: a renewal going ahead is the NORMAL outcome, and shouting about
+      // it trains people to ignore the mail that matters — the one saying a charge failed.
+      subject: today
+        ? `Your Spattoo ${plan} renews today`
+        : `Your Spattoo ${plan} renews ${when}`,
+      html: shell(
+        `<h2 style="margin:0 0 12px;font-size:22px;color:#2C4433;font-weight:800;">
+           Your ${plan} renews ${when}
+         </h2>
+         <p>Hi${hiName} — this is just a heads-up. Your ${plan} is set to renew on
+            <strong>${esc(p.renewsOn)}</strong> and there is nothing you need to do.</p>
+         <p>If the card on file has changed or expired, updating it before then is what keeps the
+            renewal from failing.</p>
+         ${billingCta}
+         <p style="color:#6b6b6b;font-size:13px;">If you have already cancelled, this one is out of
+            date — ignore it.</p>`),
+    };
+  }
+
   throw new Error(`Unknown notification type: ${typeSlug}`);
 }
 

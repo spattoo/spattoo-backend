@@ -59,6 +59,9 @@ export function linkFor(typeSlug, payload) {
     'subscription_activated', 'subscription_cancelled', 'subscription_expired', 'subscription_renewed',
     'credits_low', 'credits_exhausted', 'credits_purchased',
     'payment_failed',
+    // The paid-plan renewal heads-up. Lands on billing because the one action it ever asks for is
+    // checking the card on file, and that is the only screen that shows it.
+    'subscription_renewing',
     // The Spark trial countdown. The whole point of the email is "choose a plan", so landing anywhere
     // else would waste the one tap it earns.
     'trial_ending', 'trial_ended',

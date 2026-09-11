@@ -2,6 +2,7 @@ import { supabase } from './supabase.js';
 import { jobQueue } from '../jobs/queue.js';
 import { digestDedupeKey } from './deliveryDigest.js';
 import { reminderDedupeKey, isEndedMilestone } from './trialReminders.js';
+import { renewalDedupeKey } from './renewalReminders.js';
 
 async function getTypeId(slug) {
   const { data } = await supabase
@@ -333,6 +334,23 @@ export async function notifyTrialReminder({ baker, milestone, payload }) {
   const slug = isEndedMilestone(milestone) ? 'trial_ended' : 'trial_ending';
   return insertNotification(slug, email, payload, {
     dedupeKey: reminderDedupeKey(baker.id, milestone),
+    bakerId:   baker.id,
+  });
+}
+
+/* The paid-plan renewal reminder. Sibling of notifyTrialReminder, and it differs in exactly one
+ * place that matters: the dedupe key carries the PERIOD, not a milestone, so the same baker is
+ * reminded again next cycle. See services/renewalReminders.js for why that is the whole design. */
+export async function notifyRenewalReminder({ baker, periodEnd, payload }) {
+  // Through bakerNotifyEmail, never baker.email — see notifyTrialReminder. No baker row on dev
+  // carries an address; the reachable one is the primary baker_appusers row.
+  const email = await bakerNotifyEmail(baker);
+  // Silent: a bakery with no reachable email is a state onboarding owns, not something a daily cron
+  // should alarm about.
+  if (!email) return null;
+
+  return insertNotification('subscription_renewing', email, payload, {
+    dedupeKey: renewalDedupeKey(baker.id, periodEnd),
     bakerId:   baker.id,
   });
 }
