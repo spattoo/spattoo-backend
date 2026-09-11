@@ -26,8 +26,8 @@ process.env.R2_BUCKET            ||= 'stub';
 process.env.R2_PUBLIC_URL        ||= 'http://stub';
 
 const {
-  localDay, daysUntilRenewal, inRenewalWindow, renewalDedupeKey, renewalPayload,
-  RENEWAL_REMINDER_DAYS,
+  localDay, daysUntilRenewal, inRenewalWindow, renewalStillAhead, shouldRemind,
+  renewalDedupeKey, renewalPayload, RENEWAL_REMINDER_DAYS,
 } = await import('../src/services/renewalReminders.js');
 
 let failures = 0;
@@ -65,6 +65,25 @@ check('further out says nothing',                              !inRenewalWindow(
 // ── 3 · nothing after the moment has passed ─────────────────────────────────────────────────────
 check('a renewal already past is NOT reminded about', !inRenewalWindow(-1),
   'after the instant the charge has either happened or failed — both are a different email');
+
+// ── 3b · THE BOUNDARY, which a day count alone gets wrong ───────────────────────────────────────
+// The row that prompted the whole feature: ends 2026-09-10T18:30:00Z, which in IST is midnight on
+// the 11th. At 07:00Z on the 11th the DAY count says 0 — "renews today" — while the instant passed
+// twelve hours earlier and the baker is already looking at "We couldn't renew your subscription".
+// Found by dry-running the job against real data; these day-level tests could not see it.
+const AFTER = new Date('2026-09-11T07:00:00Z');
+check('the day count alone says "today" after the moment has passed',
+  inRenewalWindow(daysUntilRenewal(PERIOD_END, AFTER, 'Asia/Kolkata')),
+  'if this ever stops being true the trap below has moved, not gone');
+check('renewalStillAhead sees that it has NOT still to happen',
+  !renewalStillAhead(PERIOD_END, AFTER));
+check('so shouldRemind refuses — no "renews today" to a locked-out baker',
+  !shouldRemind(PERIOD_END, AFTER, 'Asia/Kolkata'));
+check('and it still sends while the moment is genuinely ahead',
+  shouldRemind(PERIOD_END, new Date('2026-09-09T02:15:00Z'), 'Asia/Kolkata'));
+check('including on the renewal day itself, before the hour',
+  shouldRemind(PERIOD_END, new Date('2026-09-10T06:00:00Z'), 'Asia/Kolkata'),
+  'IST calls this the 10th → days 1; the instant is still ahead, so it is a legitimate send');
 
 // ── 4 · the dedupe key carries the PERIOD ───────────────────────────────────────────────────────
 // The single most important difference from the trial countdown. Keyed on a milestone, a baker gets

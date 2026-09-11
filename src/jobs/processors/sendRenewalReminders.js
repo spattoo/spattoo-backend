@@ -4,7 +4,7 @@ import { SUBSCRIPTION_STATUS } from '../../constants/subscriptionStatuses.js';
 import { PLAN } from '../../constants/subscriptionPlans.js';
 import { config } from '../../config.js';
 import {
-  daysUntilRenewal, inRenewalWindow, renewalPayload, RENEWAL_REMINDER_DAYS,
+  daysUntilRenewal, shouldRemind, renewalPayload, RENEWAL_REMINDER_DAYS,
 } from '../../services/renewalReminders.js';
 
 // ── "Your plan renews in two days" ───────────────────────────────────────────────────────────────
@@ -73,8 +73,11 @@ export async function sendRenewalReminders() {
     if (!baker?.is_active) { skipped++; continue; }        // a closed account is not a renewal
 
     const tz = baker.timezone || config.jobs.renewalReminderTz;
+    // ⚠️ `shouldRemind`, not the day count alone. A period ending in the evening UTC is already
+    // "today" in India while the moment itself has passed — see renewalReminders.js. Asking only
+    // the day question sends "your plan renews today" to a baker who is already locked out.
+    if (!shouldRemind(sub.current_period_end, now, tz)) { skipped++; continue; }
     const days = daysUntilRenewal(sub.current_period_end, now, tz);
-    if (!inRenewalWindow(days)) { skipped++; continue; }
 
     try {
       const produced = await notifyRenewalReminder({

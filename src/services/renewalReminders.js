@@ -45,13 +45,32 @@ export function daysUntilRenewal(periodEnd, now = new Date(), tz = config.jobs.r
   return Math.round((Date.parse(`${end}T00:00:00Z`) - Date.parse(`${today}T00:00:00Z`)) / 86400000);
 }
 
-/* Is today a day to send on? The window runs from the milestone down to the renewal day itself.
- *
- * ⚠️ It does NOT extend past the renewal. After that the charge has either happened (nothing to
- * warn about) or it has not (a different message entirely — that is the payment-failed path, and
- * telling somebody their plan "renews in -1 days" is worse than silence). */
+/* Is today a day to send on? The window runs from the milestone down to the renewal day itself. */
 export function inRenewalWindow(days) {
   return days != null && days <= RENEWAL_REMINDER_DAYS && days >= 0;
+}
+
+/* Has the renewal MOMENT actually still to happen?
+ *
+ * ⚠️ A DAY COUNT IS NOT ENOUGH AT THE BOUNDARY, and the row that prompted this whole feature is the
+ * proof. It ends `2026-09-10T18:30:00Z`. In Asia/Kolkata that is midnight on the 11th — so at 07:00Z
+ * on the 11th the calendar count is 0 ("renews today") while the instant passed twelve hours ago and
+ * the baker is already staring at "We couldn't renew your subscription".
+ *
+ * Caught by dry-running the job against real data; the unit tests could not see it because they
+ * reason in whole days, which is exactly the abstraction that hides it. A reminder is a warning
+ * about something that has NOT happened yet, so the instant is the authority and the day count only
+ * decides which of the remaining days to speak on. */
+export function renewalStillAhead(periodEnd, now = new Date()) {
+  const end = new Date(periodEnd).getTime();
+  return Number.isFinite(end) && end > now.getTime();
+}
+
+/* Both questions at once, which is how callers should ask: the moment is ahead AND today is a day we
+ * speak on. Exported as one function so a caller cannot accidentally check only the cheap half. */
+export function shouldRemind(periodEnd, now = new Date(), tz = config.jobs.renewalReminderTz) {
+  if (!renewalStillAhead(periodEnd, now)) return false;
+  return inRenewalWindow(daysUntilRenewal(periodEnd, now, tz));
 }
 
 /* One reminder per baker PER PERIOD — see the header. The period end is the cycle's identity, and
