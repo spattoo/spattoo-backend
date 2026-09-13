@@ -148,8 +148,21 @@ export async function buildElementGuide(el, { ownerBakerId = null, quality = nul
     .from('element_craft_guide').select('stages_key')
     .eq('element_id', el.id).eq('guide_type', 'fondant_figure').maybeSingle();
 
-  const { error } = await supabase
+  /* ⚠️ The SAME missing-column window the admin reads guard against, and worse on this side: a
+     rejected upsert loses a guide that has just been paid for. Migrations here are applied by hand,
+     so there is always a stretch where this code knows about `stages_error` and the database does
+     not — and on that read path it merely blanked a screen, while here it would throw away the work
+     of two model calls. Retried without the column rather than pre-flighted, because the common
+     case is that the column IS there and should cost nothing. */
+  let { error } = await supabase
     .from('element_craft_guide').upsert(row, { onConflict: 'element_id,guide_type' });
+  if (error && (error.code === '42703' || /stages_error/.test(error.message ?? ''))) {
+    console.warn('[decoration-guide] element_craft_guide.stages_error is absent — run migration 094. '
+      + 'Saving the guide without the reason.');
+    const { stages_error: _absent, ...withoutReason } = row;
+    ({ error } = await supabase
+      .from('element_craft_guide').upsert(withoutReason, { onConflict: 'element_id,guide_type' }));
+  }
   if (error) throw error;
 
   // Every generation writes a NEW key (the cache is immutable, so a reused key is never refetched),

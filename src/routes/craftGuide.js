@@ -29,6 +29,39 @@ const CRAFT_FIELDS = 'element_id, guide_type, nozzle_recs, consistency, techniqu
  * Only the two admin reads widen it. Keep it that way — if this column ever needs to reach a baker,
  * it needs its OWN wording, not this string. */
 const ADMIN_CRAFT_FIELDS = `${CRAFT_FIELDS}, stages_error`;
+
+/* ⚠️ THE COLUMN MAY NOT BE THERE YET, AND A SCREEN MUST NOT DIE BECAUSE OF IT.
+ *
+ * Migrations here are applied BY HAND (see migrations/README and check:migrations), so there is
+ * always a window — minutes on dev, potentially much longer on prod — where the code knows about a
+ * column the database does not. Selecting it in that window is not a degraded read: Postgres
+ * rejects the whole statement, the route 500s, and the admin panel falls back to "No guide yet" for
+ * an element that HAS a guide. Reported exactly that way, as a missing Rebuild button — because
+ * Rebuild only renders when a guide is present, so a failed read looks like a deleted control.
+ *
+ * So the field list is resolved at runtime and remembered. One wasted round trip the first time,
+ * then never again, and the feature degrades to exactly what it was before 094: the panel knows
+ * there is no picture, just not why.
+ *
+ * `null` = not yet known. Deliberately not a startup probe — that would make every boot depend on
+ * this table being reachable, to answer a question that only matters when somebody opens the page.
+ */
+let hasStagesError = null;
+const missingStagesError = (error) =>
+  error?.code === '42703' || /stages_error/.test(error?.message ?? '');
+
+// Read one guide row with the widest field list this database actually supports.
+async function selectGuideForAdmin(build) {
+  if (hasStagesError !== false) {
+    const res = await build(ADMIN_CRAFT_FIELDS);
+    if (!res.error) { hasStagesError = true; return res; }
+    if (!missingStagesError(res.error)) return res;      // a real failure, not a missing column
+    hasStagesError = false;
+    console.warn('[craft-guide] element_craft_guide.stages_error is absent — run migration 094. '
+      + 'Falling back; a guide with no picture will not say why.');
+  }
+  return build(CRAFT_FIELDS);
+}
 const CONSISTENCIES = ['stiff', 'medium', 'soft'];
 const RANKS = ['primary', 'secondary', 'alternative'];
 
@@ -206,16 +239,16 @@ router.post('/admin/craft-guide/suggest', requireAuth, requireCapability('catalo
 // Single fetch for the authoring editor. Returns null if not yet authored.
 router.get('/admin/craft-guide/:elementId', requireAuth, requireCapability('catalog:admin'), async (req, res) => {
   try {
-    const { data, error } = await supabase
+    const { data, error } = await selectGuideForAdmin(fields => supabase
       .from('element_craft_guide')
-      .select(ADMIN_CRAFT_FIELDS)
+      .select(fields)
       .eq('element_id', req.params.elementId)
       // REQUIRED since migration 025 widened the key to (element_id, guide_type). Without it an
       // element carrying BOTH a nozzle guide and a decoration guide returns two rows and
       // maybeSingle() errors — so the authoring editor broke for exactly the elements that have
       // the most guidance. This endpoint is the nozzle editor; the decoration guide has its own.
       .eq('guide_type', 'piping_nozzle')
-      .maybeSingle();
+      .maybeSingle());
 
     if (error) return serverError(req, res, error);
     res.json(data); // null when no row exists yet
@@ -286,9 +319,9 @@ router.get('/admin/elements/:id/decoration-guide', requireAuth, requireCapabilit
       .eq('id', req.params.id).maybeSingle();
     if (!el) return res.status(404).json({ error: 'Element not found' });
 
-    const { data, error } = await supabase
-      .from('element_craft_guide').select(ADMIN_CRAFT_FIELDS)
-      .eq('element_id', el.id).eq('guide_type', 'fondant_figure').maybeSingle();
+    const { data, error } = await selectGuideForAdmin(fields => supabase
+      .from('element_craft_guide').select(fields)
+      .eq('element_id', el.id).eq('guide_type', 'fondant_figure').maybeSingle());
     if (error) return serverError(req, res, error);
 
     res.json({
