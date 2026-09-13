@@ -1,0 +1,48 @@
+-- Sell the QUARTERLY billing period again (decided 2026-09-13). Monthly + quarterly + yearly.
+--
+-- The exact reverse of billing_periods_retire_quarterly.sql, which said this would be one value:
+--
+--     update billing_periods set is_active = true where name = 'quarterly';
+--
+-- It is. Nothing was deleted or renumbered when quarterly was retired, so the row is still id 2,
+-- 3 months, discount_pct 10, sort_order 1 — it reappears between Monthly and Yearly, priced the way
+-- it always was (monthly × 3 × 0.9: Flame ₹2,697.30, Blaze ₹6,747.30 ex-GST).
+--
+-- WHY IT COMES BACK: ₹24,999 upfront for Blaze annual is a real ask in this market, and the only
+-- step below it was monthly. Quarterly is the middle rung for a baker who will not write that
+-- cheque yet. ⚠️ YEARLY STAYS — dropping it was considered and rejected on 2026-07-28 (spattoo-core
+-- docs/SUBSCRIPTION_TIERS.md § "Monthly-only was considered and REJECTED") because cake demand is
+-- seasonal and an annual subscriber rides Jan–Feb without a cancel decision. Three months does not
+-- ride out a slow season either, so quarterly REPLACES nothing; it is a third rung.
+--
+-- ⚠️ BEFORE RUNNING THIS, CHECK THE RAZORPAY PLANS EXIST:
+--
+--     npm run verify:razorpay-plans
+--
+-- POST /billing/subscribe reads RAZORPAY_PLAN_{TIER}_{PERIOD} from the environment and returns
+-- 400 "No Razorpay plan configured for flame quarterly" if it is absent. create-gst-plans.mjs
+-- deliberately creates plans for INACTIVE periods (`--all-periods`) so that switching one on stays
+-- a data change — but that only helps if it was actually run and the env vars were set, in THIS
+-- environment. Flipping the flag with no plan behind it turns a working picker into a dead button.
+--
+-- ⚠️ AND CHECK THE AMOUNT, not just the id. A Razorpay plan is an immutable SNAPSHOT of the price
+-- it was created with. If discount_pct moved after the plan was made, the database says one thing
+-- and Razorpay charges another, and the only repair is a NEW plan plus a new env var. The verify
+-- script compares both, which is the whole reason it exists.
+--
+-- WHAT THIS SWITCHES ON, everywhere at once:
+--   * GET /billing/periods filters .eq('is_active', true) → the Quarterly button returns to the
+--     in-app picker (BillingPanel), labelled "9 days free" (10% of three months).
+--   * POST /billing/subscribe re-reads the row and stops rejecting it with billing_period_inactive.
+--
+-- WHAT IT DOES NOT TOUCH:
+--   * The marketing pricing page, which has only ever had a Monthly/Annual toggle with its prices
+--     hardcoded (spattoo-web apps/marketing/components/Pricing.tsx). Quarterly stays in-app until
+--     somebody decides it should be marketed — that is a code change there, not a flag here.
+--   * Renewal, which runs off Razorpay's subscription.charged webhook and never reads this table.
+--
+-- Idempotent: plain UPDATE keyed on the stable natural key, safe to re-run.
+
+update billing_periods
+   set is_active = true
+ where name = 'quarterly';
