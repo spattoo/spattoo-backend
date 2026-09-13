@@ -217,7 +217,24 @@ router.get('/admin/garnishes', requireAuth, requireCapability('catalog:admin'), 
 // owner may need it withdrawn; a published garnish is catalogue furniture that other bakeries have
 // designed cakes with, and letting the author's later "delete" reach into those is worse than the
 // storage it saves. Withdrawing one is `is_active = false` on the element, by an author.
-router.post('/garnishes/:id/publish', requireAuth, requireCapability('catalog:admin'), async (req, res) => {
+/* ⚠️ `/admin/garnishes/:id/publish`, not `/garnishes/:id/publish` — MOVED 2026-09-13.
+ *
+ * Privilege is a BOUNDARY, not a per-route decision. Everything under /api/admin is gated once at
+ * the mount in server.js (requireAuth + requireAdmin), and for that backstop to cover a privileged
+ * route the route has to LIVE there. This one did not, so its `catalog:admin` check below was the
+ * ONLY thing standing in front of it — one line, and if it were ever dropped or mistyped nothing
+ * would catch it. check:admin-routes had been red about exactly this.
+ *
+ * Not a hole that was open: the capability check was present and correct throughout, so nobody
+ * without `catalog:admin` could reach it. What was missing is the second layer.
+ *
+ * It was also the ODD ONE OUT among its own siblings — `GET /admin/garnishes` above already sits
+ * under the boundary with the same capability. The three `element:manage` routes stay outside it,
+ * correctly: those are a baker's own drawings, and a baker is not an admin.
+ *
+ * ⚠️ DEPLOY ORDER: spattoo-api first, then spattoo-admin. In between, Publish returns 404 and
+ * nothing happens — no partial state, because the route is what creates the catalogue element. */
+router.post('/admin/garnishes/:id/publish', requireAuth, requireCapability('catalog:admin'), async (req, res) => {
   try {
     const { element_type_id, category_id, name, description } = req.body ?? {};
     if (!element_type_id) return res.status(400).json({ error: 'element_type_id is required' });

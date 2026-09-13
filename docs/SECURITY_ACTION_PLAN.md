@@ -238,6 +238,21 @@ forget — see SEC-1, SEC-11). The RBAC model is sound: a separate `admins` tabl
 ---
 
 ## Architectural follow-up
+- [x] **SEC-15b — Relocate `POST /garnishes/:id/publish` under `/api/admin`. ✅ DONE (2026-09-13).**
+  The last straggler after SEC-15, found by `check:admin-routes` which had been red about it.
+  Renamed to `POST /admin/garnishes/:id/publish` (`src/routes/garnishes.js`, mounted at `/api` →
+  full path `/api/admin/garnishes/:id/publish`), so the `/api/admin` boundary (`requireAdmin`)
+  backstops it in addition to its per-route `catalog:admin` cap. **Not a hole that was open** — the
+  capability check was present and correct throughout, so nobody without `catalog:admin` could reach
+  it; what was missing is the second layer, and privilege resting on one line is the thing SEC-0b
+  exists to prevent. It was also the **odd one out among its own siblings**: `GET /admin/garnishes`
+  already sat under the boundary with the same capability, while the three `element:manage` routes
+  stay outside it correctly (a baker's own drawings; a baker is not an admin). **Unlike SEC-15 this
+  one HAD a live caller** — `spattoo-admin/src/lib/api.js` `publishGarnish()`, updated in the same
+  change; grep across admin/core/web found no other. **Deploy api first, then admin**: in between,
+  Publish returns 404 and nothing happens — the route is what creates the catalogue element, so
+  there is no partial state. `EXEMPT` in `check-admin-routes.mjs` stays empty, and the whole 29-gate
+  chain is green for the first time.
 - [x] **SEC-15 — Relocate `POST /jobs/extract` under `/api/admin`. ✅ DONE.** Renamed to
   `POST /admin/jobs/extract` (`src/routes/jobs.js`, mounted at `/api` → full path `/api/admin/jobs/extract`),
   so the `/api/admin` boundary (`requireAdmin`) now backstops it in addition to its per-route
