@@ -91,6 +91,17 @@ export async function buildElementGuide(el, { ownerBakerId = null, quality = nul
   // Best-effort: the words are the product and the picture is the improvement, so an image failure
   // must not throw away a guide that is otherwise complete — and, on the baker-paid path, one they
   // are about to be charged for.
+  /* ⚠️ The REASON is carried out, not just logged.
+   *
+   * Best-effort was right and silent was not. When this step failed, `stages_key` went in as null,
+   * the route answered `{ ok: true }`, and the panel simply drew no picture — so a PAID step that
+   * failed looked identical to one that was never asked for. Reported as "it's only generating
+   * text", and the only place the answer existed was a Render log line nobody can reach from the
+   * screen that spent the money.
+   *
+   * A rebuild is the obvious next move and the reason decides whether it is worth making: a
+   * provider timeout will pass on a retry, a moderation refusal on the artwork never will. */
+  let imageError = null;
   const stages = await renderStageImage({
     sourceKey: imageKey,                 // an element image IS the isolated decoration; no crop
     objectKey: elementStagesKey(el.id),
@@ -101,7 +112,8 @@ export async function buildElementGuide(el, { ownerBakerId = null, quality = nul
     dimension,
     quality,
   }).catch(err => {
-    console.warn(`[decoration-guide] stage image failed for ${el.id}, guide kept:`, err?.message);
+    imageError = err?.message ?? String(err);
+    console.warn(`[decoration-guide] stage image failed for ${el.id}, guide kept:`, imageError);
     return null;
   });
   if (stages) calls.push({ model: stages.model, usage: stages.usage, image: stages.image });
@@ -148,5 +160,5 @@ export async function buildElementGuide(el, { ownerBakerId = null, quality = nul
       console.warn(`[decoration-guide] superseded stage image ${prev.stages_key} not archived:`, e?.message));
   }
 
-  return { status: 'ok', row, guide, model, calls };
+  return { status: 'ok', row, guide, model, calls, imageError };
 }

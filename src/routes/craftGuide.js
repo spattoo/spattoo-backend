@@ -329,7 +329,13 @@ router.post('/admin/elements/:id/decoration-guide', requireAuth, requireCapabili
     if (out.status === 'not_modelled') {
       return res.json({ ok: true, notModelled: true, guide: out.guide ?? null });
     }
-    res.json({ ok: true, guide: withStageUrl(out.row) });
+    /* `imageError` when the STEPS came back but the picture did not. Not an error status: the guide
+       is real, it is stored, and it is most of what a baker needs — answering 500 here would throw
+       away words we just paid for. It is a warning ON a success, and it has to reach the screen,
+       because the alternative (what happened) is a paid step failing with no symptom but an absence.
+       The provider's own message, unedited — a paraphrase would lose the one detail that decides
+       whether a rebuild is worth trying. */
+    res.json({ ok: true, guide: withStageUrl(out.row), imageError: out.imageError ?? null });
   } catch (err) {
     serverError(req, res, err);
   }
