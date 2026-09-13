@@ -45,20 +45,32 @@ const ADMIN_CRAFT_FIELDS = `${CRAFT_FIELDS}, stages_error`;
  *
  * `null` = not yet known. Deliberately not a startup probe — that would make every boot depend on
  * this table being reachable, to answer a question that only matters when somebody opens the page.
+ *
+ * ⚠️ "ABSENT" EXPIRES; "PRESENT" DOES NOT. A column can be added to a live database — that is the
+ * whole situation this exists for — but it is never taken away, so only one of the two answers can
+ * go stale. Remembering `false` forever meant a process that asked BEFORE the migration ran kept
+ * omitting the column afterwards, and the feature stayed half-dead until somebody happened to
+ * redeploy. Self-healing by restart is luck, not design. Ten minutes costs at most one extra failed
+ * query per ten minutes in a database that genuinely lacks the column, which is a window nobody
+ * sits in for long.
  */
-let hasStagesError = null;
+const ABSENT_RECHECK_MS = 10 * 60 * 1000;
+let hasStagesError = null;      // true = use it · false = absent as of `absentSince` · null = unasked
+let absentSince = 0;
 const missingStagesError = (error) =>
   error?.code === '42703' || /stages_error/.test(error?.message ?? '');
 
 // Read one guide row with the widest field list this database actually supports.
 async function selectGuideForAdmin(build) {
-  if (hasStagesError !== false) {
+  const believedAbsent = hasStagesError === false && (Date.now() - absentSince) < ABSENT_RECHECK_MS;
+  if (!believedAbsent) {
     const res = await build(ADMIN_CRAFT_FIELDS);
     if (!res.error) { hasStagesError = true; return res; }
     if (!missingStagesError(res.error)) return res;      // a real failure, not a missing column
     hasStagesError = false;
+    absentSince = Date.now();
     console.warn('[craft-guide] element_craft_guide.stages_error is absent — run migration 094. '
-      + 'Falling back; a guide with no picture will not say why.');
+      + 'Falling back; a guide with no picture will not say why. Re-checking in 10 minutes.');
   }
   return build(CRAFT_FIELDS);
 }
