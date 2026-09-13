@@ -126,6 +126,10 @@ export async function buildElementGuide(el, { ownerBakerId = null, quality = nul
     // the image, while the public URL base is deployment config that would rot every stored row.
     source_image_url: imageKey,
     stages_key: stages?.key ?? null,
+    /* ⚠️ Written on EVERY build, not only on failure — `null` on success is the point. A reason
+       sitting beside a picture that now exists describes a superseded attempt and would be read as
+       current, which is worse than no reason at all. Admin-only; see ADMIN_CRAFT_FIELDS. */
+    stages_error: imageError,
     model: model ?? null,
     prompt_version: GUIDE_PROMPT_VERSION,
     // 'draft' means UNREVIEWED BY A HUMAN, which is true of every generated guide including ours.
@@ -160,5 +164,5 @@ export async function buildElementGuide(el, { ownerBakerId = null, quality = nul
       console.warn(`[decoration-guide] superseded stage image ${prev.stages_key} not archived:`, e?.message));
   }
 
-  return { status: 'ok', row, guide, model, calls, imageError };
+  return { status: 'ok', row, guide, model, calls };
 }

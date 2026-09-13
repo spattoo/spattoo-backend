@@ -18,6 +18,17 @@ import { toPublicUrl } from './elements.js';
 const router = Router();
 
 const CRAFT_FIELDS = 'element_id, guide_type, nozzle_recs, consistency, technique, guide, stages_key, status, model, prompt_version, generated_at, updated_at';
+/* ⚠️ `stages_error` is ADMIN-ONLY, and THIS LIST IS THE ENFORCEMENT.
+ *
+ * It holds a provider's raw error string — it names models and quotes internal API text — written
+ * for whoever authors the catalogue and never for a baker. So it is not in CRAFT_FIELDS, which is
+ * what the two baker-reachable reads use (X-Ray's batch fetch, and the baker's own decoration-steps
+ * route): they cannot return it even by accident, and a future baker-facing read that reaches for
+ * "the guide fields" gets the safe list by default.
+ *
+ * Only the two admin reads widen it. Keep it that way — if this column ever needs to reach a baker,
+ * it needs its OWN wording, not this string. */
+const ADMIN_CRAFT_FIELDS = `${CRAFT_FIELDS}, stages_error`;
 const CONSISTENCIES = ['stiff', 'medium', 'soft'];
 const RANKS = ['primary', 'secondary', 'alternative'];
 
@@ -63,6 +74,19 @@ function normalizeNozzleRecs(input) {
 function withStageUrl(row) {
   if (!row?.stages_key) return row;
   return { ...row, stages_url: toPublicUrl(row.stages_key) };
+}
+
+/* ⚠️ The baker path returns the row object buildElementGuide just BUILT, not one read back through
+ * CRAFT_FIELDS — so the select list that keeps `stages_error` admin-only does not protect it. This
+ * does. Dropped rather than never set, because the same object is what gets upserted, and the
+ * column is the whole point on the admin side.
+ *
+ * Belt and braces on purpose: one guard is a select list, the other is here, and a baker-facing
+ * response has to get past both. */
+function forBaker(row) {
+  if (!row || !('stages_error' in row)) return row;
+  const { stages_error: _dropped, ...rest } = row;
+  return rest;
 }
 
 // ── Read (any authenticated user — bakers viewing X-Ray, admins authoring) ─────
@@ -184,7 +208,7 @@ router.get('/admin/craft-guide/:elementId', requireAuth, requireCapability('cata
   try {
     const { data, error } = await supabase
       .from('element_craft_guide')
-      .select(CRAFT_FIELDS)
+      .select(ADMIN_CRAFT_FIELDS)
       .eq('element_id', req.params.elementId)
       // REQUIRED since migration 025 widened the key to (element_id, guide_type). Without it an
       // element carrying BOTH a nozzle guide and a decoration guide returns two rows and
@@ -263,7 +287,7 @@ router.get('/admin/elements/:id/decoration-guide', requireAuth, requireCapabilit
     if (!el) return res.status(404).json({ error: 'Element not found' });
 
     const { data, error } = await supabase
-      .from('element_craft_guide').select(CRAFT_FIELDS)
+      .from('element_craft_guide').select(ADMIN_CRAFT_FIELDS)
       .eq('element_id', el.id).eq('guide_type', 'fondant_figure').maybeSingle();
     if (error) return serverError(req, res, error);
 
@@ -329,13 +353,11 @@ router.post('/admin/elements/:id/decoration-guide', requireAuth, requireCapabili
     if (out.status === 'not_modelled') {
       return res.json({ ok: true, notModelled: true, guide: out.guide ?? null });
     }
-    /* `imageError` when the STEPS came back but the picture did not. Not an error status: the guide
-       is real, it is stored, and it is most of what a baker needs — answering 500 here would throw
-       away words we just paid for. It is a warning ON a success, and it has to reach the screen,
-       because the alternative (what happened) is a paid step failing with no symptom but an absence.
-       The provider's own message, unedited — a paraphrase would lose the one detail that decides
-       whether a rebuild is worth trying. */
-    res.json({ ok: true, guide: withStageUrl(out.row), imageError: out.imageError ?? null });
+    /* The guide carries its own `stages_error` now, so there is no second field saying the same
+       thing on the response — the row IS the answer, on this build and on every later reload.
+       Not an error status either: the guide is real and stored, and answering 500 because the
+       picture failed would throw away words we just paid for. */
+    res.json({ ok: true, guide: withStageUrl(out.row) });
   } catch (err) {
     serverError(req, res, err);
   }
@@ -439,7 +461,7 @@ router.post('/elements/:id/xray/decoration-steps', requireAuth, requireCapabilit
     const { data: existing } = await supabase
       .from('element_craft_guide').select(CRAFT_FIELDS)
       .eq('element_id', el.id).eq('guide_type', 'fondant_figure').maybeSingle();
-    if (existing) return res.json({ ok: true, reused: true, guide: withStageUrl(existing) });
+    if (existing) return res.json({ ok: true, reused: true, guide: forBaker(withStageUrl(existing)) });
 
 
     // ── WHO PAYS ────────────────────────────────────────────────────────────────────
@@ -489,7 +511,7 @@ router.post('/elements/:id/xray/decoration-steps', requireAuth, requireCapabilit
       return res.status(422).json({ error: "We couldn't read that decoration.", code: 'GUIDE_FAILED' });
     }
 
-    res.json({ ok: true, reused: false, charged: !oursToPayFor, guide: withStageUrl(out.value.row) });
+    res.json({ ok: true, reused: false, charged: !oursToPayFor, guide: forBaker(withStageUrl(out.value.row)) });
   } catch (err) {
     if (err instanceof InsufficientCreditsError) {
       return res.status(err.status).json({ error: err.message, code: err.code, ...err.detail });
