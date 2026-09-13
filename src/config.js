@@ -141,6 +141,14 @@ export const config = {
     // dev is Asia/Kolkata, 5.5 hours from the UTC the job runs in — so for a third of every day a
     // server-clock answer is off by one, and "ends tomorrow" on the last morning is a lie.
     trialReminderTz: process.env.TRIAL_REMINDER_TZ || 'Asia/Kolkata',
+    // The PAID-plan renewal reminder. 02:15 UTC = 07:45 IST — ten minutes after the trial countdown
+    // so the two never contend for the worker, and a baker who somehow qualifies for both is not
+    // emailed twice in the same second. Retime per-env without a deploy.
+    renewalReminderCron: process.env.RENEWAL_REMINDER_CRON || '15 2 * * *',
+    // Which zone "days until renewal" is counted in. Separate from the cron for the same reason the
+    // trial's is — and it matters MORE here: `current_period_end` is an instant, and Razorpay's tend
+    // to land in the evening UTC, which is already the next calendar day in India.
+    renewalReminderTz: process.env.RENEWAL_REMINDER_TZ || 'Asia/Kolkata',
     // Which timezone "today" means when the digest runs. SEPARATE from the cron, because they answer
     // different questions: the cron says WHEN to look, this says WHICH DAY to look at. Run at 01:30
     // UTC and ask the server what day it is and you get the right answer by luck — 01:30 UTC and

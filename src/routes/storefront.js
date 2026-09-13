@@ -263,12 +263,27 @@ router.get('/storefront/:slug', async (req, res) => {
 // hold internal config. Used by the customer designer's apiClient.fetchBakerSettings.
 router.get('/storefront/:slug/settings', async (req, res) => {
   try {
-    const baker = await loadOpenStorefront(req.params.slug, 'settings, lead_time_days');
+    const baker = await loadOpenStorefront(req.params.slug, 'settings, lead_time_days, delivery_radius_km');
     if (!baker) return res.status(404).json({ error: 'Storefront not found' });
 
     const s = baker.settings ?? {};
     res.json({
-      delivery:    { home_delivery: !!s.delivery?.home_delivery },
+      // The toggle alone tells a customer delivery EXISTS; the radius is what tells them whether it
+      // reaches THEM, which is the question they actually have. Nulled when the toggle is off, so a
+      // radius left behind by a baker who has since stopped delivering cannot surface on a
+      // storefront as a promise nobody is making.
+      //
+      // ⚠️ `radius_km` reads the COLUMN (migration 091), not `settings.delivery.radius_km`. The blob
+      // key is where this lived before it was ever shown to anyone; it has no default, type or
+      // CHECK, and no baker had one. Do not fall back to it — a fallback would quietly re-admit the
+      // unconstrained value this column exists to replace.
+      //
+      // ⚠️ It is a PROMISE, not a gate, and must not be filtered on: `bakers` holds a postal address
+      // and no lat/lng, so a radial distance has no origin, and the enquiry collects an area +
+      // pincode — a region, not a point. The customer reads it; the baker judges. Enforcement wants
+      // a served-pincodes list. See plans/delivery-address.md.
+      delivery:    { home_delivery: !!s.delivery?.home_delivery,
+                     radius_km: s.delivery?.home_delivery ? (baker.delivery_radius_km ?? null) : null },
       store_hours: s.store_hours ?? null,
       // Minimum notice, so the storefront's date picker can refuse dates inside the window
       // while the customer is still on the page. 0 = same-day is fine, which is the default

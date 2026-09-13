@@ -822,7 +822,7 @@ router.get('/baker/settings', requireAuth, async (req, res) => {
 
     const { data: baker } = await supabase
       .from('bakers')
-      .select('settings, lead_time_days')
+      .select('settings, lead_time_days, delivery_radius_km')
       .eq('id', contact.baker_id)
       .single();
     if (!baker) return res.status(404).json({ error: 'Baker not found' });
@@ -830,7 +830,14 @@ router.get('/baker/settings', requireAuth, async (req, res) => {
     // lead_time_days is a COLUMN, not part of the settings blob (migration 042 — it is queried and
     // constrained, which a jsonb key cannot be). Served alongside so the settings screen has one
     // response to read, exactly as GET /storefront/:slug/settings already does for the customer.
-    res.json({ ...(baker.settings ?? {}), lead_time_days: baker.lead_time_days ?? 0 });
+    // delivery_radius_km is a COLUMN too, for the same reasons (migration 091), and is served the
+    // same way. ⚠️ `?? null`, NEVER `?? 0`: null is PICKUP ONLY, and 0 is rejected by the CHECK — so
+    // defaulting to a number would tell the screen this baker delivers, to nowhere.
+    res.json({
+      ...(baker.settings ?? {}),
+      lead_time_days: baker.lead_time_days ?? 0,
+      delivery_radius_km: baker.delivery_radius_km ?? null,
+    });
   } catch (err) {
     serverError(req, res, err);
   }
@@ -848,7 +855,7 @@ router.put('/baker/settings', requireAuth, requireCapability('store:manage'), as
     // Pulled OUT of the blob before it is written. The body is the settings object verbatim, so
     // without this the column's value would also be buried as a jsonb key — two copies, one of them
     // the one nothing reads.
-    const { lead_time_days, ...settings } = req.body ?? {};
+    const { lead_time_days, delivery_radius_km, ...settings } = req.body ?? {};
 
     const patch = { settings };
     if (lead_time_days !== undefined) {
@@ -861,6 +868,29 @@ router.put('/baker/settings', requireAuth, requireCapability('store:manage'), as
       }
       patch.lead_time_days = days;
     }
+
+    // ⚠️ NULL IS A VALUE HERE, not an omission: it is how a baker turns delivery off. So the guard is
+    // `!== undefined` and null passes through, while an absent key leaves the column alone. Reading
+    // null as "not supplied" would make delivery impossible to switch OFF once switched on.
+    if (delivery_radius_km !== undefined) {
+      if (delivery_radius_km === null || delivery_radius_km === '') {
+        patch.delivery_radius_km = null;                       // pickup only
+      } else {
+        const km = Number(delivery_radius_km);
+        // Mirrors 091's CHECK, so a bad value is a message rather than a constraint violation. 0 is
+        // rejected on purpose: "delivers 0 km" is not how a baker says they do not deliver —
+        // clearing the field is, and that is what null above means.
+        if (!Number.isFinite(km) || km <= 0 || km > 500) {
+          return res.status(400).json({ error: 'delivery_radius_km must be greater than 0 and at most 500 km, or null for pickup only' });
+        }
+        patch.delivery_radius_km = Math.round(km * 10) / 10;   // numeric(5,1)
+      }
+    }
+
+    // ⚠️ The toggle and the radius can contradict each other — `settings.delivery.home_delivery`
+    // stayed in the blob (091 deliberately did not retire it) while NULL already means "no
+    // delivery". Delivery off wins, here, once, so no later reader has to resolve it.
+    if (settings?.delivery && settings.delivery.home_delivery === false) patch.delivery_radius_km = null;
 
     const { error } = await supabase
       .from('bakers')

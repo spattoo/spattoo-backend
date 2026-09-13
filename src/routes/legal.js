@@ -8,6 +8,7 @@ import { config } from '../config.js';
 import {
   LEGAL_DOC_KEYS,
   PUBLISHABLE_DOC_KEYS,
+  siteSlugFor,
   CONSENT_REQUIRED_DOC_KEYS,
   CONSENT_SUBJECT_TYPE,
   CONSENT_SOURCE,
@@ -72,7 +73,10 @@ router.get('/admin/legal/preview', requireAuth, requireCapability('legal:manage'
     let site = null;
     let fetchError = null;
     try {
-      const r = await fetch(`${base}/api/legal/${encodeURIComponent(docKey)}`, {
+      // ⚠️ The SITE SLUG, not the docKey — they differ for `tos`, whose page is /terms.
+      // This line used docKey and so 404'd for Terms alone, which the screen showed as
+      // "Site unreachable". See SITE_SLUG_BY_DOC_KEY.
+      const r = await fetch(`${base}/api/legal/${encodeURIComponent(siteSlugFor(docKey))}`, {
         headers: { accept: 'application/json' },
         signal: AbortSignal.timeout(10_000),
       });

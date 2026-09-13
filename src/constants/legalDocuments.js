@@ -4,6 +4,23 @@
 
 export const LEGAL_DOC_KEYS = ['tos', 'privacy', 'refund', 'grievance'];
 
+// ── docKey is NOT the marketing site's URL slug ────────────────────────────────
+// The consent record points at `tos`; the page lives at `/terms`, and its JSON at
+// `/api/legal/terms`. Both are fixed and neither can move to match the other: renaming a
+// docKey orphans every past consent (see the header above), and renaming the slug breaks a
+// public URL linked from the footer of every page. So they are two namespaces, and this is
+// the map. spattoo-web/apps/marketing/lib/legal.ts models the same pair as `docKey`+`slug`.
+//
+// ⚠️ THREE OF THE FOUR ARE IDENTICAL, which is exactly why this went unnoticed. The admin
+// preview route used the docKey as the slug; privacy, refund and grievance therefore worked,
+// and only Terms 404'd — reported on screen as "Site unreachable", which reads like the site
+// being down rather than one URL being wrong. Terms could never have been published from that
+// screen, and nothing said so until somebody went to publish it.
+export const SITE_SLUG_BY_DOC_KEY = Object.freeze({ tos: 'terms' });
+
+/** The marketing-site slug for a doc key. Identity for everything except `tos`. */
+export const siteSlugFor = (docKey) => SITE_SLUG_BY_DOC_KEY[docKey] ?? docKey;
+
 // Documents a baker must actively AGREE to (checkbox / first-login gate). The others are
 // informational (surfaced, not gated).
 export const CONSENT_REQUIRED_DOC_KEYS = ['tos', 'privacy'];
