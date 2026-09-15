@@ -2,6 +2,7 @@ import { supabase } from './supabase.js';
 import { toPublicUrl } from '../lib/publicUrl.js';
 import { sendTemplateSms } from './msg91.js';
 import { sendWhatsAppCampaign } from './aisensy.js';
+import { whatsappImageUrl } from './whatsappMedia.js';
 
 // ── Which channels a notification goes out on, and what fills their templates ────────────────────
 // Schema and the argument for it: migrations/095_notification_channels.sql.
@@ -118,10 +119,14 @@ export async function sendTemplateMessage({ channel, row, payload, phone, name =
     return { status: 'skipped', recipient: phone, detail: `This notification has no ${filled.missing.join(', ')}`, values };
   }
   try {
+    // WhatsApp delivers only JPEG or PNG in a template header, and our cake pictures are WebP. Converted
+    // once and cached (services/whatsappMedia.js); a conversion that fails is a failed send, so it retries.
+    const mediaUrl = !isSms && filled.mediaUrl ? await whatsappImageUrl(filled.mediaUrl) : null;
+    if (mediaUrl) values.image = mediaUrl;   // report the picture actually sent
     const response = isSms
       ? await sendTemplateSms({ phone, templateId: row.template_ref, variables: filled.variables })
       : await sendWhatsAppCampaign({
-          phone, campaignName: row.template_ref, userName: name, params: filled.params, mediaUrl: filled.mediaUrl,
+          phone, campaignName: row.template_ref, userName: name, params: filled.params, mediaUrl,
         });
     const id = isSms ? response?.message : (response?.submitted_message_id ?? response?.messageId);
     return { status: 'sent', recipient: phone, providerMessageId: id ? String(id) : null, response, values };
