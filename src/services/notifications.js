@@ -247,6 +247,23 @@ function readableSubscriptionFields(payload, timeZone) {
   return out;
 }
 
+// The types that go through notifySubscription — the exports just below this block.
+export const SUBSCRIPTION_NOTIFICATION_TYPES = new Set([
+  'subscription_activated', 'subscription_renewed', 'payment_failed', 'subscription_cancelled', 'subscription_expired',
+]);
+
+/* The ready-to-show field NAMES a notification of this type gets, given a payload of it.
+ *
+ * ⚠️ For admin's field list. That list is read off a type's most recent notification, and one sent
+ * before these fields existed does not carry them — so admin could not pick `planLabel` and its save
+ * check refused it as unknown, leaving only the raw `planName`. Derived from the same function that
+ * adds them, so the two cannot drift. */
+export function addedTemplateFields(typeSlug, payload) {
+  return SUBSCRIPTION_NOTIFICATION_TYPES.has(typeSlug)
+    ? Object.keys(readableSubscriptionFields(payload ?? {}, null))
+    : [];
+}
+
 // Welcome a NEW baker after their bakery is created (post-confirmation onboarding kit). Recipient
 // is the owner's email (bakers.email is optional at creation). Fired from createBakerForUser.
 export async function notifyBakerWelcome({ email, firstName, bakerName, slug }) {

@@ -6,6 +6,7 @@ import { requireCapability } from '../middleware/rbac.js';
 import { pushConfigured } from '../services/fcm.js';
 import { templateSmsConfigured } from '../services/msg91.js';
 import { whatsappConfigured } from '../services/aisensy.js';
+import { addedTemplateFields } from '../services/notifications.js';
 import {
   CHANNELS, PUSH_TEXT_TYPES, CUSTOMER_PHONE_CONSENT_BUILT,
   defaultChannels, isMissingTable, validateChannel,
@@ -23,18 +24,21 @@ const ROW_FIELDS = 'type_id, channel, enabled, template_ref, config, fallback_fo
 /* The fields a type's payload carries, read off its most recent notification, so admin picks a
    template variable's field from a list instead of typing it. Empty for a type never sent yet —
    validateChannel then accepts any name, because there is nothing to check it against. */
-async function payloadFields(typeId) {
+async function payloadFields(type) {
   const { data } = await supabase
     .from('notifications')
     .select('payload')
-    .eq('type_id', typeId)
+    .eq('type_id', type.id)
     .order('created_at', { ascending: false })
     .limit(1)
     .maybeSingle();
-  return Object.entries(data?.payload ?? {})
+  if (!data) return [];
+  const stored = Object.entries(data.payload ?? {})
     .filter(([, v]) => v === null || typeof v !== 'object')   // a list cannot fill a line of text
-    .map(([k]) => k)
-    .sort();
+    .map(([k]) => k);
+  // Plus the ready-to-show fields the code now adds for this type. The latest notification may predate
+  // them; without this, `planLabel` could not be picked and the save check refused it as unknown.
+  return [...new Set([...stored, ...addedTemplateFields(type.slug, data.payload)])].sort();
 }
 
 // ── GET /api/admin/notification-channels ─────────────────────────────────────────────────────────
@@ -50,7 +54,7 @@ router.get('/admin/notification-channels', requireAuth, requireCapability('catal
     const { data: rows, error: rowsErr } = await supabase.from('notification_channels').select(ROW_FIELDS);
     if (rowsErr && !isMissingTable(rowsErr, 'notification_channels')) return serverError(req, res, rowsErr);
 
-    const fields = await Promise.all(types.map(t => payloadFields(t.id)));
+    const fields = await Promise.all(types.map(t => payloadFields(t)));
     res.json({
       // false until 095 has run: the screen shows the code's defaults and cannot save.
       ready:     !rowsErr,
@@ -93,7 +97,7 @@ router.put('/admin/notification-channels/:typeId/:channel', requireAuth, require
       config:       b.config && typeof b.config === 'object' && !Array.isArray(b.config) ? b.config : {},
       fallback_for: b.fallback_for || null,
     };
-    const problem = validateChannel(type, channel, row, await payloadFields(type.id));
+    const problem = validateChannel(type, channel, row, await payloadFields(type));
     if (problem) return res.status(400).json({ error: problem });
 
     const { count, error: countErr } = await supabase
