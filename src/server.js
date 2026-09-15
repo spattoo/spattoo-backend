@@ -36,6 +36,7 @@ import designSessionsRouter from './routes/designSessions.js';
 import aiCreditsRouter from './routes/aiCredits.js';
 import xraySpecRouter from './routes/xraySpec.js';
 import ediblePrintsRouter from './routes/ediblePrints.js';
+import adminNotificationChannelsRouter from './routes/adminNotificationChannels.js';
 import { requestId } from './middleware/requestId.js';
 import { errorHandler } from './middleware/errorHandler.js';
 import { requireAuth } from './middleware/auth.js';
@@ -93,6 +94,7 @@ app.use('/api', meshyRouter);
 app.use('/api', printSheetsRouter);
 app.use('/api', deviceTokensRouter);
 app.use('/api', notificationsRouter);
+app.use('/api', adminNotificationChannelsRouter);   // which channels each notification uses (admin)
 app.use('/api', webhooksRouter);
 app.use('/api', inspirationRouter);
 app.use('/api', elementExtractRouter);

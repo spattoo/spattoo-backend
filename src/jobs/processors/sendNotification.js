@@ -4,6 +4,12 @@ import { sendEmail } from '../../services/mailer.js';
 import { esc, escUrl } from '../../lib/htmlEscape.js';
 import { sendPush, pushConfigured } from '../../services/fcm.js';
 import { linkFor } from '../../lib/notificationLink.js';
+import { sendTemplateSms, templateSmsConfigured } from '../../services/msg91.js';
+import { sendWhatsAppCampaign, whatsappConfigured } from '../../services/aisensy.js';
+import {
+  loadChannels, orderChannels, singleAttemptChannels, bakerContact, smsVariables, whatsappParams,
+  isMissingTable, CUSTOMER_PHONE_CONSENT_BUILT,
+} from '../../services/notificationChannels.js';
 
 function formatDate(str) {
   if (!str) return '—';
@@ -768,87 +774,214 @@ export function buildPush(typeSlug, payload) {
   return null;
 }
 
+/* ── What each channel did on earlier attempts ────────────────────────────────────────────────────
+ * Keyed by channel. Empty before 095 has run — every channel then looks untried, which is how a
+ * retry behaved before there were rows to read. */
+async function loadDeliveries(notificationId) {
+  const { data, error } = await supabase
+    .from('notification_deliveries')
+    .select('channel, status, attempts, detail')
+    .eq('notification_id', notificationId);
+  if (error && !isMissingTable(error, 'notification_deliveries')) {
+    console.error('[notifications] could not read deliveries', JSON.stringify({ notificationId, error: error.message }));
+  }
+  return new Map((data ?? []).map(d => [d.channel, d]));
+}
+
+async function recordDelivery(notificationId, channel, result, prior) {
+  const { error } = await supabase.from('notification_deliveries').upsert({
+    notification_id:     notificationId,
+    channel,
+    status:              result.status,
+    recipient:           result.recipient ?? null,
+    provider_message_id: result.providerMessageId ?? null,
+    detail:              result.detail ?? null,
+    attempts:            (prior?.attempts ?? 0) + 1,
+  }, { onConflict: 'notification_id,channel' });
+  if (error && !isMissingTable(error, 'notification_deliveries')) {
+    console.error('[notifications] could not record delivery', JSON.stringify({ notificationId, channel, error: error.message }));
+  }
+}
+
+/* ── Send ONE channel. Never throws: returns { status: sent | failed | skipped, recipient, detail } ──
+ *
+ * `skipped` is for what no retry can fix — no phone number, no template set, a provider not set up, a
+ * payload without the field a template needs. It is recorded with the reason and never retried.
+ * `failed` is for what a later attempt might get through: the provider refused or did not answer. */
+async function deliver(row, notification, type) {
+  const notificationId = notification.id;
+  const typeSlug = type.slug;
+  const payload = notification.payload ?? {};
+  const skipped = (detail, recipient = null) => ({ status: 'skipped', recipient, detail });
+
+  if (row.channel === 'email') {
+    let mail = null;
+    try {
+      mail = buildEmail(typeSlug, notification.recipient_email, payload);
+
+      /* ── Copy us in on the few that matter ──────────────────────────────────────────────────────
+       *
+       * A blind copy on a SHORT LIST of types, decided here rather than in mailer.js. A bcc down there
+       * would copy us on every quote, order update and reminder any customer ever receives — a flood,
+       * and somebody else's mail.
+       *
+       * BCC rather than a second internal message because everything worth knowing is already in the
+       * one the baker gets: the To header is who signed up, and the body carries their bakery name and
+       * storefront slug. A separate mail would restate all of it and become a second template to keep
+       * in step with the first.
+       *
+       * ⚠️ It rides the SAME send. If the copy is going to fail — a bad address in the variable — the
+       * baker's own welcome fails with it, and the outbox records the whole thing as failed. That is
+       * the honest trade for not sending twice, and the reason this stays a short list of low-volume
+       * types rather than something that could be switched on broadly.
+       */
+      const bcc = BCC_TYPES.has(typeSlug) ? (config.smtp.internalBcc || null) : null;
+
+      const result = await sendEmail({ ...mail, ...(bcc ? { bcc } : {}) });
+      // 'sent' only means the provider ACCEPTED the message — not that it reached the inbox. Log
+      // what the provider actually said (normalized id + response + any rejected recipients) so
+      // deliverability problems (sandbox, SPF/DKIM, bounces) are diagnosable from Render logs
+      // instead of being invisible behind status=sent.
+      console.log('[notifications] sent', JSON.stringify({
+        notificationId,
+        type:      typeSlug,
+        to:        mail.to,
+        messageId: result.id,
+        response:  result.response,
+        accepted:  result.accepted,
+        rejected:  result.rejected,
+      }));
+      return { status: 'sent', recipient: mail.to, providerMessageId: result.id ?? null };
+    } catch (err) {
+      console.error('[notifications] send failed', JSON.stringify({ notificationId, type: typeSlug, to: mail?.to ?? notification.recipient_email, error: err.message }));
+      return { status: 'failed', recipient: notification.recipient_email, detail: err.message };
+    }
+  }
+
+  if (row.channel === 'push') {
+    // The fast channel, not the reliable one. ONE attempt (singleAttemptChannels): a dead token, an
+    // expired credential or a Firebase outage is not fixed by trying again, and it must never hold
+    // the notification open for a retry.
+    const push = buildPush(typeSlug, payload);
+    if (!push) return skipped('No push text for this notification');   // e.g. a trial reminder a week out
+    if (!pushConfigured()) return skipped('Push is not configured on this server');
+    try {
+      const r = await sendPush({ email: notification.recipient_email, ...push });
+      // ALWAYS logged, including the do-nothing outcomes. Logging only successes made the two
+      // failures that actually happen — nothing configured, and nobody with a registered device —
+      // look identical to push never having been attempted, which is a bad evening.
+      console.log('[notifications] push', JSON.stringify({
+        notificationId, type: typeSlug, to: notification.recipient_email, ...r,
+      }));
+      if (r.sent > 0) return { status: 'sent', recipient: notification.recipient_email };
+      if (r.failed > 0) return { status: 'failed', recipient: notification.recipient_email, detail: `${r.failed} device(s) refused it` };
+      return skipped(r.reason || 'No registered device', notification.recipient_email);
+    } catch (err) {
+      console.error('[notifications] push failed', JSON.stringify({ notificationId, type: typeSlug, error: err.message }));
+      return { status: 'failed', recipient: notification.recipient_email, detail: err.message };
+    }
+  }
+
+  // ── SMS and WhatsApp ───────────────────────────────────────────────────────────────────────────
+  const isSms = row.channel === 'sms';
+  if (type.audience === 'customer' && !CUSTOMER_PHONE_CONSENT_BUILT) {
+    return skipped('Customers have not agreed to SMS or WhatsApp messages yet');
+  }
+  if (!row.template_ref) return skipped(isSms ? 'No MSG91 template ID set in admin' : 'No AiSensy campaign set in admin');
+  if (isSms ? !templateSmsConfigured() : !whatsappConfigured()) {
+    return skipped(`${isSms ? 'MSG91' : 'AiSensy'} is not configured on this server`);
+  }
+
+  const contact = await bakerContact({ bakerId: notification.baker_id, email: notification.recipient_email });
+  const phone = isSms ? contact?.phone : contact?.whatsapp;
+  if (!phone) return skipped("No phone number on the bakery's account");
+
+  const filled = isSms ? smsVariables(row, payload) : whatsappParams(row, payload);
+  if (filled.missing.length) return skipped(`This notification has no ${filled.missing.join(', ')}`, phone);
+
+  try {
+    const response = isSms
+      ? await sendTemplateSms({ phone, templateId: row.template_ref, variables: filled.variables })
+      : await sendWhatsAppCampaign({
+          phone, campaignName: row.template_ref, userName: contact.name, params: filled.params, mediaUrl: filled.mediaUrl,
+        });
+    console.log(`[notifications] ${row.channel}`, JSON.stringify({ notificationId, type: typeSlug, to: phone, response }));
+    const id = isSms ? response?.message : (response?.submitted_message_id ?? response?.messageId);
+    return { status: 'sent', recipient: phone, providerMessageId: id ? String(id) : null };
+  } catch (err) {
+    console.error(`[notifications] ${row.channel} failed`, JSON.stringify({ notificationId, type: typeSlug, to: phone, error: err.message }));
+    return { status: 'failed', recipient: phone, detail: err.message };
+  }
+}
+
 export async function sendNotification({ notificationId }) {
   // Fetch notification with its type
   const { data: notification, error } = await supabase
     .from('notifications')
-    .select('*, notification_types(slug)')
+    .select('*, notification_types(id, slug, audience)')
     .eq('id', notificationId)
     .single();
 
   if (error || !notification) throw new Error(`Notification ${notificationId} not found`);
 
-  const typeSlug = notification.notification_types.slug;
-  const mail = buildEmail(typeSlug, notification.recipient_email, notification.payload);
+  const type = notification.notification_types;
 
-  /* ── Copy us in on the few that matter ────────────────────────────────────────────────────────
+  /* ── Every channel switched on for this type, once each (migrations/095) ───────────────────────
    *
-   * A blind copy on a SHORT LIST of types, decided here rather than in mailer.js. A bcc down there
-   * would copy us on every quote, order update and reminder any customer ever receives — a flood,
-   * and somebody else's mail.
+   * Which channels, and which template each uses, is admin data (notification_channels). A type with
+   * no rows — or a database 095 has not reached — runs on today's defaults: email, plus push where
+   * buildPush() has text.
    *
-   * BCC rather than a second internal message because everything worth knowing is already in the
-   * one the baker gets: the To header is who signed up, and the body carries their bakery name and
-   * storefront slug. A separate mail would restate all of it and become a second template to keep
-   * in step with the first.
+   * ⚠️ NOTHING IS SENT TWICE. Each channel's outcome is its own row, so the retry that follows a
+   * failed email re-sends the email and nothing else: a channel already sent or skipped is done, and
+   * a single-attempt channel (push, or anything a fallback covers) keeps its first answer.
    *
-   * ⚠️ It rides the SAME send. If the copy is going to fail — a bad address in the variable — the
-   * baker's own welcome fails with it, and the outbox records the whole thing as failed. That is
-   * the honest trade for not sending twice, and the reason this stays a short list of low-volume
-   * types rather than something that could be switched on broadly.
+   * A fallback runs after the channel it covers and only when that one did not deliver.
    */
-  const bcc = BCC_TYPES.has(typeSlug) ? (config.smtp.internalBcc || null) : null;
+  const rows = await loadChannels(type.id, type.slug);
+  const once = singleAttemptChannels(rows);
+  const earlier = await loadDeliveries(notificationId);
+  const outcome = new Map();
+  const failures = [];
+  let retry = false;
 
-  try {
-    const result = await sendEmail({ ...mail, ...(bcc ? { bcc } : {}) });
-    // 'sent' only means the provider ACCEPTED the message — not that it reached the inbox. Log
-    // what the provider actually said (normalized id + response + any rejected recipients) so
-    // deliverability problems (sandbox, SPF/DKIM, bounces) are diagnosable from Render logs
-    // instead of being invisible behind status=sent.
-    console.log('[notifications] sent', JSON.stringify({
-      notificationId,
-      type:      typeSlug,
-      to:        mail.to,
-      messageId: result.id,
-      response:  result.response,
-      accepted:  result.accepted,
-      rejected:  result.rejected,
-    }));
-    await supabase.from('notifications').update({
-      status:  'sent',
-      sent_at: new Date().toISOString(),
-    }).eq('id', notificationId);
-
-    // ── Push, AFTER the email and never instead of it ────────────────────────────────────────────
-    // Best-effort on purpose. Email is the durable channel and its status is what `sent` means; push
-    // is the fast one. A dead token, an expired credential or a Firebase outage must not fail a
-    // notification the baker has already received — and must not mark it for retry, which would
-    // re-send the email to fix the push.
-    //
-    // Deliberately not awaited into the status: this runs, logs, and cannot change the outcome above.
-    const push = buildPush(typeSlug, notification.payload);
-    if (push && pushConfigured()) {
-      try {
-        const r = await sendPush({ email: notification.recipient_email, ...push });
-        // ALWAYS logged, including the do-nothing outcomes. Logging only successes made the two
-        // failures that actually happen — nothing configured, and nobody with a registered device —
-        // look identical to push never having been attempted, which is a bad evening.
-        console.log('[notifications] push', JSON.stringify({
-          notificationId, type: typeSlug, to: notification.recipient_email, ...r,
-        }));
-      } catch (err) {
-        console.error('[notifications] push failed (email already sent)', JSON.stringify({
-          notificationId, type: typeSlug, error: err.message,
-        }));
-      }
+  for (const row of orderChannels(rows)) {
+    const prior = earlier.get(row.channel);
+    if (prior && (prior.status !== 'failed' || once.has(row.channel))) {
+      outcome.set(row.channel, prior.status);
+      if (prior.status === 'failed') failures.push(`${row.channel}: ${prior.detail}`);
+      continue;
     }
-  } catch (err) {
-    console.error('[notifications] send failed', JSON.stringify({ notificationId, type: typeSlug, to: mail.to, error: err.message }));
-    const exhausted = notification.attempts >= notification.max_attempts;
+
+    const result = row.fallback_for && outcome.get(row.fallback_for) === 'sent'
+      ? { status: 'skipped', detail: `Not needed: ${row.fallback_for} delivered` }
+      : await deliver(row, { ...notification, id: notificationId }, type);
+
+    await recordDelivery(notificationId, row.channel, result, prior);
+    outcome.set(row.channel, result.status);
+    if (result.status === 'failed') {
+      failures.push(`${row.channel}: ${result.detail}`);
+      if (!once.has(row.channel)) retry = true;
+    }
+  }
+
+  // `sent` = at least one channel reached them. A retry is only worth it while a retryable channel
+  // failed and attempts remain; the sweeper picks `pending` rows back up.
+  const exhausted = notification.attempts >= notification.max_attempts;
+  const errorMessage = failures.join(' · ') || null;
+  if (retry && !exhausted) {
     await supabase.from('notifications').update({
-      status:        exhausted ? 'failed' : 'pending',
-      error_message: err.message,
-      ...(exhausted ? { failed_at: new Date().toISOString() } : {}),
+      status: 'pending', error_message: errorMessage,
+    }).eq('id', notificationId);
+  } else if ([...outcome.values()].includes('sent')) {
+    await supabase.from('notifications').update({
+      status: 'sent', sent_at: new Date().toISOString(), error_message: errorMessage,
+    }).eq('id', notificationId);
+  } else {
+    await supabase.from('notifications').update({
+      status:        'failed',
+      failed_at:     new Date().toISOString(),
+      error_message: errorMessage || (outcome.size ? 'Nothing was delivered' : 'No channel is switched on for this notification type'),
     }).eq('id', notificationId);
   }
 }

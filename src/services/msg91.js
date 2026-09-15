@@ -45,19 +45,58 @@ export async function sendOtpSms({ phone, otp }) {
   url.searchParams.set('mobile', mobile);
   url.searchParams.set('otp', otp);   // OURS — see the note above on why we never let MSG91 mint it.
 
+  return postToMsg91(url, {});
+}
+
+// One POST to MSG91, read the only way that is safe.
+//
+// MSG91 answers 200 even for failures — a bad template id, an unregistered sender, an exhausted
+// balance all arrive as `{"type":"error"}` under a green status. Reading res.ok alone would
+// report every one of those as a successful send, and the customer would wait for a code that
+// was never accepted.
+async function postToMsg91(url, payload) {
   const res = await fetch(url, {
     method: 'POST',
-    headers: { authkey: config.sms.authKey, 'Content-Type': 'application/json' },
-    body: JSON.stringify({}),
+    headers: { authkey: config.sms.authKey, 'Content-Type': 'application/json', accept: 'application/json' },
+    body: JSON.stringify(payload),
   });
-
-  // MSG91 answers 200 even for failures — a bad template id, an unregistered sender, an exhausted
-  // balance all arrive as `{"type":"error"}` under a green status. Reading res.ok alone would
-  // report every one of those as a successful send, and the customer would wait for a code that
-  // was never accepted.
   const body = await res.json().catch(() => ({}));
   if (!res.ok || body?.type === 'error') {
     throw new Error(body?.message || `MSG91 send failed (HTTP ${res.status})`);
   }
   return body;
+}
+
+// ── Every other SMS: a DLT-approved template, filled from a notification ─────────────────────────
+// Used by the notification sender (jobs/processors/sendNotification.js) for the SMS channels switched
+// on in admin. Needs only the auth key. The template id comes from admin, per notification type
+// (notification_channels.template_ref) — never from MSG91_TEMPLATE_ID, which is the OTP template and
+// nothing else.
+const FLOW_URL = 'https://control.msg91.com/api/v5/flow';
+
+export function templateSmsConfigured() {
+  return !!config.sms.authKey;
+}
+
+/**
+ * Send one DLT-approved template SMS.
+ *
+ * @param {{ phone: string, templateId: string, variables?: Record<string, string> }} args
+ *   `variables` are keyed by the names the template's variables were given in MSG91 (VAR1, …).
+ *   The names are case-sensitive.
+ * @returns {Promise<object>} MSG91's parsed response body.
+ * @throws  on any provider failure — the caller decides how to react.
+ */
+export async function sendTemplateSms({ phone, templateId, variables = {} }) {
+  const mobile = String(phone ?? '').replace(/\D/g, '');
+  if (!mobile) throw new Error('sendTemplateSms: phone is required');
+  if (!templateId) throw new Error('sendTemplateSms: templateId is required');
+
+  // ⚠️ `template_id` is the name MSG91's panel uses now; its older docs call the same value `flow_id`.
+  // Not yet proven against a live send — if the first one answers "flow id missing", this is why.
+  return postToMsg91(FLOW_URL, {
+    template_id: templateId,
+    short_url:   '0',
+    recipients:  [{ mobiles: mobile, ...variables }],
+  });
 }

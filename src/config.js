@@ -281,6 +281,12 @@ export const config = {
     // `v1,whsec_<base64>`. Stored verbatim; the `v1,whsec_` prefix is stripped at verify time.
     hookSecret: process.env.SEND_SMS_HOOK_SECRET,
   },
+  // Outbound WhatsApp — AiSensy's campaign API, behind services/aisensy.js. Optional like sms: unset,
+  // every WhatsApp channel switched on in admin is skipped and says why, and nothing else changes.
+  // Which campaign each notification uses is admin data (notification_channels), not config.
+  whatsapp: {
+    aisensyApiKey: process.env.AISENSY_API_KEY,
+  },
   // Error telemetry. DSN is optional (like meshy/razorpay) so local boot never
   // fails without it — telemetry falls back to structured console logging.
   // The vendor lives behind src/lib/telemetry.js; swapping Sentry for GlitchTip
