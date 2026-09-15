@@ -4,10 +4,10 @@ import { sendEmail } from '../../services/mailer.js';
 import { esc, escUrl } from '../../lib/htmlEscape.js';
 import { sendPush, pushConfigured } from '../../services/fcm.js';
 import { linkFor } from '../../lib/notificationLink.js';
-import { sendTemplateSms, templateSmsConfigured } from '../../services/msg91.js';
-import { sendWhatsAppCampaign, whatsappConfigured } from '../../services/aisensy.js';
+import { templateSmsConfigured } from '../../services/msg91.js';
+import { whatsappConfigured } from '../../services/aisensy.js';
 import {
-  loadChannels, orderChannels, singleAttemptChannels, bakerContact, smsVariables, whatsappParams,
+  loadChannels, orderChannels, singleAttemptChannels, bakerContact, sendTemplateMessage,
   isMissingTable, CUSTOMER_PHONE_CONSENT_BUILT,
 } from '../../services/notificationChannels.js';
 
@@ -885,22 +885,14 @@ async function deliver(row, notification, type) {
   const phone = isSms ? contact?.phone : contact?.whatsapp;
   if (!phone) return skipped("No phone number on the bakery's account");
 
-  const filled = isSms ? smsVariables(row, payload) : whatsappParams(row, payload);
-  if (filled.missing.length) return skipped(`This notification has no ${filled.missing.join(', ')}`, phone);
-
-  try {
-    const response = isSms
-      ? await sendTemplateSms({ phone, templateId: row.template_ref, variables: filled.variables })
-      : await sendWhatsAppCampaign({
-          phone, campaignName: row.template_ref, userName: contact.name, params: filled.params, mediaUrl: filled.mediaUrl,
-        });
-    console.log(`[notifications] ${row.channel}`, JSON.stringify({ notificationId, type: typeSlug, to: phone, response }));
-    const id = isSms ? response?.message : (response?.submitted_message_id ?? response?.messageId);
-    return { status: 'sent', recipient: phone, providerMessageId: id ? String(id) : null };
-  } catch (err) {
-    console.error(`[notifications] ${row.channel} failed`, JSON.stringify({ notificationId, type: typeSlug, to: phone, error: err.message }));
-    return { status: 'failed', recipient: phone, detail: err.message };
+  // Fill and send through the one path admin's "Send test" also takes (services/notificationChannels.js).
+  const result = await sendTemplateMessage({ channel: row.channel, row, payload, phone, name: contact.name });
+  if (result.status === 'sent') {
+    console.log(`[notifications] ${row.channel}`, JSON.stringify({ notificationId, type: typeSlug, to: phone, response: result.response }));
+  } else if (result.status === 'failed') {
+    console.error(`[notifications] ${row.channel} failed`, JSON.stringify({ notificationId, type: typeSlug, to: phone, error: result.detail }));
   }
+  return { status: result.status, recipient: phone, providerMessageId: result.providerMessageId ?? null, detail: result.detail };
 }
 
 export async function sendNotification({ notificationId }) {

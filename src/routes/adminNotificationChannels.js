@@ -6,10 +6,11 @@ import { requireCapability } from '../middleware/rbac.js';
 import { pushConfigured } from '../services/fcm.js';
 import { templateSmsConfigured } from '../services/msg91.js';
 import { whatsappConfigured } from '../services/aisensy.js';
-import { addedTemplateFields } from '../services/notifications.js';
+import { addedTemplateFields, withTemplateFields } from '../services/notifications.js';
+import { normalizePhone } from '../lib/phone.js';
 import {
   CHANNELS, PUSH_TEXT_TYPES, CUSTOMER_PHONE_CONSENT_BUILT,
-  defaultChannels, isMissingTable, validateChannel,
+  defaultChannels, isMissingTable, validateChannel, sendTemplateMessage, PHONE_CHANNELS,
 } from '../services/notificationChannels.js';
 
 // ── Notification channels, authored in admin ────────────────────────────────────────────────────
@@ -21,24 +22,51 @@ const router = Router();
 
 const ROW_FIELDS = 'type_id, channel, enabled, template_ref, config, fallback_for, updated_at';
 
+// One notification type by id, or { type: null } when there is none. Shared by save and test.
+async function loadType(typeId) {
+  const { data, error } = await supabase
+    .from('notification_types')
+    .select('id, slug, label, audience')
+    .eq('id', Number(typeId))
+    .maybeSingle();
+  return { type: data ?? null, error };
+}
+
+/* A channel row from a request body, shaped the way validateChannel and the table expect. `enabled`
+   is decided by the caller: save takes it from the body, a test always checks the row as if it were on. */
+function rowFromBody(b = {}, { enabled, withFallback }) {
+  return {
+    enabled,
+    template_ref: typeof b.template_ref === 'string' && b.template_ref.trim() ? b.template_ref.trim() : null,
+    config:       b.config && typeof b.config === 'object' && !Array.isArray(b.config) ? b.config : {},
+    fallback_for: withFallback ? (b.fallback_for || null) : null,
+  };
+}
+
 /* The fields a type's payload carries, read off its most recent notification, so admin picks a
    template variable's field from a list instead of typing it. Empty for a type never sent yet —
    validateChannel then accepts any name, because there is nothing to check it against. */
-async function payloadFields(type) {
+// The payload of a type's most recent notification — the example admin works from. null if none yet.
+async function latestPayload(typeId) {
   const { data } = await supabase
     .from('notifications')
     .select('payload')
-    .eq('type_id', type.id)
+    .eq('type_id', typeId)
     .order('created_at', { ascending: false })
     .limit(1)
     .maybeSingle();
-  if (!data) return [];
-  const stored = Object.entries(data.payload ?? {})
+  return data ? (data.payload ?? {}) : null;
+}
+
+async function payloadFields(type) {
+  const payload = await latestPayload(type.id);
+  if (!payload) return [];
+  const stored = Object.entries(payload)
     .filter(([, v]) => v === null || typeof v !== 'object')   // a list cannot fill a line of text
     .map(([k]) => k);
   // Plus the ready-to-show fields the code now adds for this type. The latest notification may predate
   // them; without this, `planLabel` could not be picked and the save check refused it as unknown.
-  return [...new Set([...stored, ...addedTemplateFields(type.slug, data.payload)])].sort();
+  return [...new Set([...stored, ...addedTemplateFields(type.slug, payload)])].sort();
 }
 
 // ── GET /api/admin/notification-channels ─────────────────────────────────────────────────────────
@@ -82,21 +110,11 @@ router.put('/admin/notification-channels/:typeId/:channel', requireAuth, require
     const { channel } = req.params;
     if (!CHANNELS.includes(channel)) return res.status(400).json({ error: `Unknown channel "${channel}".` });
 
-    const { data: type, error: typeErr } = await supabase
-      .from('notification_types')
-      .select('id, slug, audience')
-      .eq('id', Number(req.params.typeId))
-      .maybeSingle();
+    const { type, error: typeErr } = await loadType(req.params.typeId);
     if (typeErr) return serverError(req, res, typeErr);
     if (!type) return res.status(404).json({ error: 'Notification type not found.' });
 
-    const b = req.body ?? {};
-    const row = {
-      enabled:      b.enabled === true,
-      template_ref: typeof b.template_ref === 'string' && b.template_ref.trim() ? b.template_ref.trim() : null,
-      config:       b.config && typeof b.config === 'object' && !Array.isArray(b.config) ? b.config : {},
-      fallback_for: b.fallback_for || null,
-    };
+    const row = rowFromBody(req.body, { enabled: req.body?.enabled === true, withFallback: true });
     const problem = validateChannel(type, channel, row, await payloadFields(type));
     if (problem) return res.status(400).json({ error: problem });
 
@@ -129,6 +147,59 @@ router.put('/admin/notification-channels/:typeId/:channel', requireAuth, require
       .single();
     if (saveErr) return serverError(req, res, saveErr);
     res.json(saved);
+  } catch (err) {
+    serverError(req, res, err);
+  }
+});
+
+// ── POST /api/admin/notification-channels/:typeId/:channel/test ─────────────────────────────────
+// Send the template in the editor — saved or not — to one phone number, filled from the most recent
+// real notification of this type. It goes through sendTemplateMessage, the path a real notification
+// takes, so what arrives is what a bakery would get.
+//
+// ⚠️ It reaches a real phone and costs a real message: AiSensy and MSG91 charge per send. Admin-only,
+// one number per call, and nothing is recorded as a delivery — it is not a notification.
+router.post('/admin/notification-channels/:typeId/:channel/test', requireAuth, requireCapability('catalog:admin'), async (req, res) => {
+  try {
+    const { channel } = req.params;
+    if (!PHONE_CHANNELS.has(channel)) return res.status(400).json({ error: 'Only SMS and WhatsApp can send a test.' });
+
+    const phone = normalizePhone(req.body?.phone);
+    if (!phone.ok) return res.status(400).json({ error: phone.error });
+
+    const { type, error: typeErr } = await loadType(req.params.typeId);
+    if (typeErr) return serverError(req, res, typeErr);
+    if (!type) return res.status(404).json({ error: 'Notification type not found.' });
+
+    // A test checks the template as if it were switched on, and a fallback means nothing for one send.
+    const row = rowFromBody(req.body, { enabled: true, withFallback: false });
+    const problem = validateChannel(type, channel, row, await payloadFields(type));
+    if (problem) return res.status(400).json({ error: problem });
+
+    if (channel === 'sms' ? !templateSmsConfigured() : !whatsappConfigured()) {
+      return res.status(409).json({ error: `${channel === 'sms' ? 'MSG91' : 'AiSensy'} is not set up on this server.` });
+    }
+
+    const sample = await latestPayload(type.id);
+    if (!sample) {
+      return res.status(409).json({
+        error: `No "${type.label}" notification has been sent yet, so there are no details to fill the template with.`,
+      });
+    }
+
+    const result = await sendTemplateMessage({
+      channel, row, payload: withTemplateFields(type.slug, sample), phone: phone.e164, name: 'Spattoo test',
+    });
+    console.log('[notifications] test send', JSON.stringify({
+      type: type.slug, channel, to: phone.e164, status: result.status, detail: result.detail, response: result.response,
+    }));
+
+    if (result.status === 'sent') {
+      return res.json({ ok: true, to: phone.e164, values: result.values, provider_message_id: result.providerMessageId });
+    }
+    // skipped = the template cannot be filled (a missing field): the admin's to fix, so 400.
+    // failed  = the provider refused or did not answer: 502, with its words.
+    return res.status(result.status === 'skipped' ? 400 : 502).json({ error: result.detail, values: result.values });
   } catch (err) {
     serverError(req, res, err);
   }

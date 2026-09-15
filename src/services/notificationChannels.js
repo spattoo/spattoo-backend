@@ -1,5 +1,7 @@
 import { supabase } from './supabase.js';
 import { toPublicUrl } from '../lib/publicUrl.js';
+import { sendTemplateSms } from './msg91.js';
+import { sendWhatsAppCampaign } from './aisensy.js';
 
 // ── Which channels a notification goes out on, and what fills their templates ────────────────────
 // Schema and the argument for it: migrations/095_notification_channels.sql.
@@ -95,6 +97,37 @@ export function whatsappParams(row, payload) {
   const image = imageField ? fieldValue(payload, imageField) : null;
   if (imageField && !image) missing.push(imageField);   // an image-header template cannot send without one
   return { params, mediaUrl: image ? toPublicUrl(image) : null, missing };
+}
+
+/**
+ * Fill one SMS or WhatsApp template from a payload and send it to one number. Never throws.
+ *
+ * ⚠️ THE ONE PATH both the notification sender and admin's "Send test" take. A test is only worth
+ * having if it proves what a real notification does — the same gap-filling, the same provider call,
+ * the same refusal to send a blank gap — and two copies of these lines would drift until it did not.
+ *
+ * @returns {{ status: 'sent'|'failed'|'skipped', recipient: string, detail?: string,
+ *             providerMessageId?: string|null, response?: object, values: object }}
+ *   `values` is what filled the gaps (SMS: by variable name; WhatsApp: params in order, and the image).
+ */
+export async function sendTemplateMessage({ channel, row, payload, phone, name = null }) {
+  const isSms = channel === 'sms';
+  const filled = isSms ? smsVariables(row, payload) : whatsappParams(row, payload);
+  const values = isSms ? filled.variables : { params: filled.params, image: filled.mediaUrl };
+  if (filled.missing.length) {
+    return { status: 'skipped', recipient: phone, detail: `This notification has no ${filled.missing.join(', ')}`, values };
+  }
+  try {
+    const response = isSms
+      ? await sendTemplateSms({ phone, templateId: row.template_ref, variables: filled.variables })
+      : await sendWhatsAppCampaign({
+          phone, campaignName: row.template_ref, userName: name, params: filled.params, mediaUrl: filled.mediaUrl,
+        });
+    const id = isSms ? response?.message : (response?.submitted_message_id ?? response?.messageId);
+    return { status: 'sent', recipient: phone, providerMessageId: id ? String(id) : null, response, values };
+  } catch (err) {
+    return { status: 'failed', recipient: phone, detail: err.message, values };
+  }
 }
 
 // ── Who a phone channel reaches ──────────────────────────────────────────────────────────────────

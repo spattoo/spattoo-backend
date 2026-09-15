@@ -264,6 +264,16 @@ export function addedTemplateFields(typeSlug, payload) {
     : [];
 }
 
+/* A payload as a template sees it: the stored fields plus the ready-to-show copies, in the baker's time
+   zone. For admin's "Send test", which fills a template from a notification that may have been sent
+   before those copies existed. */
+export function withTemplateFields(typeSlug, payload) {
+  const p = payload ?? {};
+  return SUBSCRIPTION_NOTIFICATION_TYPES.has(typeSlug)
+    ? { ...p, ...readableSubscriptionFields(p, p.timeZone ?? null) }
+    : p;
+}
+
 // Welcome a NEW baker after their bakery is created (post-confirmation onboarding kit). Recipient
 // is the owner's email (bakers.email is optional at creation). Fired from createBakerForUser.
 export async function notifyBakerWelcome({ email, firstName, bakerName, slug }) {
