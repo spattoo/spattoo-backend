@@ -3,6 +3,7 @@ import { jobQueue } from '../jobs/queue.js';
 import { digestDedupeKey } from './deliveryDigest.js';
 import { reminderDedupeKey, isEndedMilestone } from './trialReminders.js';
 import { renewalDedupeKey } from './renewalReminders.js';
+import { titleCase, rupees, dateLabel } from '../lib/notificationFormat.js';
 
 async function getTypeId(slug) {
   const { data } = await supabase
@@ -218,14 +219,32 @@ export async function notifyOrderCompleted({ order, baker, customer }) {
 // uses the same bakers.email → primary-owner fallback as the order emails. `timeZone` rides along
 // so the template formats dates in the baker's zone (not UTC). One internal helper; thin per-event
 // exports (DRY). `baker` = { id, name, email, timezone }.
-async function notifySubscription(typeSlug, baker, payload) {
+async function notifySubscription(typeSlug, baker, payload = {}) {
   const email = await bakerNotifyEmail(baker);
   if (!email) return;
+  const timeZone = baker?.timezone ?? null;
   await insertNotification(typeSlug, email, {
     bakerName: baker?.name ?? null,
-    timeZone:  baker?.timezone ?? null,
+    timeZone,
     ...payload,
+    ...readableSubscriptionFields(payload, timeZone),
   });
+}
+
+/* Ready-to-show copies of the raw fields, for SMS and WhatsApp templates. An email formats these
+   itself, but a template gap prints a field exactly as stored — "blaze", "2026-10-15T10:00:00.000Z",
+   149900 — so without these the baker would read the raw values.
+
+   Added only for fields the event actually carries, so admin's field list for a type does not offer a
+   date that type never has. A present-but-empty raw field gives a null copy: the channel is then
+   skipped with the reason recorded, rather than sending a dash. */
+function readableSubscriptionFields(payload, timeZone) {
+  const out = {};
+  if ('planName' in payload)      out.planLabel       = payload.planName ? titleCase(payload.planName) : null;
+  if ('nextBillingAt' in payload) out.nextBillingDate = dateLabel(payload.nextBillingAt, timeZone);
+  if ('accessUntil' in payload)   out.accessUntilDate = dateLabel(payload.accessUntil, timeZone);
+  if ('amount' in payload)        out.amountLabel     = payload.amount != null ? rupees(payload.amount) : null;
+  return out;
 }
 
 // Welcome a NEW baker after their bakery is created (post-confirmation onboarding kit). Recipient

@@ -16,20 +16,9 @@ function formatDate(str) {
   return new Date(str).toLocaleDateString('en-IN', { day: 'numeric', month: 'long', year: 'numeric' });
 }
 
-// Format an INSTANT (ISO timestamptz) as a calendar date in the recipient's timezone — NOT the
-// server's UTC — so "renews on Aug 2" doesn't display as Aug 1 for an IST baker (the datetime
-// convention: convert at the edge using the actor's zone). Falls back to Asia/Kolkata.
-function formatDateTz(iso, tz) {
-  if (!iso) return '—';
-  try {
-    return new Date(iso).toLocaleDateString('en-IN', { day: 'numeric', month: 'long', year: 'numeric', timeZone: tz || 'Asia/Kolkata' });
-  } catch {
-    return new Date(iso).toLocaleDateString('en-IN', { day: 'numeric', month: 'long', year: 'numeric' });
-  }
-}
-
-const titleCase = s => (s ? String(s).charAt(0).toUpperCase() + String(s).slice(1) : '');
-const rupees    = paise => `₹${(Number(paise || 0) / 100).toLocaleString('en-IN')}`;
+// formatDateTz, titleCase and rupees live in lib/notificationFormat.js, shared with the ready-to-show
+// payload fields that SMS and WhatsApp templates read (services/notifications.js).
+import { formatDateTz, titleCase, rupees } from '../../lib/notificationFormat.js';
 
 // Branded, email-client-safe (table layout, inline styles) invite email. Returns
 // { subject, text, html }. Kept here (with the other notification templates) so the
@@ -449,7 +438,7 @@ export function buildEmail(typeSlug, recipientEmail, payload) {
     const renews = formatDateTz(p.nextBillingAt, p.timeZone);
     return { from: config.smtp.from, to: recipientEmail, subject: `Your ${plan} plan is active`,
       html: shell(`<h2 style="margin:0 0 12px;font-size:22px;color:#2C4433;font-weight:800;">You're all set${hi}</h2>
-        <p>Your <b>${esc(plan)}</b> plan is now active${renews !== '—' ? ` and renews on <b>${renews}</b>` : ''}. Your storefront and 3D cake designer are ready to go.</p>
+        <p>Your <b>${esc(plan)}</b> plan is now active${renews !== '—' ? ` and renews on <b>${renews}</b>` : ''}. Everything in your plan is unlocked and ready to use.</p>
         ${billingCta}`) };
   }
 
