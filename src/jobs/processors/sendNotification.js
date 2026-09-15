@@ -876,6 +876,14 @@ async function deliver(row, notification, type) {
   if (type.audience === 'customer' && !CUSTOMER_PHONE_CONSENT_BUILT) {
     return skipped('Customers have not agreed to SMS or WhatsApp messages yet');
   }
+  // ⚠️ A baker is not messaged on their phone about something they did themselves. An order a baker
+  // types in (manual, or on their own storefront while signed in) still raises the new-quote email
+  // and push — Sandeep's call: those double as a record — but a WhatsApp or SMS about it is noise
+  // that also costs a message. Read off `authoredBy`, which the order route derives from the signed-in
+  // user and never from the request body, so a customer cannot switch their baker's alert off.
+  if (type.audience === 'baker' && payload.authoredBy === 'baker') {
+    return skipped('The bakery placed this itself, so no SMS or WhatsApp');
+  }
   if (!row.template_ref) return skipped(isSms ? 'No MSG91 template ID set in admin' : 'No AiSensy campaign set in admin');
   if (isSms ? !templateSmsConfigured() : !whatsappConfigured()) {
     return skipped(`${isSms ? 'MSG91' : 'AiSensy'} is not configured on this server`);
