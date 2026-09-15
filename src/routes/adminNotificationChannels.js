@@ -8,6 +8,7 @@ import { templateSmsConfigured } from '../services/msg91.js';
 import { whatsappConfigured } from '../services/aisensy.js';
 import { addedTemplateFields, withTemplateFields } from '../services/notifications.js';
 import { normalizePhone } from '../lib/phone.js';
+import { config } from '../config.js';
 import {
   CHANNELS, PUSH_TEXT_TYPES, CUSTOMER_PHONE_CONSENT_BUILT,
   defaultChannels, isMissingTable, validateChannel, sendTemplateMessage, PHONE_CHANNELS,
@@ -200,6 +201,180 @@ router.post('/admin/notification-channels/:typeId/:channel/test', requireAuth, r
     // skipped = the template cannot be filled (a missing field): the admin's to fix, so 400.
     // failed  = the provider refused or did not answer: 502, with its words.
     return res.status(result.status === 'skipped' ? 400 : 502).json({ error: result.detail, values: result.values });
+  } catch (err) {
+    serverError(req, res, err);
+  }
+});
+
+// ── Moving settings between servers: export on dev, import on production ────────────────────────
+//
+// Templates are set up and tested once, on dev, and must not be typed in again on production. So the
+// rows travel as a file — downloaded from one admin, uploaded to the other — which needs no production
+// credentials on anybody's machine, the same bargain the element and template bundles make.
+//
+// ⚠️ MATCHED BY NOTIFICATION NAME, NEVER BY ID. notification_types.id is a serial, and the same slug
+// can carry a different number on each database. A row imported by id could land on another
+// notification entirely — a trial reminder's SMS attached to an order alert.
+//
+// ⚠️ ON/OFF IS NOT COPIED UNLESS ASKED. Dev is switched back to email only once a template is tested,
+// so dev's switches say nothing about production. By default a setting arrives with production's own
+// on/off — a new one arrives off — and is switched on there after a Send test.
+const BUNDLE_FORMAT  = 'spattoo.notification-channels';
+const BUNDLE_VERSION = 1;
+
+async function loadTypesAndRows() {
+  const [types, rows] = await Promise.all([
+    supabase.from('notification_types').select('id, slug, label, audience'),
+    supabase.from('notification_channels').select('type_id, channel, enabled, template_ref, config, fallback_for'),
+  ]);
+  return { types: types.data ?? [], typesError: types.error, rows: rows.data ?? [], rowsError: rows.error };
+}
+
+// The same value whatever order its keys were stored in — jsonb does not keep the order it was given.
+const stable = v => (Array.isArray(v) ? `[${v.map(stable).join(',')}]`
+  : v && typeof v === 'object' ? `{${Object.keys(v).sort().map(k => `${JSON.stringify(k)}:${stable(v[k])}`).join(',')}}`
+  : JSON.stringify(v ?? null));
+
+/* What an import would change about one channel, in words for the preview. [] = nothing. */
+function channelChanges(before, after) {
+  if (!before) return [];
+  const bc = before.config ?? {}, ac = after.config ?? {};
+  const out = [];
+  if ((before.template_ref ?? null) !== (after.template_ref ?? null)) out.push('template');
+  if (stable(bc.variables) !== stable(ac.variables) || stable(bc.params) !== stable(ac.params)) out.push('variables');
+  if (stable(bc.image_field) !== stable(ac.image_field)) out.push('image');
+  const { variables: _v, params: _p, image_field: _i, ...bRest } = bc;
+  const { variables: _v2, params: _p2, image_field: _i2, ...aRest } = ac;
+  if (stable(bRest) !== stable(aRest)) out.push('other settings');
+  if ((before.fallback_for ?? null) !== (after.fallback_for ?? null)) out.push('fallback');
+  if (!!before.enabled !== !!after.enabled) out.push(after.enabled ? 'switches on' : 'switches off');
+  return out;
+}
+
+// ── GET /api/admin/notification-channels/export ──────────────────────────────────────────────────
+router.get('/admin/notification-channels/export', requireAuth, requireCapability('catalog:admin'), async (req, res) => {
+  try {
+    const { types, typesError, rows, rowsError } = await loadTypesAndRows();
+    if (typesError) return serverError(req, res, typesError);
+    if (rowsError) {
+      if (isMissingTable(rowsError, 'notification_channels')) {
+        return res.status(409).json({ error: 'Run migration 095 on this database before exporting.' });
+      }
+      return serverError(req, res, rowsError);
+    }
+    const typeById = new Map(types.map(t => [t.id, t]));
+    const channels = rows
+      .filter(r => typeById.has(r.type_id))
+      .map(r => ({
+        type_slug:    typeById.get(r.type_id).slug,
+        type_label:   typeById.get(r.type_id).label,
+        channel:      r.channel,
+        enabled:      r.enabled,
+        template_ref: r.template_ref,
+        config:       r.config ?? {},
+        fallback_for: r.fallback_for,
+      }))
+      .sort((a, b) => a.type_slug.localeCompare(b.type_slug) || CHANNELS.indexOf(a.channel) - CHANNELS.indexOf(b.channel));
+    res.json({
+      format:      BUNDLE_FORMAT,
+      version:     BUNDLE_VERSION,
+      source:      config.telemetry?.environment ?? null,   // "dev" / "production" — shown in the preview
+      exported_at: new Date().toISOString(),
+      channels,
+    });
+  } catch (err) {
+    serverError(req, res, err);
+  }
+});
+
+// ── POST /api/admin/notification-channels/import ─────────────────────────────────────────────────
+// { bundle, copyOnOff = false, apply = false }. apply:false is a dry run that changes nothing — the
+// admin screen always shows it first. Each row is checked with the same validateChannel a save uses;
+// a row that fails is skipped with the reason, and the rest are written in ONE upsert.
+router.post('/admin/notification-channels/import', requireAuth, requireCapability('catalog:admin'), async (req, res) => {
+  try {
+    const { bundle, copyOnOff = false, apply = false } = req.body ?? {};
+    if (bundle?.format !== BUNDLE_FORMAT || !Array.isArray(bundle?.channels)) {
+      return res.status(400).json({ error: 'That is not a notification settings file.' });
+    }
+    if (bundle.version !== BUNDLE_VERSION) {
+      return res.status(400).json({ error: `This file is version ${bundle.version}; this server reads version ${BUNDLE_VERSION}.` });
+    }
+
+    const { types, typesError, rows, rowsError } = await loadTypesAndRows();
+    if (typesError) return serverError(req, res, typesError);
+    if (rowsError) {
+      if (isMissingTable(rowsError, 'notification_channels')) {
+        return res.status(409).json({ error: 'Run migration 095 on this database before importing.' });
+      }
+      return serverError(req, res, rowsError);
+    }
+
+    const typeBySlug = new Map(types.map(t => [t.slug, t]));
+    const current = new Map(rows.map(r => [`${r.type_id}:${r.channel}`, r]));
+    const typesWithRows = new Set(rows.map(r => r.type_id));
+    const fieldsOf = new Map();
+    const fieldsFor = async t => {
+      if (!fieldsOf.has(t.id)) fieldsOf.set(t.id, await payloadFields(t));
+      return fieldsOf.get(t.id);
+    };
+
+    const results = [];
+    const writes = [];
+    const seen = new Set();
+    for (const item of bundle.channels) {
+      const out = { type_slug: item?.type_slug ?? null, type_label: null, channel: item?.channel ?? null };
+      const type = typeBySlug.get(item?.type_slug);
+      if (!type) { results.push({ ...out, status: 'skipped', reason: 'No notification with this name on this server' }); continue; }
+      out.type_label = type.label;
+      if (!CHANNELS.includes(item.channel)) { results.push({ ...out, status: 'skipped', reason: `Unknown channel "${item.channel}"` }); continue; }
+      const key = `${type.id}:${item.channel}`;
+      if (seen.has(key)) { results.push({ ...out, status: 'skipped', reason: 'Listed twice in the file' }); continue; }
+      seen.add(key);
+
+      // What this server has now. A type with no rows runs on the defaults, so they are its "before".
+      const before = current.get(key)
+        ?? (typesWithRows.has(type.id) ? null : (defaultChannels(type.slug).find(r => r.channel === item.channel) ?? null));
+      const after = rowFromBody(item, {
+        enabled: copyOnOff ? item.enabled === true : (before?.enabled ?? false),
+        withFallback: true,
+      });
+
+      const problem = validateChannel(type, item.channel, after, await fieldsFor(type));
+      if (problem) { results.push({ ...out, status: 'skipped', reason: problem }); continue; }
+
+      const changes = channelChanges(before, after);
+      const status = !before ? 'new' : changes.length ? 'changed' : 'same';
+      results.push({ ...out, status, changes, enabled_after: after.enabled });
+      if (status !== 'same') writes.push({ type_id: type.id, channel: item.channel, ...after });
+    }
+
+    // ⚠️ The first write to a type that ran on defaults gives it rows, and from then on only its rows
+    // count — so its default email (and push) go in beside the imported row, or importing one SMS row
+    // would switch that notification's email off. The same rule the single-channel save follows.
+    const writtenTypes = new Set(writes.map(w => w.type_id));
+    for (const typeId of writtenTypes) {
+      if (typesWithRows.has(typeId)) continue;
+      const slug = types.find(t => t.id === typeId).slug;
+      for (const d of defaultChannels(slug)) {
+        if (!writes.some(w => w.type_id === typeId && w.channel === d.channel)) writes.push({ ...d, type_id: typeId });
+      }
+    }
+
+    const count = s => results.filter(r => r.status === s).length;
+    const summary = { new: count('new'), changed: count('changed'), same: count('same'), skipped: count('skipped') };
+    if (apply && writes.length) {
+      const { error: writeErr } = await supabase
+        .from('notification_channels')
+        .upsert(writes, { onConflict: 'type_id,channel' });
+      if (writeErr) return serverError(req, res, writeErr);
+    }
+    if (apply) summary.applied = summary.new + summary.changed;
+
+    res.json({
+      source: bundle.source ?? null, exported_at: bundle.exported_at ?? null,
+      apply: !!apply, copyOnOff: !!copyOnOff, summary, rows: results,
+    });
   } catch (err) {
     serverError(req, res, err);
   }
