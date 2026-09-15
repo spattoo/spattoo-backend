@@ -3,7 +3,7 @@ import { jobQueue } from '../jobs/queue.js';
 import { digestDedupeKey } from './deliveryDigest.js';
 import { reminderDedupeKey, isEndedMilestone } from './trialReminders.js';
 import { renewalDedupeKey } from './renewalReminders.js';
-import { titleCase, rupees, dateLabel } from '../lib/notificationFormat.js';
+import { titleCase, rupees, dateLabel, calendarDate, clockTime } from '../lib/notificationFormat.js';
 
 async function getTypeId(slug) {
   const { data } = await supabase
@@ -91,6 +91,8 @@ export async function notifyOrderPlaced({ order, baker, customer, authoredBy = '
     // so an older caller that does not pass it keeps the wording it has always had.
     authoredBy,
   };
+  // Ready-to-show copies for SMS and WhatsApp templates; the email keeps formatting the raw fields.
+  Object.assign(payload, readableOrderFields(payload));
 
   const jobs = [];
 
@@ -259,19 +261,45 @@ export const SUBSCRIPTION_NOTIFICATION_TYPES = new Set([
  * check refused it as unknown, leaving only the raw `planName`. Derived from the same function that
  * adds them, so the two cannot drift. */
 export function addedTemplateFields(typeSlug, payload) {
-  return SUBSCRIPTION_NOTIFICATION_TYPES.has(typeSlug)
-    ? Object.keys(readableSubscriptionFields(payload ?? {}, null))
-    : [];
+  const build = TEMPLATE_FIELD_BUILDERS[typeSlug];
+  return build ? Object.keys(build(payload ?? {}, null)) : [];
 }
+
+/* Ready-to-show copies of an order's details, for SMS and WhatsApp templates.
+ *
+ * ⚠️ NEVER NULL, unlike the subscription copies. An order may have no date, no size and no flavour
+ * yet — the storefront allows it — and a template gap with no value skips the whole message. A new
+ * quote request is the one notification a baker must not miss, so an unknown detail is written as
+ * unknown ("No date given") instead of silencing the WhatsApp. */
+function readableOrderFields(p) {
+  const date = calendarDate(p.deliveryDate);
+  const time = clockTime(p.deliveryTime);
+  // The same reading of a flavour as the email's order table (sendNotification.js orderDetailsHtml).
+  const flavourNames = (Array.isArray(p.flavours) ? p.flavours : [])
+    .map(f => (typeof f === 'string' ? f : (f?.name ?? f?.flavour)))
+    .filter(Boolean);
+  return {
+    deliveryWhen:    date ? (time ? `${date}, ${time}` : date) : 'No date given',
+    fulfilmentLabel: p.deliveryMode === 'home_delivery' ? 'Home delivery' : 'Pickup',
+    weightLabel:     p.weightKg ? `${p.weightKg} kg` : 'Not given',
+    flavoursLabel:   flavourNames.length ? flavourNames.join(', ') : 'Not chosen',
+  };
+}
+
+// Which types carry ready-to-show fields, and the function that makes them.
+const TEMPLATE_FIELD_BUILDERS = {
+  ...Object.fromEntries([...SUBSCRIPTION_NOTIFICATION_TYPES].map(t => [t, readableSubscriptionFields])),
+  order_placed_baker:    readableOrderFields,
+  order_placed_customer: readableOrderFields,
+};
 
 /* A payload as a template sees it: the stored fields plus the ready-to-show copies, in the baker's time
    zone. For admin's "Send test", which fills a template from a notification that may have been sent
    before those copies existed. */
 export function withTemplateFields(typeSlug, payload) {
   const p = payload ?? {};
-  return SUBSCRIPTION_NOTIFICATION_TYPES.has(typeSlug)
-    ? { ...p, ...readableSubscriptionFields(p, p.timeZone ?? null) }
-    : p;
+  const build = TEMPLATE_FIELD_BUILDERS[typeSlug];
+  return build ? { ...p, ...build(p, p.timeZone ?? null) } : p;
 }
 
 // Welcome a NEW baker after their bakery is created (post-confirmation onboarding kit). Recipient
