@@ -99,7 +99,7 @@ function platformShell(inner) {
           ${inner}
         </td></tr>
       </table>
-      <p style="max-width:480px;margin:16px auto 0;color:#9aa;font-size:11px;font-family:Arial,sans-serif;text-align:center;">Spattoo — the 3D cake designer for bakeries</p>
+      <p style="max-width:480px;margin:16px auto 0;color:#9aa;font-size:11px;font-family:Arial,sans-serif;text-align:center;">Spattoo · Your whole cake business, in one place.</p>
     </td></tr>
   </table>
 </body></html>`;
