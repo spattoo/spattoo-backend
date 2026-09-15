@@ -21,6 +21,9 @@ async function getTypeId(slug) {
 // retries. We flip to 'enqueued' only while still 'pending', so a worker that already
 // advanced the row (sent/failed) is never clobbered.
 async function insertNotification(typeSlug, recipientEmail, payload, { dedupeKey = null, bakerId = null } = {}) {
+  // Ready-to-show copies of the raw fields, for SMS and WhatsApp templates, added HERE for every type
+  // so no notify function can forget them (withTemplateFields; the builders are further down).
+  payload = withTemplateFields(typeSlug, payload);
   const typeId = await getTypeId(typeSlug);
   if (!typeId) throw new Error(`Unknown notification type: ${typeSlug}`);
 
@@ -91,9 +94,6 @@ export async function notifyOrderPlaced({ order, baker, customer, authoredBy = '
     // so an older caller that does not pass it keeps the wording it has always had.
     authoredBy,
   };
-  // Ready-to-show copies for SMS and WhatsApp templates; the email keeps formatting the raw fields.
-  Object.assign(payload, readableOrderFields(payload));
-
   const jobs = [];
 
   const bakerEmail = await bakerNotifyEmail(baker);
@@ -166,10 +166,11 @@ export async function notifyQuoteQuestion({ order, baker, customer, message }) {
 // Baker invited a customer to a design session. Email the customer the private
 // storefront link (OTP gates access). Async via the outbox — the invite route no
 // longer sends inline. No-op if there's no email (SMS/WhatsApp not yet wired).
-export async function notifyCustomerInvited({ to, bakerName, firstName, link, brandColor, logoUrl, note, expiresAt }) {
+export async function notifyCustomerInvited({ to, bakerName, firstName, link, brandColor, logoUrl, note, expiresAt, customerPhone = null }) {
   if (!to) return;
   await insertNotification('customer_invite', to, {
     bakerName, firstName, link, brandColor, logoUrl, note, expiresAt,
+    customerPhone,   // an invite has no order to look the customer up by
   });
 }
 
@@ -229,7 +230,6 @@ async function notifySubscription(typeSlug, baker, payload = {}) {
     bakerName: baker?.name ?? null,
     timeZone,
     ...payload,
-    ...readableSubscriptionFields(payload, timeZone),
   });
 }
 
@@ -287,10 +287,45 @@ function readableOrderFields(p) {
 }
 
 // Which types carry ready-to-show fields, and the function that makes them.
+/* A price as SMS can carry it: "1,499" — no ₹, which would turn the whole SMS into 70-character Unicode;
+   the template writes "Rs." itself. Order prices are stored in RUPEES (numeric(10,2)), so no paise maths,
+   and "1499.00" and 1499 read the same. */
+const priceRs = v => {
+  const n = Number(v);
+  return v != null && v !== '' && Number.isFinite(n) ? n.toLocaleString('en-IN', { maximumFractionDigits: 2 }) : null;
+};
+
+function readableQuoteFields(p) {
+  const out = {};
+  if ('quotedPrice' in p) out.quotedPriceRs = priceRs(p.quotedPrice);
+  if ('finalPrice' in p)  out.finalPriceRs  = priceRs(p.finalPrice);
+  return out;
+}
+
+function readableDigestFields(p) {
+  const n = Number(p.count) || 0;
+  return { deliveriesLabel: n === 1 ? '1 order' : `${n} orders` };
+}
+
+function readableCreditsFields(p, timeZone) {
+  return 'resetsOn' in p ? { resetsOnDate: dateLabel(p.resetsOn, timeZone) } : {};
+}
+
+function readableErasureFields(p, timeZone) {
+  return 'eraseAfter' in p ? { eraseDate: dateLabel(p.eraseAfter, timeZone) } : {};
+}
+
 const TEMPLATE_FIELD_BUILDERS = {
   ...Object.fromEntries([...SUBSCRIPTION_NOTIFICATION_TYPES].map(t => [t, readableSubscriptionFields])),
-  order_placed_baker:    readableOrderFields,
-  order_placed_customer: readableOrderFields,
+  order_placed_baker:       readableOrderFields,
+  order_placed_customer:    readableOrderFields,
+  quote_issued_customer:    readableQuoteFields,
+  quote_accepted_baker:     readableQuoteFields,
+  order_confirmed_customer: readableQuoteFields,
+  delivery_digest_baker:    readableDigestFields,
+  credits_low:              readableCreditsFields,
+  credits_exhausted:        readableCreditsFields,
+  account_erasure_notice:   readableErasureFields,
 };
 
 /* A payload as a template sees it: the stored fields plus the ready-to-show copies, in the baker's time

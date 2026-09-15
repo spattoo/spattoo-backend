@@ -10,7 +10,7 @@ import { addedTemplateFields, withTemplateFields } from '../services/notificatio
 import { normalizePhone } from '../lib/phone.js';
 import { config } from '../config.js';
 import {
-  CHANNELS, PUSH_TEXT_TYPES, CUSTOMER_PHONE_CONSENT_BUILT,
+  CHANNELS, PUSH_TEXT_TYPES, CUSTOMER_CHANNELS,
   defaultChannels, isMissingTable, validateChannel, sendTemplateMessage, PHONE_CHANNELS,
 } from '../services/notificationChannels.js';
 
@@ -88,7 +88,8 @@ router.get('/admin/notification-channels', requireAuth, requireCapability('catal
       // false until 095 has run: the screen shows the code's defaults and cannot save.
       ready:     !rowsErr,
       providers: { push: pushConfigured(), sms: templateSmsConfigured(), whatsapp: whatsappConfigured() },
-      customer_phone_consent: CUSTOMER_PHONE_CONSENT_BUILT,
+      // Which phone channels a customer notification may use: { sms: true, whatsapp: false }.
+      customer_channels: CUSTOMER_CHANNELS,
       types: types.map((t, i) => {
         const own = (rows ?? []).filter(r => r.type_id === t.id);
         const list = own.length ? own : defaultChannels(t.slug);   // the same rule the sender applies

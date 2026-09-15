@@ -7,8 +7,8 @@ import { linkFor } from '../../lib/notificationLink.js';
 import { templateSmsConfigured } from '../../services/msg91.js';
 import { whatsappConfigured } from '../../services/aisensy.js';
 import {
-  loadChannels, orderChannels, singleAttemptChannels, bakerContact, sendTemplateMessage,
-  isMissingTable, CUSTOMER_PHONE_CONSENT_BUILT,
+  loadChannels, orderChannels, singleAttemptChannels, bakerContact, customerContact, sendTemplateMessage,
+  isMissingTable, customerMayReceive,
 } from '../../services/notificationChannels.js';
 
 function formatDate(str) {
@@ -873,8 +873,10 @@ async function deliver(row, notification, type) {
 
   // ── SMS and WhatsApp ───────────────────────────────────────────────────────────────────────────
   const isSms = row.channel === 'sms';
-  if (type.audience === 'customer' && !CUSTOMER_PHONE_CONSENT_BUILT) {
-    return skipped('Customers have not agreed to SMS or WhatsApp messages yet');
+  // SMS may reach a customer (a service message about their own order); WhatsApp may not until they opt
+  // in. See CUSTOMER_CHANNELS in services/notificationChannels.js.
+  if (type.audience === 'customer' && !customerMayReceive(row.channel)) {
+    return skipped('Customers have not agreed to WhatsApp messages yet');
   }
   // ⚠️ A baker is not messaged on their phone about something they did themselves. An order a baker
   // types in (manual, or on their own storefront while signed in) still raises the new-quote email
@@ -889,9 +891,12 @@ async function deliver(row, notification, type) {
     return skipped(`${isSms ? 'MSG91' : 'AiSensy'} is not configured on this server`);
   }
 
-  const contact = await bakerContact({ bakerId: notification.baker_id, email: notification.recipient_email });
+  const forCustomer = type.audience === 'customer';
+  const contact = forCustomer
+    ? await customerContact({ payload })
+    : await bakerContact({ bakerId: notification.baker_id, email: notification.recipient_email });
   const phone = isSms ? contact?.phone : contact?.whatsapp;
-  if (!phone) return skipped("No phone number on the bakery's account");
+  if (!phone) return skipped(forCustomer ? 'No phone number for this customer' : "No phone number on the bakery's account");
 
   // Fill and send through the one path admin's "Send test" also takes (services/notificationChannels.js).
   const result = await sendTemplateMessage({ channel: row.channel, row, payload, phone, name: contact.name });

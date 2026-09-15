@@ -19,10 +19,17 @@ export const PUSH_TEXT_TYPES = new Set(['order_placed_baker', 'quote_accepted_ba
 
 export const PHONE_CHANNELS = new Set(['sms', 'whatsapp']);
 
-// ⚠️ Customers have not agreed to hear from us by SMS or WhatsApp — there is no consent recorded
-// anywhere yet. Until there is, a customer notification cannot use a phone channel: admin refuses
-// to switch one on, and the sender skips one that is somehow on.
-export const CUSTOMER_PHONE_CONSENT_BUILT = false;
+// ── Which phone channels a CUSTOMER may be reached on ──────────────────────────────────────────────
+// ⚠️ PER CHANNEL, because the two rules differ.
+//   sms       yes. A message about the customer's OWN order is a service message — DLT category Service
+//             Implicit — and needs no separate opt-in. Sandeep's decision (2026-09-15): SMS for all
+//             communication, to baker and customer alike.
+//   whatsapp  no. Meta requires the customer's opt-in, and nothing records one yet. Admin refuses to
+//             switch it on and the sender skips one that is somehow on.
+// Allowing a channel sends nothing by itself: every customer channel row is still off until someone
+// switches it on in Admin → Notifications against an approved template.
+export const CUSTOMER_CHANNELS = { sms: true, whatsapp: false };
+export const customerMayReceive = channel => CUSTOMER_CHANNELS[channel] === true;
 
 /* What a type does when it has no rows: today's behaviour. Used for a type added after 095 ran, and
    for the window before 095 runs at all — so a missing table can never mean "send nothing". */
@@ -167,6 +174,32 @@ export async function bakerContact({ bakerId, email }) {
   };
 }
 
+/**
+ * The customer a customer notification's SMS goes to: name and phone.
+ *
+ * The phone the notification already carries comes first (the order-placed payload has it). Otherwise
+ * it is read off the order — every quote / confirmed / ready / completed / design-update payload
+ * carries `orderId`, and the customer on that order is who it is about. A customer is scoped to one
+ * bakery, so the order is the reliable way in; their email alone could match another bakery's customer.
+ *
+ * @returns {{ name: string|null, phone: string|null, whatsapp: string|null } | null}
+ */
+export async function customerContact({ payload }) {
+  const p = payload ?? {};
+  if (p.customerPhone) {
+    return { name: p.customerFirstName ?? p.firstName ?? null, phone: p.customerPhone, whatsapp: p.customerPhone };
+  }
+  if (!p.orderId) return null;
+  const { data } = await supabase
+    .from('orders')
+    .select('customers(first_name, phone)')
+    .eq('id', p.orderId)
+    .maybeSingle();
+  const customer = Array.isArray(data?.customers) ? data.customers[0] : data?.customers;
+  if (!customer?.phone) return null;
+  return { name: customer.first_name ?? null, phone: customer.phone, whatsapp: customer.phone };
+}
+
 // ── What admin may save ──────────────────────────────────────────────────────────────────────────
 /**
  * Check one channel row before it is saved. Returns an error sentence, or null when it is fine.
@@ -190,8 +223,8 @@ export function validateChannel(type, channel, row, fields = []) {
   if (channel === 'push' && !PUSH_TEXT_TYPES.has(type.slug)) {
     return 'This notification has no push text written, so push cannot be switched on.';
   }
-  if (PHONE_CHANNELS.has(channel) && type.audience === 'customer' && !CUSTOMER_PHONE_CONSENT_BUILT) {
-    return 'Customers have not agreed to SMS or WhatsApp messages yet, so these stay off for customer notifications.';
+  if (PHONE_CHANNELS.has(channel) && type.audience === 'customer' && !customerMayReceive(channel)) {
+    return 'Customers have not agreed to WhatsApp messages yet, so WhatsApp stays off for customer notifications.';
   }
 
   const unknown = f => fields.length > 0 && !fields.includes(f);

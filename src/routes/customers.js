@@ -334,6 +334,8 @@ router.post('/baker/customers/invite', requireAuth, requireCapability('customer:
           link,
           bakerName: baker.name,
           firstName: firstName.trim(),
+          // So an SMS channel on customer_invite can reach them; the email is still the invite itself.
+          customerPhone: phoneNorm,
           brandColor: baker.primary_color,
           logoUrl,
           note: note?.trim() || null,
