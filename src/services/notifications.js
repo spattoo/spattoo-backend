@@ -74,6 +74,23 @@ export async function bakerNotifyEmail(baker) {
   return data?.email ?? null;
 }
 
+/* ── Is there any way to reach this customer? ────────────────────────────────────────────────────
+ *
+ * ⚠️ THIS USED TO BE `if (!customer?.email) return`, in five places, and it was not skipping EMAIL —
+ * it was skipping the NOTIFICATION. No row, so no bell, no SMS, no WhatsApp, and nothing recorded to
+ * say anything had been withheld. Customer email is optional, and `POST /orders/manual` (a baker
+ * typing in a walk-in) takes phone OR email, so a customer with only a phone is the normal shape
+ * there — and every phone channel we have built for them sat behind an email column none of them use.
+ *
+ * A phone alone is enough now. `recipient_email` is nullable from 097 and means the email delivery
+ * address; the SMS and WhatsApp channels find their own contact from the payload's `orderId`
+ * (`customerContact`, services/notificationChannels.js), never from this column.
+ *
+ * ⚠️ Still a guard, not a formality. With NEITHER there is genuinely nowhere to send, and inserting
+ * would queue a row every channel must skip in turn — noise in the outbox that looks like breakage.
+ */
+const reachable = (customer) => !!(customer?.email || customer?.phone);
+
 export async function notifyOrderPlaced({ order, baker, customer, authoredBy = 'customer' }) {
   const customerName = [customer.first_name, customer.last_name].filter(Boolean).join(' ');
   const payload = {
@@ -101,29 +118,16 @@ export async function notifyOrderPlaced({ order, baker, customer, authoredBy = '
   if (bakerEmail) {
     jobs.push(insertNotification('order_placed_baker', bakerEmail, payload, { bakerId: baker.id }));
   }
-  if (customer.email) {
-    jobs.push(insertNotification('order_placed_customer', customer.email, payload));
+  /* ⚠️ MISSED BY THE FIRST PASS AT THIS BUG, and worth saying why. The five early returns fixed with
+     migration 097 were spelled `if (!customer?.email) return` — a grep for that shape walks straight
+     past this one, which is the same mistake written inside-out. A customer who gave a phone and no
+     email got no "we have your order" at all. Same fix, same reason. */
+  if (reachable(customer)) {
+    jobs.push(insertNotification('order_placed_customer', customer.email ?? null, payload));
   }
 
   await Promise.all(jobs);
 }
-
-/* ── Is there any way to reach this customer? ────────────────────────────────────────────────────
- *
- * ⚠️ THIS USED TO BE `if (!customer?.email) return`, in five places, and it was not skipping EMAIL —
- * it was skipping the NOTIFICATION. No row, so no bell, no SMS, no WhatsApp, and nothing recorded to
- * say anything had been withheld. Customer email is optional, and `POST /orders/manual` (a baker
- * typing in a walk-in) takes phone OR email, so a customer with only a phone is the normal shape
- * there — and every phone channel we have built for them sat behind an email column none of them use.
- *
- * A phone alone is enough now. `recipient_email` is nullable from 097 and means the email delivery
- * address; the SMS and WhatsApp channels find their own contact from the payload's `orderId`
- * (`customerContact`, services/notificationChannels.js), never from this column.
- *
- * ⚠️ Still a guard, not a formality. With NEITHER there is genuinely nowhere to send, and inserting
- * would queue a row every channel must skip in turn — noise in the outbox that looks like breakage.
- */
-const reachable = (customer) => !!(customer?.email || customer?.phone);
 
 // Baker edited the design while it's still open (shared-pen window). Email the
 // customer that there are recommendations / an update to review. `mode` tunes the
