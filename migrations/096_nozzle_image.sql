@@ -65,38 +65,3 @@ COMMENT ON COLUMN public.nozzles.image_approved_by IS
 CREATE INDEX IF NOT EXISTS nozzles_image_approved_idx
   ON public.nozzles (image_approved)
   WHERE image_approved;
-
--- ── The shape of the opening ─────────────────────────────────────────────────────────────────────
---
--- ⚠️ The picture is a DRAWING, not a photograph, and that is the point rather than a compromise.
---
--- These branded tips are largely unavailable in India. Bakers buy unbranded imports, so "Wilton 1M"
--- names something most of them cannot hold — but the SHAPE is transferable: shown six fat teeth with
--- narrow slots, a baker can pick the equivalent out of their own drawer. A photograph of a specific
--- branded tip would be a faithful picture of the one thing the reader cannot buy.
---
--- A drawing is also the only honest option we have. Generating tip photos with an image model gives
--- a convincing star with the wrong tooth count; supplier photos are someone else's copyright and,
--- because this catalogue is admin-curated, Spattoo would be the publisher rather than an
--- intermediary (see features/content-rights-attestation.md). Drawn from numbers, six teeth is six
--- teeth, every time.
---
--- The drawing FAMILY is not stored: it is `category`, which this table already carries
--- (open_star, closed_star, petal, leaf, grass…). A second column naming the same thing is a second
--- thing to keep in sync. Only what the category cannot say lives here.
---
--- NULL means "we do not know", and a row with no tooth count draws NOTHING. A missing drawing is
--- honest; an invented one sends a baker to the wrong tip, which is worse than the model number they
--- already had.
-ALTER TABLE public.nozzles
-  ADD COLUMN IF NOT EXISTS tip_teeth smallint,
-  ADD COLUMN IF NOT EXISTS tip_cut   numeric(3,2);
-
-COMMENT ON COLUMN public.nozzles.tip_teeth IS
-  'How many points/teeth the opening has — or for the grass family, how many holes. NULL = unknown, '
-  'and the drawing is skipped rather than guessed. Meaningless for round/writing (one hole).';
-
-COMMENT ON COLUMN public.nozzles.tip_cut IS
-  'How deep the slots are cut between the teeth, as a fraction of the tip radius (0..1). Roughly '
-  '0.45 for an open star, 0.6 for a closed star, 0.25 for a fine French. NULL = use the family''s '
-  'default. This is what separates an OPEN star from a CLOSED one at the same tooth count.';
