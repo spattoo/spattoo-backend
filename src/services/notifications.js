@@ -3,7 +3,8 @@ import { jobQueue } from '../jobs/queue.js';
 import { digestDedupeKey } from './deliveryDigest.js';
 import { reminderDedupeKey, isEndedMilestone } from './trialReminders.js';
 import { renewalDedupeKey } from './renewalReminders.js';
-import { titleCase, rupees, dateLabel, calendarDate, clockTime } from '../lib/notificationFormat.js';
+import { titleCase, rupees, dateLabel, calendarDate, clockTime, customerOrderLink } from '../lib/notificationFormat.js';
+import { config } from '../config.js';
 
 async function getTypeId(slug) {
   const { data } = await supabase
@@ -328,6 +329,23 @@ const priceRs = v => {
     : null;
 };
 
+/* The storefront link, as a template VARIABLE.
+ *
+ * ⚠️ WHY IT HAS TO BE A STORED FIELD. The email builds this URL itself, at send time, from
+ * `bakerSlug`. A WhatsApp template cannot: its text is approved at Meta and filled positionally from
+ * `config.params`, which names PAYLOAD FIELDS. There is no expression to evaluate, so a link that is
+ * not a field is a link a WhatsApp template can never say.
+ *
+ * Null when there is no slug — `validateChannel` lets admin map a variable to it either way, and the
+ * sender skips a template whose variable came back empty rather than sending a message with a hole.
+ */
+function readableCustomerLink(p) {
+  return {
+    orderLink:      customerOrderLink(p, config.storefront.urlTemplate),
+    storefrontLink: customerOrderLink(p, config.storefront.urlTemplate, { deep: false }),
+  };
+}
+
 function readableQuoteFields(p) {
   const out = {};
   if ('quotedPrice' in p) out.quotedPriceRs = priceRs(p.quotedPrice);
@@ -352,9 +370,15 @@ const TEMPLATE_FIELD_BUILDERS = {
   ...Object.fromEntries([...SUBSCRIPTION_NOTIFICATION_TYPES].map(t => [t, readableSubscriptionFields])),
   order_placed_baker:       readableOrderFields,
   order_placed_customer:    readableOrderFields,
-  quote_issued_customer:    readableQuoteFields,
   quote_accepted_baker:     readableQuoteFields,
-  order_confirmed_customer: readableQuoteFields,
+  /* Customer-facing: the quote copies PLUS the link, because these are the ones a WhatsApp template
+     sends someone to. `design_updated`, `order_ready` and `order_completed` have no price to make
+     readable and take the link alone. */
+  quote_issued_customer:    p => ({ ...readableQuoteFields(p), ...readableCustomerLink(p) }),
+  order_confirmed_customer: p => ({ ...readableQuoteFields(p), ...readableCustomerLink(p) }),
+  design_updated_customer:  readableCustomerLink,
+  order_ready_customer:     p => ({ ...readableOrderFields(p), ...readableCustomerLink(p) }),
+  order_completed_customer: readableCustomerLink,
   delivery_digest_baker:    readableDigestFields,
   credits_low:              readableCreditsFields,
   credits_exhausted:        readableCreditsFields,

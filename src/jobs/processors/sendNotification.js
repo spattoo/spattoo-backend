@@ -18,7 +18,7 @@ function formatDate(str) {
 
 // formatDateTz, titleCase and rupees live in lib/notificationFormat.js, shared with the ready-to-show
 // payload fields that SMS and WhatsApp templates read (services/notifications.js).
-import { formatDateTz, titleCase, rupees } from '../../lib/notificationFormat.js';
+import { formatDateTz, titleCase, rupees, customerOrderLink } from '../../lib/notificationFormat.js';
 
 // Branded, email-client-safe (table layout, inline styles) invite email. Returns
 // { subject, text, html }. Kept here (with the other notification templates) so the
@@ -241,8 +241,8 @@ export function buildEmail(typeSlug, recipientEmail, payload) {
     //
     // Falls back to the storefront root when there is no orderId, which is still better than no
     // link at all.
-    const base = p.bakerSlug ? config.storefront.urlTemplate.replace('{slug}', p.bakerSlug) : null;
-    const link = base && p.orderId ? `${base.replace(/\/+$/, '')}/orders/${p.orderId}` : base;
+    const base = customerOrderLink(p, config.storefront.urlTemplate, { deep: false });
+    const link = customerOrderLink(p, config.storefront.urlTemplate) ?? base;
     return {
       from:    `${p.bakerName} <${rawEmail(config.smtp.from)}>`,
       to:      recipientEmail,
@@ -264,8 +264,8 @@ export function buildEmail(typeSlug, recipientEmail, payload) {
   if (typeSlug === 'quote_issued_customer') {
     // Deep-link to the customer's quote summary screen (review + accept), not the
     // storefront root.
-    const base = p.bakerSlug ? config.storefront.urlTemplate.replace('{slug}', p.bakerSlug) : null;
-    const link = base && p.orderId ? `${base.replace(/\/+$/, '')}/orders/${p.orderId}` : base;
+    const base = customerOrderLink(p, config.storefront.urlTemplate, { deep: false });
+    const link = customerOrderLink(p, config.storefront.urlTemplate) ?? base;
     const priceLine = p.quotedPrice != null ? `Your quote: <b>₹${esc(p.quotedPrice)}</b>` : "Your quote is ready";
     const advanceLine = p.advanceAmount != null
       ? `<p style="font-size:14px;color:#444">Advance to confirm: <b>₹${esc(p.advanceAmount)}</b></p>` : "";
@@ -356,7 +356,7 @@ export function buildEmail(typeSlug, recipientEmail, payload) {
   }
 
   if (typeSlug === 'order_completed_customer') {
-    const base = p.bakerSlug ? config.storefront.urlTemplate.replace('{slug}', p.bakerSlug) : null;
+    const base = customerOrderLink(p, config.storefront.urlTemplate, { deep: false });
     return {
       from:    `${p.bakerName} <${rawEmail(config.smtp.from)}>`,
       to:      recipientEmail,

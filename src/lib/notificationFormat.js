@@ -37,3 +37,33 @@ export function clockTime(hhmm) {
   const h = Number(m[1]);
   return `${h % 12 || 12}:${m[2]} ${h < 12 ? 'AM' : 'PM'}`;
 }
+
+
+/* ── Where a CUSTOMER'S notification sends them ──────────────────────────────────────────────────
+ *
+ * The storefront, on the baker's own subdomain — not the baker app, which `lib/notificationLink.js`
+ * covers and which a customer cannot sign in to. Deep-links to the order summary (review, accept a
+ * quote, see an update), falling back to the storefront root when there is no orderId, which is
+ * still better than no link at all.
+ *
+ * ⚠️ IT WAS WRITTEN THREE TIMES, inline in the email builder — design_updated, quote_issued and
+ * order_completed each rebuilt it from `bakerSlug`. That was survivable while email was the only
+ * channel that had a link. It stopped being survivable when WhatsApp needed the same URL as a
+ * template VARIABLE: a fourth copy, in a different file, filling a message whose text nobody can
+ * edit without re-approval at Meta. Two of them already disagreed — order_completed drops the
+ * `/orders/<id>` deep link and sends you to the shop front.
+ *
+ * Returns null when there is no slug, and every caller must handle that: a template variable cannot
+ * be empty (Meta rejects the send), so a link-carrying WhatsApp template is SKIPPED rather than sent
+ * with a gap.
+ *
+ * ⚠️ `urlTemplate` is PASSED IN, not read from config here. This module is a leaf that both the
+ * email builder and the payload builder import, and reaching for config would make importing a date
+ * formatter require a complete production environment — REDIS_URL and all — to load. The shape of
+ * the link is the thing worth having once; which host it points at is one line at each caller. */
+export function customerOrderLink(p, urlTemplate, { deep = true } = {}) {
+  const slug = p?.bakerSlug ?? null;
+  if (!slug || !urlTemplate) return null;
+  const base = urlTemplate.replace('{slug}', slug).replace(/\/+$/, '');
+  return deep && p?.orderId ? `${base}/orders/${p.orderId}` : base;
+}
