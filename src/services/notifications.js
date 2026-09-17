@@ -287,12 +287,24 @@ function readableOrderFields(p) {
 }
 
 // Which types carry ready-to-show fields, and the function that makes them.
-/* A price as SMS can carry it: "1,499" — no ₹, which would turn the whole SMS into 70-character Unicode;
-   the template writes "Rs." itself. Order prices are stored in RUPEES (numeric(10,2)), so no paise maths,
-   and "1499.00" and 1499 read the same. */
+/* A price as SMS can carry it: "Rs. 1,499". No ₹, which would turn the whole SMS into 70-character
+   Unicode. Order prices are stored in RUPEES (numeric(10,2)), so no paise maths, and "1499.00" and 1499
+   read the same.
+ *
+ * ⚠️ "Rs. " IS INSIDE THE VALUE, AND THAT IS THE POINT — the template used to write it and hold a bare
+ * number. DLT tags are typed and exclusive: `{#number#}` takes digits only, `{#alphanumeric#}` REJECTS a
+ * value that is all digits. A price is sometimes one and sometimes the other — "999" is digits, "1,499"
+ * has a comma, "1,499.5" has both — so a bare price fails whichever tag the template uses. Prefixed, it
+ * always carries letters, so `{#alphanumeric#}` is always right.
+ *
+ * ⚠️ Rounding to plain digits was the other way out and is worse: the price field is inputMode="decimal"
+ * (OrdersPanel), so 1499.50 is reachable, and a quote SMS stating a price the baker did not quote is not
+ * a formatting detail. The separator and the paise both survive this way. */
 const priceRs = v => {
   const n = Number(v);
-  return v != null && v !== '' && Number.isFinite(n) ? n.toLocaleString('en-IN', { maximumFractionDigits: 2 }) : null;
+  return v != null && v !== '' && Number.isFinite(n)
+    ? `Rs. ${n.toLocaleString('en-IN', { maximumFractionDigits: 2 })}`
+    : null;
 };
 
 function readableQuoteFields(p) {
