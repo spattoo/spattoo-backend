@@ -873,10 +873,11 @@ async function deliver(row, notification, type) {
 
   // ── SMS and WhatsApp ───────────────────────────────────────────────────────────────────────────
   const isSms = row.channel === 'sms';
-  // SMS may reach a customer (a service message about their own order); WhatsApp may not until they opt
-  // in. See CUSTOMER_CHANNELS in services/notificationChannels.js.
+  // Both phone channels may reach a customer about their own order. The check stays because the
+  // answer is a policy decision that has changed once already — see CUSTOMER_CHANNELS in
+  // services/notificationChannels.js, which also records what WhatsApp's open channel is risking.
   if (type.audience === 'customer' && !customerMayReceive(row.channel)) {
-    return skipped('Customers have not agreed to WhatsApp messages yet');
+    return skipped(`Customers may not be reached on ${isSms ? 'SMS' : 'WhatsApp'} yet`);
   }
   // ⚠️ A baker is not messaged on their phone about something they did themselves. An order a baker
   // types in (manual, or on their own storefront while signed in) still raises the new-quote email

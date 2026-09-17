@@ -20,15 +20,37 @@ export const PUSH_TEXT_TYPES = new Set(['order_placed_baker', 'quote_accepted_ba
 export const PHONE_CHANNELS = new Set(['sms', 'whatsapp']);
 
 // ── Which phone channels a CUSTOMER may be reached on ──────────────────────────────────────────────
-// ⚠️ PER CHANNEL, because the two rules differ.
-//   sms       yes. A message about the customer's OWN order is a service message — DLT category Service
-//             Implicit — and needs no separate opt-in. Sandeep's decision (2026-09-15): SMS for all
-//             communication, to baker and customer alike.
-//   whatsapp  no. Meta requires the customer's opt-in, and nothing records one yet. Admin refuses to
-//             switch it on and the sender skips one that is somehow on.
+// ⚠️ PER CHANNEL, because the two rules differ — and both are now open. Kept as a map rather than
+// deleted: it is the one seam where "may we message a customer here at all" is answered, and the
+// answer is a policy decision that has already changed once.
+//
+//   sms       yes. A message about the customer's OWN order is a service message — DLT category
+//             Service Inferred — and needs no separate opt-in. Sandeep's decision (2026-09-15):
+//             SMS for all communication, to baker and customer alike.
+//
+//   whatsapp  yes, from 2026-09-17. Sandeep's decision, and the reason is the LINK. Three customer
+//             notifications exist to hand over a URL — design_updated_customer, quote_issued_customer,
+//             customer_invite — and on SMS that URL is close to unsendable: DLT whitelists a CTA per
+//             DOMAIN bound to a header, our storefront is a different subdomain per baker, and the
+//             invite id is a uuid, so a real link is 69-86 characters against a 160-character
+//             message. WhatsApp has no DLT. The full per-baker link fits and is tappable.
+//
+//             ⚠️ THE OPT-IN IS NOT SATISFIED, IT IS ACCEPTED AS A RISK. Meta asks for one and we hold
+//             none for a customer. What we do hold: these are Utility-category templates about the
+//             recipient's own order, never marketing. Meta does not refuse an unconsented send — it
+//             scores it. Recipients tapping Block or Report drop the number's quality rating, and a
+//             low rating cuts the messaging limit and can disable the number. So a send that succeeds
+//             is NOT evidence the policy is fine; the quality rating in Meta's manager is.
+//
+//             The cheap fix is already designed elsewhere in this product: baker sign-up says under
+//             the phone field "We'll send your account and order updates to this number on WhatsApp
+//             and SMS". The storefront OTP box is the same moment for a customer and has no such
+//             line. Adding it covers every customer who has visited a storefront — which is all of
+//             them except customer_invite, whose whole job is to be the first contact.
+//
 // Allowing a channel sends nothing by itself: every customer channel row is still off until someone
 // switches it on in Admin → Notifications against an approved template.
-export const CUSTOMER_CHANNELS = { sms: true, whatsapp: false };
+export const CUSTOMER_CHANNELS = { sms: true, whatsapp: true };
 export const customerMayReceive = channel => CUSTOMER_CHANNELS[channel] === true;
 
 /* What a type does when it has no rows: today's behaviour. Used for a type added after 095 ran, and
@@ -224,7 +246,7 @@ export function validateChannel(type, channel, row, fields = []) {
     return 'This notification has no push text written, so push cannot be switched on.';
   }
   if (PHONE_CHANNELS.has(channel) && type.audience === 'customer' && !customerMayReceive(channel)) {
-    return 'Customers have not agreed to WhatsApp messages yet, so WhatsApp stays off for customer notifications.';
+    return `Customers may not be reached on ${channel === 'sms' ? 'SMS' : 'WhatsApp'} yet, so it stays off for customer notifications.`;
   }
 
   const unknown = f => fields.length > 0 && !fields.includes(f);
