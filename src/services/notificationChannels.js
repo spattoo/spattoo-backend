@@ -42,11 +42,19 @@ export const PHONE_CHANNELS = new Set(['sms', 'whatsapp']);
 //             low rating cuts the messaging limit and can disable the number. So a send that succeeds
 //             is NOT evidence the policy is fine; the quality rating in Meta's manager is.
 //
-//             The cheap fix is already designed elsewhere in this product: baker sign-up says under
-//             the phone field "We'll send your account and order updates to this number on WhatsApp
-//             and SMS". The storefront OTP box is the same moment for a customer and has no such
-//             line. Adding it covers every customer who has visited a storefront — which is all of
-//             them except customer_invite, whose whole job is to be the first contact.
+//             ⚠️ AND THE CUSTOMER IS OFTEN NOT THERE TO ASK. `POST /orders/manual` is a baker
+//             typing an order in for someone — a walk-in, a phone call — and it takes
+//             `customer.phone OR customer.email`, so a phone-only customer is the NORMAL case on
+//             that route, not an edge. They never load a storefront, never do an OTP, and reach
+//             quote_issued_customer, order_confirmed_customer, order_ready_customer and
+//             order_completed_customer having agreed to nothing. Sandeep, 2026-09-17. So there is no
+//             screen of ours to put a consent line on: the only person who can ask is the BAKER, at
+//             the counter or on the phone, and Meta does accept an opt-in collected that way.
+//
+//             `customers.source` separates the two — 'online_order' came through a storefront,
+//             'manual' was typed in — but it is a PROXY and a leaky one: it is written on INSERT
+//             only, so it records how we first met someone, not whether they ever agreed. Recording
+//             consent properly is its own column, set at whichever moment it actually happens.
 //
 // Allowing a channel sends nothing by itself: every customer channel row is still off until someone
 // switches it on in Admin → Notifications against an approved template.
