@@ -1197,7 +1197,7 @@ router.patch('/orders/:id/status', requireAuth, requireCapability('order:manage'
     // Baker confirmed → let the customer know the order is locked in.
     if (status === 'confirmed') {
       const { data: ctx } = await supabase.from('orders')
-        .select('id, final_price, design_thumbnail_url, bakers(name, slug), customers(email, first_name)')
+        .select('id, final_price, design_thumbnail_url, bakers(name, slug), customers(email, phone, first_name)')
         .eq('id', req.params.id).maybeSingle();
       notifyOrderConfirmed({
         order:    { id: req.params.id, final_price: ctx?.final_price ?? null, design_thumbnail_url: toPublicUrl(ctx?.design_thumbnail_url) },
@@ -1212,7 +1212,7 @@ router.patch('/orders/:id/status', requireAuth, requireCapability('order:manage'
     // sort_order so the email matches the baker's chosen sequence.
     if (status === 'ready') {
       const { data: ctx } = await supabase.from('orders')
-        .select('id, delivery_mode, delivery_date, delivery_time, design_thumbnail_url, bakers(name, slug), customers(email, first_name)')
+        .select('id, delivery_mode, delivery_date, delivery_time, design_thumbnail_url, bakers(name, slug), customers(email, phone, first_name)')
         .eq('id', req.params.id).maybeSingle();
       const { data: photoRows } = await supabase.from('order_finished_photos')
         .select('key').eq('order_id', req.params.id).order('sort_order', { ascending: true });
@@ -1227,7 +1227,7 @@ router.patch('/orders/:id/status', requireAuth, requireCapability('order:manage'
     // Baker marked it complete (delivered/picked up) → thank the customer.
     if (status === 'completed') {
       const { data: ctx } = await supabase.from('orders')
-        .select('id, design_thumbnail_url, bakers(name, slug), customers(email, first_name)')
+        .select('id, design_thumbnail_url, bakers(name, slug), customers(email, phone, first_name)')
         .eq('id', req.params.id).maybeSingle();
       notifyOrderCompleted({
         order:    { id: req.params.id, design_thumbnail_url: toPublicUrl(ctx?.design_thumbnail_url) },
@@ -1383,7 +1383,7 @@ router.post('/orders/:id/quote', requireAuth, requireCapability('order:manage'),
       .eq('auth_user_id', req.user.id).maybeSingle();
     if (!appUser) return res.status(403).json({ error: 'Not a baker account' });
 
-    const existingRow = await assertBakerOwns(req, 'orders', req.params.id, { select: 'status_id, current_version_id, order_statuses ( key ), bakers(name, slug), customers(email, first_name)' });
+    const existingRow = await assertBakerOwns(req, 'orders', req.params.id, { select: 'status_id, current_version_id, order_statuses ( key ), bakers(name, slug), customers(email, phone, first_name)' });
     if (!existingRow) return res.status(404).json({ error: 'Order not found' });
     const existing = withStatusKey(existingRow);
 
@@ -1577,7 +1577,7 @@ router.patch('/orders/:id/design', requireAuth, requireCapability('order:manage'
     if (!appUser) return res.status(403).json({ error: 'Not a baker account' });
 
     // Pull status + baker/customer contact (for the lock guard + customer email).
-    const existingRow = await assertBakerOwns(req, 'orders', req.params.id, { select: 'id, status_id, order_statuses ( key ), bakers(name, slug), customers(email, first_name, last_name)' });
+    const existingRow = await assertBakerOwns(req, 'orders', req.params.id, { select: 'id, status_id, order_statuses ( key ), bakers(name, slug), customers(email, phone, first_name, last_name)' });
     if (!existingRow) return res.status(404).json({ error: 'Order not found' });
     const existing = withStatusKey(existingRow);
 

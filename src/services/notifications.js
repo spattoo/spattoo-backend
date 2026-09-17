@@ -107,12 +107,29 @@ export async function notifyOrderPlaced({ order, baker, customer, authoredBy = '
   await Promise.all(jobs);
 }
 
+/* ── Is there any way to reach this customer? ────────────────────────────────────────────────────
+ *
+ * ⚠️ THIS USED TO BE `if (!customer?.email) return`, in five places, and it was not skipping EMAIL —
+ * it was skipping the NOTIFICATION. No row, so no bell, no SMS, no WhatsApp, and nothing recorded to
+ * say anything had been withheld. Customer email is optional, and `POST /orders/manual` (a baker
+ * typing in a walk-in) takes phone OR email, so a customer with only a phone is the normal shape
+ * there — and every phone channel we have built for them sat behind an email column none of them use.
+ *
+ * A phone alone is enough now. `recipient_email` is nullable from 097 and means the email delivery
+ * address; the SMS and WhatsApp channels find their own contact from the payload's `orderId`
+ * (`customerContact`, services/notificationChannels.js), never from this column.
+ *
+ * ⚠️ Still a guard, not a formality. With NEITHER there is genuinely nowhere to send, and inserting
+ * would queue a row every channel must skip in turn — noise in the outbox that looks like breakage.
+ */
+const reachable = (customer) => !!(customer?.email || customer?.phone);
+
 // Baker edited the design while it's still open (shared-pen window). Email the
 // customer that there are recommendations / an update to review. `mode` tunes the
 // copy: 'recommendations' (initiated) vs 'updated' (quoted, i.e. after a quote).
 export async function notifyDesignUpdated({ order, baker, customer, mode = 'updated' }) {
-  if (!customer?.email) return;
-  await insertNotification('design_updated_customer', customer.email, {
+  if (!reachable(customer)) return;
+  await insertNotification('design_updated_customer', customer.email ?? null, {
     customerFirstName: customer.first_name,
     bakerName:         baker.name,
     bakerSlug:         baker.slug ?? null,
@@ -125,8 +142,8 @@ export async function notifyDesignUpdated({ order, baker, customer, mode = 'upda
 // Baker issued a quote. Email the customer the price + advance + the baker's note,
 // with a link to review/approve it.
 export async function notifyQuoteIssued({ order, baker, customer }) {
-  if (!customer?.email) return;
-  await insertNotification('quote_issued_customer', customer.email, {
+  if (!reachable(customer)) return;
+  await insertNotification('quote_issued_customer', customer.email ?? null, {
     customerFirstName: customer.first_name,
     bakerName:         baker.name,
     bakerSlug:         baker.slug ?? null,
@@ -163,12 +180,16 @@ export async function notifyQuoteQuestion({ order, baker, customer, message }) {
   }, { bakerId: baker.id });
 }
 
-// Baker invited a customer to a design session. Email the customer the private
-// storefront link (OTP gates access). Async via the outbox — the invite route no
-// longer sends inline. No-op if there's no email (SMS/WhatsApp not yet wired).
+// Baker invited a customer to a design session. Sends the private storefront link (OTP gates
+// access). Async via the outbox — the invite route no longer sends inline.
+//
+// ⚠️ The only customer notification with no `orderId`, so `customerContact` cannot look the phone up
+// and the invite has to CARRY it. That is what `customerPhone` is for, and why the reachability test
+// here is spelled out rather than calling `reachable()`: the contact arrives loose, not as a
+// customer row.
 export async function notifyCustomerInvited({ to, bakerName, firstName, link, brandColor, logoUrl, note, expiresAt, customerPhone = null }) {
-  if (!to) return;
-  await insertNotification('customer_invite', to, {
+  if (!to && !customerPhone) return;
+  await insertNotification('customer_invite', to ?? null, {
     bakerName, firstName, link, brandColor, logoUrl, note, expiresAt,
     customerPhone,   // an invite has no order to look the customer up by
   });
@@ -176,8 +197,8 @@ export async function notifyCustomerInvited({ to, bakerName, firstName, link, br
 
 // Baker confirmed the order (advance received). Email the customer.
 export async function notifyOrderConfirmed({ order, baker, customer }) {
-  if (!customer?.email) return;
-  await insertNotification('order_confirmed_customer', customer.email, {
+  if (!reachable(customer)) return;
+  await insertNotification('order_confirmed_customer', customer.email ?? null, {
     customerFirstName: customer.first_name,
     bakerName:         baker.name,
     bakerSlug:         baker.slug ?? null,
@@ -189,8 +210,8 @@ export async function notifyOrderConfirmed({ order, baker, customer }) {
 
 // Baker marked the order ready (for pickup / delivery). Tell the customer.
 export async function notifyOrderReady({ order, baker, customer }) {
-  if (!customer?.email) return;
-  await insertNotification('order_ready_customer', customer.email, {
+  if (!reachable(customer)) return;
+  await insertNotification('order_ready_customer', customer.email ?? null, {
     customerFirstName: customer.first_name,
     bakerName:         baker.name,
     bakerSlug:         baker.slug ?? null,
@@ -206,8 +227,8 @@ export async function notifyOrderReady({ order, baker, customer }) {
 // Baker marked the order complete (delivered / picked up). Thank the customer and
 // close the loop.
 export async function notifyOrderCompleted({ order, baker, customer }) {
-  if (!customer?.email) return;
-  await insertNotification('order_completed_customer', customer.email, {
+  if (!reachable(customer)) return;
+  await insertNotification('order_completed_customer', customer.email ?? null, {
     customerFirstName: customer.first_name,
     bakerName:         baker.name,
     bakerSlug:         baker.slug ?? null,

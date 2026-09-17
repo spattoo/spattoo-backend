@@ -804,6 +804,11 @@ async function deliver(row, notification, type) {
   const skipped = (detail, recipient = null) => ({ status: 'skipped', recipient, detail });
 
   if (row.channel === 'email') {
+    /* ⚠️ Nullable since 097, so this is now a real case rather than an impossible one: a customer
+       with a phone and no email. Skipped, not failed — no later attempt conjures an address, and
+       `failed` would keep the row open for a retry that can only end the same way. The notification
+       itself is fine; its SMS and WhatsApp rows resolve their own contact and are unaffected. */
+    if (!notification.recipient_email) return skipped('No email address for this recipient');
     let mail = null;
     try {
       mail = buildEmail(typeSlug, notification.recipient_email, payload);
@@ -854,6 +859,10 @@ async function deliver(row, notification, type) {
     const push = buildPush(typeSlug, payload);
     if (!push) return skipped('No push text for this notification');   // e.g. a trial reminder a week out
     if (!pushConfigured()) return skipped('Push is not configured on this server');
+    // A device token is registered against an auth user, and `sendPush` finds them BY EMAIL — so
+    // with no address there is nothing to look up. Every push type is baker-facing today and a baker
+    // always has one, but that is a fact about the seed data, not a guarantee from the schema.
+    if (!notification.recipient_email) return skipped('No email address to find a device by');
     try {
       const r = await sendPush({ email: notification.recipient_email, ...push });
       // ALWAYS logged, including the do-nothing outcomes. Logging only successes made the two
