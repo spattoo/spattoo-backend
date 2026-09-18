@@ -43,7 +43,7 @@ export const CUSTOMER_MESSAGE_EVENTS = [
   },
   {
     slug: 'order_placed_customer',
-    label: 'Order taken',
+    label: 'Order received',
     when: 'When you write down an order for a customer yourself',
     recommended: false,
     messages: 1,
@@ -53,10 +53,15 @@ export const CUSTOMER_MESSAGE_EVENTS = [
        tells them nothing they did not already know and nothing they could correct. So it reads back
        what was taken: size, flavour, and when.
 
+       ⚠️ "Received" is idiomatic here even though the customer SENT nothing — they spoke to the baker
+       at a counter or on the phone. It carries slightly less of the message's job than "written down"
+       did, which hinted the baker might have got it wrong; the closing line does that work instead,
+       so do not drop it.
+
        Every field here is never-null by construction (readableOrderFields) — a sparse order reads
        "Size: Not given / Flavour: Not chosen / Pickup: No date given", which is honest and is itself
        a prompt to get in touch. A blank would make Meta reject the whole send. */
-    body: 'Hi Asha, {bakery} has taken down your cake order.\n\n'
+    body: 'Hi Asha, {bakery} has received your cake order.\n\n'
         + 'Size: 1.5 kg\n'
         + 'Flavour: Chocolate, Vanilla\n'
         + 'Home delivery: 20 September 2026, 2:30 PM\n\n'
