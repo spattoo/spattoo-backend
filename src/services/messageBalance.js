@@ -183,3 +183,95 @@ export async function getMessagePack(packKey) {
   if (error) throw new Error(`message pack: ${error.message}`);
   return data;
 }
+
+/* ── Whose balance pays for a customer notification ──────────────────────────────────────────────
+ *
+ * ⚠️ NOT `notifications.baker_id` — that is NULL on every customer notification, and deliberately.
+ * The bell filters on it (`routes/notifications.js`), so stamping a customer's message with a baker
+ * id would drop their customers' notifications into the baker's own notification centre. The column
+ * answers "whose bell", not "whose bakery".
+ *
+ * So it comes from the ORDER, exactly as `customerContact` finds the customer. A customer is scoped
+ * to one bakery and an order belongs to exactly one, which is what makes the id sufficient.
+ *
+ * @returns {Promise<string|null>} null when the payload has no order — nothing to bill to.
+ */
+export async function payingBakerId(payload) {
+  const orderId = payload?.orderId ?? null;
+  if (!orderId) return null;
+  const { data, error } = await supabase
+    .from('orders')
+    .select('baker_id')
+    .eq('id', orderId)
+    .maybeSingle();
+  if (error) throw new Error(`paying baker: ${error.message}`);
+  return data?.baker_id ?? null;
+}
+
+/* ── Notifications that only cost money in one direction ─────────────────────────────────────────
+ *
+ * `order_placed_customer` fires for BOTH a storefront order and one a baker typed in, and only the
+ * second is worth paying for: a customer who placed their own order is looking at a confirmation
+ * screen as it sends. A customer whose order the baker wrote down saw nothing and may not know an
+ * order exists — for them this is the only notice, and the moment they can give us an email.
+ *
+ * ⚠️ Stated as data rather than an `if` in the sender (root CLAUDE.md rule 2), and as a PREDICATE
+ * rather than a list, because the distinction is inside the payload and not in the slug. `authoredBy`
+ * is written by the order route from the signed-in user and never from a request body.
+ */
+const SPEND_ONLY_WHEN = {
+  order_placed_customer: (payload) => payload?.authoredBy === 'baker',
+};
+
+/**
+ * May this notification spend one of the baker's messages?
+ *
+ * ⚠️ EVERY ANSWER IS A SKIP, NEVER A FAILURE. A paid channel that cannot send is not an error — the
+ * notification still goes by email, which is free and always on. Returning a REASON rather than a
+ * boolean is what puts that on the delivery record, so "why did my customer not get a text" has an
+ * answer that is not a guess.
+ *
+ * @returns {Promise<{ ok: true, bakerId: string } | { ok: false, reason: string }>}
+ */
+export async function maySpendMessage({ typeSlug, payload }) {
+  const gate = SPEND_ONLY_WHEN[typeSlug];
+  if (gate && !gate(payload)) {
+    return { ok: false, reason: 'The customer placed this order themselves, so no paid message' };
+  }
+
+  const bakerId = await payingBakerId(payload);
+  // No order behind it, so no bakery to bill. Refusing beats sending one nobody paid for.
+  if (!bakerId) return { ok: false, reason: 'No order on this notification, so no bakery to bill' };
+
+  const { enabledTypes } = await getMessageSettings(bakerId);
+  if (!enabledTypes.includes(typeSlug)) {
+    return { ok: false, reason: 'The bakery has not switched this update on' };
+  }
+
+  const balance = await getMessageBalance(bakerId);
+  if (balance <= 0) return { ok: false, reason: 'The bakery has no messages left' };
+
+  return { ok: true, bakerId };
+}
+
+/**
+ * Record one message against the baker's balance.
+ *
+ * ⚠️ CALLED AFTER A SUCCESSFUL SEND, NEVER BEFORE. Debiting first and refunding on failure trades a
+ * message given away for a message CHARGED AND NEVER SENT — and only one of those produces a baker
+ * who cannot prove they were wronged. A crash between the send and this line costs us one message;
+ * the other order costs the baker one, and their trust.
+ *
+ * Never throws: the message has already gone, and failing the job here would retry a send that
+ * already happened. A debit that does not land is logged and lost, which is the cheaper mistake.
+ */
+export async function spendMessage({ bakerId, typeSlug, channel, recipient }) {
+  const { error } = await supabase.from('message_transactions').insert({
+    baker_id: bakerId, kind: 'debit', messages: -1,
+    type_slug: typeSlug, channel, recipient,
+  });
+  if (error) {
+    console.error('[messages] debit failed after a successful send',
+      JSON.stringify({ bakerId, typeSlug, channel, error: error.message }));
+  }
+}

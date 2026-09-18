@@ -6,6 +6,7 @@ import { sendPush, pushConfigured } from '../../services/fcm.js';
 import { linkFor } from '../../lib/notificationLink.js';
 import { templateSmsConfigured } from '../../services/msg91.js';
 import { whatsappConfigured } from '../../services/aisensy.js';
+import { maySpendMessage, spendMessage } from '../../services/messageBalance.js';
 import {
   loadChannels, orderChannels, singleAttemptChannels, bakerContact, customerContact, sendTemplateMessage,
   isMissingTable, customerMayReceive,
@@ -908,8 +909,34 @@ async function deliver(row, notification, type) {
   const phone = isSms ? contact?.phone : contact?.whatsapp;
   if (!phone) return skipped(forCustomer ? 'No phone number for this customer' : "No phone number on the bakery's account");
 
+  /* ── The baker pays for a message to their customer ──────────────────────────────────────────
+   *
+   * Checked LAST, after everything else that could stop this send, so a baker is never told they
+   * have no messages left by a send that a missing template would have stopped anyway.
+   *
+   * ⚠️ A refusal here is a SKIP, not a failure. The notification still goes by email, which is free
+   * and always on — that is the whole basis of charging for this at all. The reason lands on the
+   * delivery record so "why did my customer not get a text" has an answer.
+   *
+   * Baker messages are not billed: a baker paying to be told about their own bakery is absurd, and
+   * it is their own phone either way. */
+  let payer = null;
+  if (forCustomer) {
+    const may = await maySpendMessage({ typeSlug, payload });
+    if (!may.ok) return skipped(may.reason, phone);
+    payer = may.bakerId;
+  }
+
   // Fill and send through the one path admin's "Send test" also takes (services/notificationChannels.js).
   const result = await sendTemplateMessage({ channel: row.channel, row, payload, phone, name: contact.name });
+
+  /* ⚠️ DEBIT ON 'sent', AND ONLY THEN. Not on 'skipped' (a missing field stopped it before the
+     provider), and not on 'failed' (the provider refused it). Charging for either is charging for a
+     message the customer never got. */
+  if (payer && result.status === 'sent') {
+    await spendMessage({ bakerId: payer, typeSlug, channel: row.channel, recipient: phone });
+  }
+
   if (result.status === 'sent') {
     console.log(`[notifications] ${row.channel}`, JSON.stringify({ notificationId, type: typeSlug, to: phone, response: result.response }));
   } else if (result.status === 'failed') {
