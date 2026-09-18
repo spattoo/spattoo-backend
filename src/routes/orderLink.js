@@ -83,4 +83,47 @@ router.get('/o/:orderId', perIp, async (req, res) => {
   return res.redirect(302, `${base}/orders/${orderId}`);
 });
 
+/* ── GET /i/:inviteId — the same idea, for an invite ─────────────────────────────────────────────
+ *
+ * An invite is the one customer notification with no order behind it, so it carries its own link
+ * (`routes/customers.js`) — and that link had the same per-baker host, so `customer_invite` could not
+ * have a button either. Same fix, same reason: one host, the id as the tail.
+ *
+ * ⚠️ The destination shape differs and must. An invite opens the storefront ROOT with `?invite=<id>`,
+ * not an order page — `customer_invites.sql`: "The row `id` IS the link reference: /<baker-slug>?
+ * invite=<id>". It grants nothing on its own; OTP still gates what is behind it.
+ */
+router.get('/i/:inviteId', perIp, async (req, res) => {
+  const { inviteId } = req.params;
+  const giveUp = () => res.redirect(302, config.marketing.url);
+  if (!UUID.test(inviteId ?? '')) return giveUp();
+
+  const { data, error } = await supabase
+    .from('customer_invites')
+    .select('id, bakers(slug)')
+    .eq('id', inviteId)
+    .maybeSingle();
+
+  if (error) {
+    console.error('[orderLink] invite lookup failed', JSON.stringify({ inviteId, error: error.message }));
+    return giveUp();
+  }
+  const baker = Array.isArray(data?.bakers) ? data.bakers[0] : data?.bakers;
+  if (!baker?.slug) return giveUp();
+
+  /* ⚠️ An EXPIRED or cancelled invite is deliberately NOT filtered here. The storefront already owns
+     that decision and says so properly ("this invite has expired, ask the bakery for a new one");
+     bouncing to the marketing home page instead would tell the customer nothing and look broken. */
+  const base = config.storefront.urlTemplate.replace('{slug}', baker.slug).replace(/\/+$/, '');
+
+  /* ⚠️ CARRY `?session=` THROUGH. Design Together binds the customer to a live room by putting the
+     session id on the invite link, and a redirect that rebuilds the URL from scratch drops it — the
+     invite still works, so nothing errors, and the baker is simply left sitting in an empty room
+     wondering why the customer never joined. Only this one param: anything else on the URL is not
+     ours and has no meaning on the storefront. */
+  const session = typeof req.query.session === 'string' && UUID.test(req.query.session)
+    ? `&session=${req.query.session}` : '';
+  return res.redirect(302, `${base}/?invite=${inviteId}${session}`);
+});
+
 export default router;

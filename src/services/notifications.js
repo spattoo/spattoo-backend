@@ -107,6 +107,11 @@ export async function notifyOrderPlaced({ order, baker, customer, authoredBy = '
     flavours:          order.flavours,
     specialInstructions: order.special_instructions,
     thumbnailUrl:      order.design_thumbnail_url ?? null,
+    /* ⚠️ The ONE field a WhatsApp URL button needs, and this payload did not carry it. A Meta button
+       is a static base plus a variable tail (`www.spattoo.com/o/{{1}}`), so the tail — the order id —
+       has to be a payload field or the template cannot have a button at all. Every other customer
+       notification already had it; this one was built before there was a reason to. */
+    orderId:           order.id,
     // Who put this order in. The customer's email thanks them for designing it only when they did —
     // a baker designing for a customer must not be thanked on their behalf. Defaults to 'customer'
     // so an older caller that does not pass it keeps the wording it has always had.
