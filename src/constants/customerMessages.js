@@ -43,13 +43,24 @@ export const CUSTOMER_MESSAGE_EVENTS = [
   },
   {
     slug: 'order_placed_customer',
-    label: 'Order received',
-    when: 'When you create an order for a customer yourself',
+    label: 'Order taken',
+    when: 'When you write down an order for a customer yourself',
     recommended: false,
     messages: 1,
-    body: 'Hi Asha, {bakery} has started an order for you.\n\n'
-        + 'Delivery: 20 September 2026, 2:30 PM\n\n'
-        + 'Tap below to see the details and add your email for updates.',
+    /* ⚠️ THIS IS A CONFIRMATION, NOT AN ANNOUNCEMENT. It goes to someone who gave their order over a
+       counter or a phone — they know an order exists; what they cannot check is whether the baker
+       wrote it down correctly. An earlier version said only "has started an order for you", which
+       tells them nothing they did not already know and nothing they could correct. So it reads back
+       what was taken: size, flavour, and when.
+
+       Every field here is never-null by construction (readableOrderFields) — a sparse order reads
+       "Size: Not given / Flavour: Not chosen / Pickup: No date given", which is honest and is itself
+       a prompt to get in touch. A blank would make Meta reject the whole send. */
+    body: 'Hi Asha, {bakery} has taken down your cake order.\n\n'
+        + 'Size: 1.5 kg\n'
+        + 'Flavour: Chocolate, Vanilla\n'
+        + 'Home delivery: 20 September 2026, 2:30 PM\n\n'
+        + 'Tap below to check everything is right and add your email for updates.',
     button: 'View order',
   },
   {
