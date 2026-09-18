@@ -17,14 +17,16 @@ export function whatsappConfigured() {
 /**
  * Send one approved WhatsApp template to one number.
  *
- * @param {{ phone: string, campaignName: string, userName?: string, params?: string[], mediaUrl?: string|null }} args
+ * @param {{ phone: string, campaignName: string, userName?: string, params?: string[],
+ *            mediaUrl?: string|null, buttonSuffix?: string|null }} args
  *   `phone` in E.164 ("+919876543210"). `params` fill {{1}}, {{2}} … in order and must match the
  *   template's count exactly — AiSensy rejects the send otherwise. `mediaUrl` is the header image,
  *   and it must be publicly reachable: AiSensy fetches it, and rejects the send if it cannot.
+ *   `buttonSuffix` fills a DYNAMIC URL BUTTON — see the note above the payload.
  * @returns {Promise<object>} AiSensy's parsed response body.
  * @throws  on any provider failure — the caller decides how to react.
  */
-export async function sendWhatsAppCampaign({ phone, campaignName, userName, params = [], mediaUrl = null }) {
+export async function sendWhatsAppCampaign({ phone, campaignName, userName, params = [], mediaUrl = null, buttonSuffix = null }) {
   // AiSensy takes the number with its country code and reads a bare number as Indian. Keeping the
   // '+' and dropping everything else absorbs the spaces a hand-typed number arrives with.
   const destination = String(phone ?? '').replace(/[^\d+]/g, '');
@@ -42,6 +44,28 @@ export async function sendWhatsAppCampaign({ phone, campaignName, userName, para
   };
   if (mediaUrl) {
     body.media = { url: mediaUrl, filename: mediaUrl.split('/').pop()?.split('?')[0] || 'image' };
+  }
+
+  /* ── A dynamic URL button ────────────────────────────────────────────────────────────────────────
+   *
+   * A Meta URL button is a STATIC BASE plus a variable SUFFIX, fixed when the template is approved —
+   * `https://www.spattoo.com/o/{{1}}`. `buttonSuffix` is that {{1}}, and NOT a whole URL: passing one
+   * would produce `https://www.spattoo.com/o/https://…`. The whole reason the customer link moved to
+   * one fixed host (`lib/notificationFormat.js`) is that the base cannot vary, so for our order
+   * templates the suffix is simply the order id.
+   *
+   * ⚠️ ONE BUTTON, AT INDEX 0, deliberately. `index` is the button's position in the approved
+   * template, and every template we send has at most one URL button. Supporting an arbitrary set
+   * would mean inventing a shape nothing uses and getting the indices wrong the first time something
+   * does.
+   *
+   * Shape is Meta's own component format, which AiSensy passes through.
+   */
+  if (buttonSuffix) {
+    body.buttons = [{
+      type: 'button', sub_type: 'url', index: '0',
+      parameters: [{ type: 'text', text: String(buttonSuffix) }],
+    }];
   }
 
   const res = await fetch(CAMPAIGN_URL, {

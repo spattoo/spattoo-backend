@@ -134,7 +134,15 @@ export function whatsappParams(row, payload) {
   const imageField = row?.config?.image_field || null;
   const image = imageField ? fieldValue(payload, imageField) : null;
   if (imageField && !image) missing.push(imageField);   // an image-header template cannot send without one
-  return { params, mediaUrl: image ? toPublicUrl(image) : null, missing };
+
+  /* A dynamic URL button's SUFFIX — the {{1}} in an approved `https://www.spattoo.com/o/{{1}}`.
+     ⚠️ Name the field holding the SUFFIX, not the finished link: `orderId`, never `orderLink`. The
+     base is baked into the template at Meta's approval, so sending the whole URL would double it. */
+  const buttonField = row?.config?.button_field || null;
+  const buttonSuffix = buttonField ? fieldValue(payload, buttonField) : null;
+  if (buttonField && !buttonSuffix) missing.push(buttonField);   // a button with an empty suffix is a dead link
+
+  return { params, mediaUrl: image ? toPublicUrl(image) : null, buttonSuffix, missing };
 }
 
 /**
@@ -151,7 +159,8 @@ export function whatsappParams(row, payload) {
 export async function sendTemplateMessage({ channel, row, payload, phone, name = null }) {
   const isSms = channel === 'sms';
   const filled = isSms ? smsVariables(row, payload) : whatsappParams(row, payload);
-  const values = isSms ? filled.variables : { params: filled.params, image: filled.mediaUrl };
+  const values = isSms ? filled.variables
+    : { params: filled.params, image: filled.mediaUrl, buttonSuffix: filled.buttonSuffix };
   if (filled.missing.length) {
     return { status: 'skipped', recipient: phone, detail: `This notification has no ${filled.missing.join(', ')}`, values };
   }
@@ -164,6 +173,7 @@ export async function sendTemplateMessage({ channel, row, payload, phone, name =
       ? await sendTemplateSms({ phone, templateId: row.template_ref, variables: filled.variables })
       : await sendWhatsAppCampaign({
           phone, campaignName: row.template_ref, userName: name, params: filled.params, mediaUrl,
+          buttonSuffix: filled.buttonSuffix,
         });
     const id = isSms ? response?.message : (response?.submitted_message_id ?? response?.messageId);
     return { status: 'sent', recipient: phone, providerMessageId: id ? String(id) : null, response, values };
@@ -276,6 +286,13 @@ export function validateChannel(type, channel, row, fields = []) {
     const bad = params.find(unknown);
     if (bad) return `"${bad}" is not a field this notification carries.`;
     if (config.image_field && unknown(config.image_field)) return `"${config.image_field}" is not a field this notification carries.`;
+    if (config.button_field && unknown(config.button_field)) return `"${config.button_field}" is not a field this notification carries.`;
+    /* ⚠️ The button takes the SUFFIX of an approved base URL, so a finished link doubles it —
+       `https://www.spattoo.com/o/https://www.spattoo.com/o/…`. Caught here because the send would
+       succeed and only the customer would see it was broken. */
+    if (config.button_field && /link$/i.test(config.button_field)) {
+      return `"${config.button_field}" looks like a whole URL. A URL button takes only the part after the approved base — use "orderId".`;
+    }
   }
   return null;
 }
