@@ -63,3 +63,35 @@ export function creditPackSalePayload({ payment, pack, chargedAt, recipient }) {
 export const SUBSCRIPTION_ONLY_FIELDS = [
   'plan_id', 'plan_label', 'billing_period_id', 'period_label', 'period_months', 'subscription_id',
 ];
+
+/* ── A message pack sale ─────────────────────────────────────────────────────────────────────────
+ *
+ * The same shape as a credit pack, and deliberately its own function rather than a parameter on that
+ * one: `sale_kind` is what an accounting adapter dispatches on, and a shared builder with a flag is
+ * how the two silently converge on one invoice line the day someone edits the wrong branch.
+ *
+ * ⚠️ `messages`, not `credits`. The unit is what the invoice says the baker bought, and "225 credits"
+ * on an invoice for a message pack is a support ticket — the baker checks their credit balance,
+ * finds it unchanged, and reasonably concludes they were charged for nothing.
+ */
+export function messagePackSalePayload({ payment, pack, chargedAt, recipient }) {
+  return {
+    sale_kind:           'message_pack',
+    razorpay_payment_id: payment?.id ?? null,
+    razorpay_order_id:   payment?.order_id ?? null,
+    pack_id:             pack?.id ?? null,
+    pack_key:            pack?.pack_key ?? null,
+    pack_label:          pack?.label ?? null,
+    messages:            pack?.messages ?? null,
+    quantity:            1,
+    // GROSS, from the PAYMENT. message_packs.price_paise is the BASE and is deliberately not a
+    // fallback: passing it would tell accounting ₹100 was collected when ₹118 was, and the invoice
+    // would understate the sale by the whole GST.
+    gross_amount_paise:  payment?.amount ?? 0,
+    currency:            payment?.currency ?? 'INR',
+    charged_at:          chargedAt,
+    service_period_start: null,
+    service_period_end:   null,
+    recipient,
+  };
+}

@@ -19,9 +19,10 @@ import { planChangeDirection, PLAN_CHANGE } from '../lib/subscriptionChange.js';
 import { PERIOD }              from '../constants/billingPeriods.js';
 import { CANCELLATION_REASON } from '../constants/cancellationReasons.js';
 import { isValidGstin, normalizeGstin } from '../lib/gstin.js';
-import { emitSaleEvent, emitCreditPackSaleEvent } from '../services/billingEvents.js';
+import { emitSaleEvent, emitCreditPackSaleEvent, emitMessagePackSaleEvent } from '../services/billingEvents.js';
 import { creditPurchase, getAiCreditBalance } from '../services/aiCredits.js';
 import { withGst } from '../lib/gst.js';
+import { purchaseMessages, getMessagePack } from '../services/messageBalance.js';
 
 const router = Router();
 
@@ -718,6 +719,68 @@ router.post('/billing/webhook', async (req, res) => {
     // So: try the payment's own notes (present if a future client passes them at Checkout), then
     // fetch the order and read the notes we actually wrote.
     const paymentNotes = await notesForPayment(payment);
+
+    /* ── A message pack ──────────────────────────────────────────────────────────────────────────
+     *
+     * Same shape as the credit pack branch below, and deliberately BEFORE it so the two cannot be
+     * confused by a future edit that widens one condition.
+     *
+     * ⚠️ The notes are on the ORDER, not the payment — Razorpay does not copy them across, which is
+     * how the credit pack branch once silently never matched: the baker was charged, credited
+     * nothing, and the webhook returned 200. `notesForPayment` fetches the order for that reason.
+     */
+    if (paymentNotes?.kind === 'message_pack' && event === 'payment.captured') {
+      const { baker_id: msgBakerId, pack_key: msgPackKey } = paymentNotes;
+      if (msgBakerId && msgPackKey) {
+        const txId = await purchaseMessages({
+          bakerId: msgBakerId, packKey: msgPackKey, paymentId: payment.id,
+        });
+        // null = already minted by an earlier delivery, or the pack is gone. Neither is an error to
+        // Razorpay; the second is loud below because a baker paid for nothing.
+        if (!txId) console.warn('[billing] message pack minted nothing', payment?.id, msgPackKey);
+
+        try {
+          const pack = await getMessagePack(msgPackKey);
+          const { error: payErr } = await supabase.from('payments').upsert({
+            razorpay_payment_id: payment.id,
+            baker_id:            msgBakerId,
+            // GROSS actually charged, never the pack's base — recording the base under-reports the
+            // payment and, downstream, the invoice.
+            amount:              payment.amount ?? withGst(pack?.price_paise ?? 0),
+            currency:            payment.currency ?? 'INR',
+            status_id:           PAYMENT_STATUS.CAPTURED,
+            charged_at:          payment.created_at
+              ? new Date(payment.created_at * 1000).toISOString()
+              : new Date().toISOString(),
+          }, { onConflict: 'razorpay_payment_id', ignoreDuplicates: true });
+          if (payErr) console.error('[billing] message pack payment row failed', payment.id, payErr.message);
+
+          const { data: msgBaker } = await supabase
+            .from('bakers')
+            .select('id, name, email, timezone, gstin, address_line1, address_line2, city, state, postal_code, country')
+            .eq('id', msgBakerId).maybeSingle();
+
+          // The GST invoice. Best-effort and idempotent on the payment id, never thrown: failing the
+          // webhook here would have Razorpay retry an event whose messages are already minted.
+          await emitMessagePackSaleEvent({
+            payment, baker: msgBaker, pack,
+            chargedAt: payment.created_at
+              ? new Date(payment.created_at * 1000).toISOString()
+              : new Date().toISOString(),
+          });
+        } catch (e) {
+          // Every step here FOLLOWS a mint that already succeeded, so none of them may fail the
+          // webhook. Named for the block rather than one step, because a message saying "payment row
+          // failed" when the accounting event threw sends whoever reads it to the wrong table.
+          console.error('[billing] message pack post-mint step failed', payment?.id, e?.message);
+        }
+      } else {
+        // Stamped as a message pack but missing what it needs. Loud, because the alternative is a
+        // baker who paid and got nothing while the webhook reported success.
+        console.error('[billing] message_pack notes incomplete', payment?.id, paymentNotes);
+      }
+      return res.json({ ok: true });
+    }
 
     if (paymentNotes?.kind === 'ai_credit_pack' && event === 'payment.captured') {
       const { baker_id: packBakerId, pack_key: packKey } = paymentNotes;

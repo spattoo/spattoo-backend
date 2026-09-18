@@ -8,6 +8,9 @@ import {
   listMessagePacks, listMessageHistory, countMessagesSent,
 } from '../services/messageBalance.js';
 import { CUSTOMER_MESSAGE_EVENTS, MESSAGE_SENDER } from '../constants/customerMessages.js';
+import { getMessagePack } from '../services/messageBalance.js';
+import { config } from '../config.js';
+import { razorpay, razorpayEnabled } from './billing.js';
 import { supabase } from '../services/supabase.js';
 
 // ── Customer updates: the balance, the choices, the packs, the ledger ────────────────────────────
@@ -100,5 +103,61 @@ router.get('/baker/message-history', requireAuth, resolvePrincipal, async (req, 
     });
   } catch (err) { serverError(req, res, err); }
 });
+
+/* POST /api/baker/message-packs/purchase   { packKey }
+ *
+ * Opens a Razorpay ORDER for a pack — a one-time payment, not a subscription. Returns what Checkout
+ * needs. ⚠️ MESSAGES ARE MINTED BY THE WEBHOOK, NEVER HERE, so a Checkout the baker abandons costs
+ * nothing and credits nothing. Same rule as credit packs; the same reason. */
+router.post('/baker/message-packs/purchase', requireAuth, resolvePrincipal,
+  requireCapability('billing:manage'), async (req, res) => {
+    try {
+      if (!req.bakerId) return res.status(403).json({ error: 'Not a baker account' });
+      if (!razorpayEnabled()) {
+        return res.status(503).json({
+          error: 'Payments are temporarily unavailable. Please try again shortly.',
+          code:  'razorpay_unavailable',
+        });
+      }
+
+      const packKey = String(req.body?.packKey ?? '').trim();
+      if (!packKey) return res.status(400).json({ error: 'packKey is required' });
+
+      const pack = await getMessagePack(packKey);
+      if (!pack) return res.status(404).json({ error: 'Unknown or inactive pack' });
+
+      /* ── GST is ADDED here, and this line decides what leaves a bank account ──
+         message_packs.price_paise is the BASE, exactly like credit_packs and subscription_plans.
+         Charging it directly under-collects 18% and, because accounting treats whatever was charged
+         as GROSS, reports a sale 15.25% below the sticker price with the difference silently owed as
+         tax. That happened once already, on credit packs (fixed 2026-08-02); it does not need
+         happening twice. */
+      const charge = withGst(pack.price_paise);
+
+      const order = await razorpay().orders.create({
+        amount:   charge,                  // base + GST, from the DB — never from the request
+        currency: 'INR',
+        // ⚠️ Razorpay caps `receipt` at 40 characters and rejects the whole order if it is longer,
+        // with a 500 that says nothing about length. Truncated for that reason; real identity travels
+        // in `notes`, which is what the webhook reads.
+        receipt:  `ms:${String(req.bakerId).slice(0, 8)}:${pack.pack_key}`.slice(0, 40),
+        notes: {
+          kind:     'message_pack',        // the webhook branches on this
+          baker_id: req.bakerId,
+          pack_key: pack.pack_key,
+        },
+      });
+
+      res.json({
+        key_id:   config.razorpay.keyId,
+        order_id: order.id,
+        amount:   charge,                  // what Checkout will collect
+        currency: 'INR',
+        packKey:  pack.pack_key,
+        messages: pack.messages,
+        ...gstBreakup(pack.price_paise),   // so a confirmation can show the split
+      });
+    } catch (err) { serverError(req, res, err); }
+  });
 
 export default router;

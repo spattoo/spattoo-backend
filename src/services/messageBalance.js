@@ -137,3 +137,49 @@ export async function countMessagesSent(bakerId, sinceIso) {
   if (error) throw new Error(`message usage: ${error.message}`);
   return Math.abs((data ?? []).reduce((n, r) => n + (r.messages ?? 0), 0));
 }
+
+/**
+ * Mint a purchased pack into the ledger. Called ONLY by the payment webhook, never by the checkout
+ * route — an abandoned Checkout must cost nothing and credit nothing.
+ *
+ * ⚠️ IDEMPOTENT ON THE RAZORPAY PAYMENT ID. Razorpay redelivers webhooks, and without this a second
+ * delivery mints a second pack: the baker pays once and gets 450 messages, and nothing anywhere
+ * looks wrong. The unique partial index on `payment_id` (098) is the guard; 23505 means the first
+ * delivery already did the work, which is success, not failure.
+ *
+ * @returns {Promise<string|null>} the transaction id, or null when already minted or the pack is gone
+ */
+export async function purchaseMessages({ bakerId, packKey, paymentId }) {
+  const { data: pack, error: pErr } = await supabase
+    .from('message_packs')
+    .select('id, pack_key, messages, price_paise, label')
+    .eq('pack_key', packKey)
+    .maybeSingle();
+  if (pErr) throw new Error(`message pack: ${pErr.message}`);
+  /* A retired or renamed pack. Loud, because the alternative is a baker who paid and got nothing
+     while the webhook reports success — the caller logs and does not send a receipt. */
+  if (!pack) return null;
+
+  const { data, error } = await supabase
+    .from('message_transactions')
+    .insert({ baker_id: bakerId, kind: 'purchase', messages: pack.messages,
+              pack_key: pack.pack_key, payment_id: paymentId })
+    .select('id')
+    .single();
+
+  if (error?.code === '23505') return null;   // already minted by an earlier delivery
+  if (error) throw new Error(`message purchase: ${error.message}`);
+  return data.id;
+}
+
+/** The pack behind a key, for the payment row and the invoice line. */
+export async function getMessagePack(packKey) {
+  const { data, error } = await supabase
+    .from('message_packs')
+    .select('id, pack_key, messages, price_paise, label')
+    .eq('pack_key', packKey)
+    .eq('is_active', true)
+    .maybeSingle();
+  if (error) throw new Error(`message pack: ${error.message}`);
+  return data;
+}
