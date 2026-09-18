@@ -52,7 +52,8 @@
     "check:demo-request": "node scripts/check-demo-request.mjs",
     "check:image-model": "node scripts/check-image-model.mjs",
     "try:print-model": "node scripts/try-print-model.mjs",
-    "check:notify-contact": "node scripts/check-notify-contact.mjs"
+    "check:notify-contact": "node scripts/check-notify-contact.mjs",
+    "r2:lifecycle": "node --env-file=.env scripts/set-r2-lifecycle.mjs"
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.1036.0",
