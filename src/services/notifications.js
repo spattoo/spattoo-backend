@@ -3,7 +3,7 @@ import { jobQueue } from '../jobs/queue.js';
 import { digestDedupeKey } from './deliveryDigest.js';
 import { reminderDedupeKey, isEndedMilestone } from './trialReminders.js';
 import { renewalDedupeKey } from './renewalReminders.js';
-import { titleCase, rupees, dateLabel, calendarDate, clockTime, customerOrderLink } from '../lib/notificationFormat.js';
+import { titleCase, rupees, dateLabel, calendarDate, clockTime, customerOrderLink, storefrontLink } from '../lib/notificationFormat.js';
 import { config } from '../config.js';
 
 async function getTypeId(slug) {
@@ -345,8 +345,10 @@ const priceRs = v => {
  */
 function readableCustomerLink(p) {
   return {
-    orderLink:      customerOrderLink(p, config.storefront.urlTemplate),
-    storefrontLink: customerOrderLink(p, config.storefront.urlTemplate, { deep: false }),
+    // The order: ONE fixed host, so it can be a WhatsApp button and a single DLT whitelist entry.
+    orderLink:      customerOrderLink(p, config.marketing.url),
+    // The shop: the bakery's OWN subdomain. A customer sent back to buy again lands under their name.
+    storefrontLink: storefrontLink(p, config.storefront.urlTemplate),
   };
 }
 

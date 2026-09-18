@@ -1,5 +1,6 @@
 import express from 'express';
 import cors from 'cors';
+import orderLinkRouter from './routes/orderLink.js';
 import healthRouter from './routes/health.js';
 import demoRequestRouter from './routes/demoRequest.js';
 import elementsRouter from './routes/elements.js';
@@ -70,6 +71,9 @@ app.use(express.json({ limit: '5mb' }));
 app.use('/api/admin', requireAuth, requireAdmin);
 
 app.use(healthRouter);
+// The customer-facing order link, `/o/:orderId`. Mounted at the ROOT, not under /api: the marketing
+// site rewrites `www.spattoo.com/o/*` here, and the path a customer sees is the path we serve.
+app.use(orderLinkRouter);
 // Public, unauthenticated, and rate-limited at the route — the marketing site's demo form.
 // Mounted with the rest rather than under /api/admin precisely because it is NOT privileged.
 app.use('/api', demoRequestRouter);

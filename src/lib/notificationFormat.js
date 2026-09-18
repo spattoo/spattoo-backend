@@ -41,29 +41,43 @@ export function clockTime(hhmm) {
 
 /* ── Where a CUSTOMER'S notification sends them ──────────────────────────────────────────────────
  *
- * The storefront, on the baker's own subdomain — not the baker app, which `lib/notificationLink.js`
- * covers and which a customer cannot sign in to. Deep-links to the order summary (review, accept a
- * quote, see an update), falling back to the storefront root when there is no orderId, which is
- * still better than no link at all.
+ * TWO links, deliberately separate, because they answer different questions:
  *
- * ⚠️ IT WAS WRITTEN THREE TIMES, inline in the email builder — design_updated, quote_issued and
- * order_completed each rebuilt it from `bakerSlug`. That was survivable while email was the only
- * channel that had a link. It stopped being survivable when WhatsApp needed the same URL as a
- * template VARIABLE: a fourth copy, in a different file, filling a message whose text nobody can
- * edit without re-approval at Meta. Two of them already disagreed — order_completed drops the
- * `/orders/<id>` deep link and sends you to the shop front.
+ *   customerOrderLink()  "open THIS order"  → www.spattoo.com/o/<orderId>   (one fixed host)
+ *   storefrontLink()     "visit the shop"   → {slug}.spattoo.com            (the bakery's own)
  *
- * Returns null when there is no slug, and every caller must handle that: a template variable cannot
- * be empty (Meta rejects the send), so a link-carrying WhatsApp template is SKIPPED rather than sent
- * with a gap.
+ * ⚠️ THE ORDER LINK HAS A SINGLE FIXED HOST, AND THAT IS THE WHOLE POINT. It used to be
+ * `{slug}.spattoo.com/orders/<uuid>` — a host that changes with every bakery — which cannot be a
+ * WhatsApp URL button (the button's base, host included, is fixed at template approval), cannot be
+ * covered by one DLT CTA whitelist entry (whitelisting is per domain), and is 85 characters against
+ * an SMS budget of 160. `www.spattoo.com/o/<uuid>` is 62, is a valid button base, and is one
+ * whitelist entry for every baker there will ever be. `routes/orderLink.js` resolves it back to the
+ * right storefront.
  *
- * ⚠️ `urlTemplate` is PASSED IN, not read from config here. This module is a leaf that both the
- * email builder and the payload builder import, and reaching for config would make importing a date
+ * ⚠️ THE SHOP LINK KEEPS THE BAKER'S OWN SUBDOMAIN, and must. "Order another anytime from Feelings
+ * and Flavours" should land on THEIR shop front under THEIR name — routing that through a shared
+ * Spattoo host would take a customer to us on their way back to the bakery. Only the order link
+ * needs the fixed host, because only the order link goes in a template.
+ *
+ * Both return null without the field they need, and every caller must handle it: a WhatsApp or SMS
+ * template variable cannot be empty (the provider rejects the send), so a link-carrying message is
+ * SKIPPED rather than sent with a gap.
+ *
+ * ⚠️ `base` is PASSED IN, not read from config here. This module is a leaf that both the email
+ * builder and the payload builder import, and reaching for config would make importing a date
  * formatter require a complete production environment — REDIS_URL and all — to load. The shape of
- * the link is the thing worth having once; which host it points at is one line at each caller. */
-export function customerOrderLink(p, urlTemplate, { deep = true } = {}) {
+ * each link is the thing worth having once; which host it points at is one line at each caller.
+ */
+
+/** "Open this order" — one fixed host for every baker. `base` is config.marketing.url. */
+export function customerOrderLink(p, base) {
+  if (!p?.orderId || !base) return null;
+  return `${String(base).replace(/\/+$/, '')}/o/${p.orderId}`;
+}
+
+/** "Visit the shop" — the bakery's own subdomain. `urlTemplate` is config.storefront.urlTemplate. */
+export function storefrontLink(p, urlTemplate) {
   const slug = p?.bakerSlug ?? null;
   if (!slug || !urlTemplate) return null;
-  const base = urlTemplate.replace('{slug}', slug).replace(/\/+$/, '');
-  return deep && p?.orderId ? `${base}/orders/${p.orderId}` : base;
+  return urlTemplate.replace('{slug}', slug).replace(/\/+$/, '');
 }
