@@ -35,6 +35,7 @@ import legalRouter from './routes/legal.js';
 import accountRouter from './routes/account.js';
 import designSessionsRouter from './routes/designSessions.js';
 import aiCreditsRouter from './routes/aiCredits.js';
+import messageBalanceRouter from './routes/messageBalance.js';
 import xraySpecRouter from './routes/xraySpec.js';
 import ediblePrintsRouter from './routes/ediblePrints.js';
 import adminNotificationChannelsRouter from './routes/adminNotificationChannels.js';
@@ -110,6 +111,7 @@ app.use('/api', legalRouter);
 app.use('/api', accountRouter);
 app.use('/api', designSessionsRouter);
 app.use('/api', aiCreditsRouter);
+app.use('/api', messageBalanceRouter);
 app.use('/api', xraySpecRouter);
 app.use('/api', ediblePrintsRouter);
 
