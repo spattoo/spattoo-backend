@@ -99,6 +99,7 @@ export async function notifyOrderPlaced({ order, baker, customer, authoredBy = '
     customerEmail:     customer.email,
     customerPhone:     customer.phone,
     bakerName:         baker.name,
+    bakerLogoUrl:      baker.logo_url ?? null,   // step 3 of the picture chain (readablePicture)
     deliveryDate:      order.delivery_date,
     deliveryTime:      order.delivery_time,
     deliveryMode:      order.delivery_mode,
@@ -142,6 +143,7 @@ export async function notifyDesignUpdated({ order, baker, customer, mode = 'upda
   await insertNotification('design_updated_customer', customer.email ?? null, {
     customerFirstName: customer.first_name,
     bakerName:         baker.name,
+    bakerLogoUrl:      baker.logo_url ?? null,   // step 3 of the picture chain (readablePicture)
     bakerSlug:         baker.slug ?? null,
     orderId:           order.id,
     mode,                                   // 'recommendations' | 'updated'
@@ -156,6 +158,7 @@ export async function notifyQuoteIssued({ order, baker, customer }) {
   await insertNotification('quote_issued_customer', customer.email ?? null, {
     customerFirstName: customer.first_name,
     bakerName:         baker.name,
+    bakerLogoUrl:      baker.logo_url ?? null,   // step 3 of the picture chain (readablePicture)
     bakerSlug:         baker.slug ?? null,
     orderId:           order.id,
     // The cake itself. A quote with a picture of what is being quoted is a different message from
@@ -214,6 +217,7 @@ export async function notifyOrderConfirmed({ order, baker, customer }) {
   await insertNotification('order_confirmed_customer', customer.email ?? null, {
     customerFirstName: customer.first_name,
     bakerName:         baker.name,
+    bakerLogoUrl:      baker.logo_url ?? null,   // step 3 of the picture chain (readablePicture)
     bakerSlug:         baker.slug ?? null,
     orderId:           order.id,
     finalPrice:        order.final_price ?? null,
@@ -227,6 +231,7 @@ export async function notifyOrderReady({ order, baker, customer }) {
   await insertNotification('order_ready_customer', customer.email ?? null, {
     customerFirstName: customer.first_name,
     bakerName:         baker.name,
+    bakerLogoUrl:      baker.logo_url ?? null,   // step 3 of the picture chain (readablePicture)
     bakerSlug:         baker.slug ?? null,
     orderId:           order.id,
     deliveryMode:      order.delivery_mode ?? null,
@@ -244,6 +249,7 @@ export async function notifyOrderCompleted({ order, baker, customer }) {
   await insertNotification('order_completed_customer', customer.email ?? null, {
     customerFirstName: customer.first_name,
     bakerName:         baker.name,
+    bakerLogoUrl:      baker.logo_url ?? null,   // step 3 of the picture chain (readablePicture)
     bakerSlug:         baker.slug ?? null,
     orderId:           order.id,
     thumbnailUrl:      order.design_thumbnail_url ?? null,
@@ -359,14 +365,27 @@ const priceRs = v => {
  * simply never send, and the outbox reason would say the notification "has no photoUrls" while the
  * payload plainly has three.
  *
- * So this picks one. The finished-cake PHOTO first — on "your cake is ready" a picture of the real
- * cake beats a render of it, and that is the whole reason the baker uploaded it — falling back to the
- * design thumbnail, which every order has. Null when there is neither, and a null image field skips
- * the send, so an image-header template must only be used where one of the two is certain.
+ * So this picks one, in order of how much it is worth showing:
+ *
+ *   1. the finished-cake PHOTO — on "your cake is ready" a picture of the real cake beats a render of
+ *      it, and that is the whole reason the baker uploaded it
+ *   2. the design thumbnail — the 3D render, or a manual order's first reference photo
+ *   3. the BAKERY'S LOGO — not the cake, but still theirs
+ *   4. a standard fallback (config.fallbackPictureUrl)
+ *
+ * ⚠️ WHY FOUR AND NOT TWO. A WhatsApp image header MUST be given an image; there is no degrading to
+ * text. And an order's own picture is NOT guaranteed — a manual order has no design and its reference
+ * photos are optional, so `design_thumbnail_url` is genuinely null (Sandeep, 2026-09-18). `logo_url`
+ * is nullable too. Without step 4 a baker who took a phone order without snapping a photo would have
+ * their customer silently receive nothing at all.
+ *
+ * Still null when even the fallback is unconfigured, and that is the safe default: the send is
+ * skipped with a reason, exactly as before, rather than an image-header template being used on a
+ * promise nothing keeps.
  */
 function readablePicture(p) {
   const first = Array.isArray(p?.photoUrls) ? p.photoUrls.find(Boolean) : null;
-  return { pictureUrl: first ?? p?.thumbnailUrl ?? null };
+  return { pictureUrl: first ?? p?.thumbnailUrl ?? p?.bakerLogoUrl ?? config.fallbackPictureUrl ?? null };
 }
 
 function readableCustomerLink(p) {

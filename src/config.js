@@ -356,6 +356,22 @@ export const config = {
   // Baker-facing app base URL, for deep links in lifecycle emails (billing/settings). Optional —
   // the email CTA is omitted when unset, so no broken links. e.g. https://app.spattoo.com
   app: { url: process.env.APP_URL || '' },
+  // ── The picture a customer notification shows when the order has none ──────────────────────────
+  // A WhatsApp template with an image header MUST be given a header image; there is no degrading to
+  // a text message. So the picture has to be guaranteed, and an order's own picture is not: a manual
+  // order has no design and its reference photos are optional (routes/orders.js — `designThumbnailKey
+  // ?? refKeys[0] ?? null`), and `bakers.logo_url` is nullable too. Without a last resort, a baker who
+  // took a phone order without snapping a photo would have their customer silently receive NOTHING.
+  //
+  // UNSET IS SAFE, and deliberately so: `pictureUrl` then resolves to null exactly as before, the send
+  // is skipped with a reason, and nothing changes. Set it, and an image-header template becomes safe
+  // to use. ⚠️ It must be publicly reachable and a JPEG or PNG — AiSensy fetches it, and WhatsApp
+  // refuses anything else in a header.
+  //
+  // ⚠️ Choose the image with the branding problem in mind (plans/whose-name-is-on-the-message.md): it
+  // appears above a message the BAKER paid to send, under their bakery's name. A neutral cake, not a
+  // Spattoo logo.
+  fallbackPictureUrl: process.env.NOTIFICATION_FALLBACK_IMAGE_URL || null,
   // Marketing site base URL. The legal documents are AUTHORED there (apps/marketing/content/legal),
   // and GET /api/admin/legal/preview fetches their canonical text from it so the admin publish
   // screen freezes exactly what the site serves rather than something retyped by hand.
