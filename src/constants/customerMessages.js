@@ -20,6 +20,8 @@
 export const CUSTOMER_MESSAGE_EVENTS = [
   {
     slug: 'quote_issued_customer',
+    // Image header — table A in plans/whatsapp-templates.md. Drives the preview only.
+    image: true,
     label: 'Quote sent',
     when: 'As soon as you send a quote',
     // ⚠️ Recommended, and the UI says why rather than just ticking it: a quote nobody sees is an
@@ -32,6 +34,7 @@ export const CUSTOMER_MESSAGE_EVENTS = [
   },
   {
     slug: 'order_ready_customer',
+    image: true,
     label: 'Order ready',
     when: 'When you mark an order ready',
     recommended: true,
@@ -43,6 +46,7 @@ export const CUSTOMER_MESSAGE_EVENTS = [
   },
   {
     slug: 'order_placed_customer',
+    image: true,
     label: 'Order received',
     when: 'When you write down an order for a customer yourself',
     recommended: false,

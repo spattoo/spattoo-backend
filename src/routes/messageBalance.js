@@ -10,6 +10,7 @@ import {
 import { CUSTOMER_MESSAGE_EVENTS, MESSAGE_SENDER } from '../constants/customerMessages.js';
 import { getMessagePack } from '../services/messageBalance.js';
 import { config } from '../config.js';
+import { toPublicUrl } from '../lib/publicUrl.js';
 import { razorpay, razorpayEnabled } from './billing.js';
 import { supabase } from '../services/supabase.js';
 
@@ -59,6 +60,9 @@ router.get('/baker/message-balance', requireAuth, resolvePrincipal, async (req, 
       // never quote a number the checkout then disagrees with (lib/gst.js).
       packs: packs.map(p => ({ ...p, totalPaise: withGst(p.basePaise), gst: gstBreakup(p.basePaise) })),
       sent: { last7Days: week, last30Days: month },
+      // Step 4 of the picture chain (services/notifications.js readablePicture) — what an image
+      // header falls back to. The preview shows it so a baker sees the real thing, not a stand-in.
+      fallbackImageUrl: toPublicUrl(config.fallbackPictureKey),
       events,
       // Shown in the preview on purpose: a baker paying for a message their customer sees branded
       // SPATOO should see that before they pay, not after.
