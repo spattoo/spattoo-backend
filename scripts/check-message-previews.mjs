@@ -106,6 +106,38 @@ for (const e of CUSTOMER_MESSAGE_EVENTS) {
   }
 }
 
+/* ── And in the order a customer actually meets them ─────────────────────────────────────────────
+ *
+ * The list led with the two recommended ones, which put "Order received" AFTER "Quote sent" — a
+ * message that can only come before it. A baker reads this list to picture what their customer gets
+ * across one order, and a sequence that cannot happen makes that impossible to do. Sandeep spotted it
+ * on the screen; nothing here would have.
+ *
+ * The sequence is `order_statuses`, not an opinion:
+ *   requested 20 → quoted 30 → confirmed 40 → in_production 50 → ready 60 → completed 70
+ * "Design updated" has no status of its own — it repeats while the design moves — so it sits between
+ * confirmed and ready, where it happens.
+ */
+const LIFECYCLE = [
+  'order_placed_customer',
+  'quote_issued_customer',
+  'order_confirmed_customer',
+  'design_updated_customer',
+  'order_ready_customer',
+  'order_completed_customer',
+];
+const actual = CUSTOMER_MESSAGE_EVENTS.map(e => e.slug);
+const known  = actual.filter(sl => LIFECYCLE.includes(sl));
+const wanted = LIFECYCLE.filter(sl => actual.includes(sl));
+if (known.join() !== wanted.join()) {
+  failures++;
+  console.error('✗ the messages are not in the order an order happens in:\n');
+  console.error(`   listed : ${known.join(' → ')}`);
+  console.error(`   should : ${wanted.join(' → ')}\n`);
+  console.error('   A baker reads this list as one order unfolding. Recommended-first is not a reason');
+  console.error('   to show a message before the one it can only follow — the badge already marks them.\n');
+}
+
 if (failures) {
   console.error('   A baker decides to PAY on the strength of the preview. If it does not match the');
   console.error('   template, they paid for words their customer never receives.\n');

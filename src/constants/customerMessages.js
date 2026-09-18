@@ -17,33 +17,20 @@
 // `sender` is shown deliberately. A baker paying for a message their customer sees branded SPATOO
 // should see that before they pay, not after (plans/whose-name-is-on-the-message.md).
 
+/* ⚠️ ORDERED BY THE ORDER'S OWN LIFECYCLE, not by which are recommended.
+ *
+ * The first cut led with the two switched on by default — "Quote sent" then "Order ready" — which put
+ * "Order received" third, after a message that can only follow it. A baker reads this list to picture
+ * what their customer will receive across one order, and a sequence that cannot happen makes that
+ * impossible.
+ *
+ * The sequence is `order_statuses` (supabase/order_status_surrogate.sql), not a guess:
+ *   requested 20 → quoted 30 → confirmed 40 → in_production 50 → ready 60 → completed 70
+ *
+ * "Design updated" has no status of its own — it repeats while the design moves — so it sits where it
+ * happens, between confirmed and ready. The RECOMMENDED badge still marks the two defaults; it does
+ * not need to reorder them to do that. */
 export const CUSTOMER_MESSAGE_EVENTS = [
-  {
-    slug: 'quote_issued_customer',
-    // Image header — table A in plans/whatsapp-templates.md. Drives the preview only.
-    image: true,
-    label: 'Quote sent',
-    when: 'As soon as you send a quote',
-    // ⚠️ Recommended, and the UI says why rather than just ticking it: a quote nobody sees is an
-    // order that quietly dies, and the baker never learns it was the message that failed.
-    recommended: true,
-    messages: 1,
-    body: 'Hi Asha, {bakery} has sent you a quote for your cake: Rs. 1,499.\n\n'
-        + "Tap below to see the details and accept it. Reply to this message if you'd like to change anything.",
-    button: 'View quote',
-  },
-  {
-    slug: 'order_ready_customer',
-    image: true,
-    label: 'Order ready',
-    when: 'When you mark an order ready',
-    recommended: true,
-    messages: 1,
-    body: 'Hi Asha, your cake from {bakery} is ready.\n\n'
-        + 'Pickup: 20 September 2026, 2:30 PM\n\n'
-        + 'Reply to this message if you need to change anything.',
-    button: null,
-  },
   {
     slug: 'order_placed_customer',
     image: true,
@@ -73,6 +60,20 @@ export const CUSTOMER_MESSAGE_EVENTS = [
     button: 'View order',
   },
   {
+    slug: 'quote_issued_customer',
+    // Image header — table A in plans/whatsapp-templates.md. Drives the preview only.
+    image: true,
+    label: 'Quote sent',
+    when: 'As soon as you send a quote',
+    // ⚠️ Recommended, and the UI says why rather than just ticking it: a quote nobody sees is an
+    // order that quietly dies, and the baker never learns it was the message that failed.
+    recommended: true,
+    messages: 1,
+    body: 'Hi Asha, {bakery} has sent you a quote for your cake: Rs. 1,499.\n\n'
+        + "Tap below to see the details and accept it. Reply to this message if you'd like to change anything.",
+    button: 'View quote',
+  },
+  {
     slug: 'order_confirmed_customer',
     label: 'Order confirmed',
     when: 'When you confirm an order',
@@ -94,6 +95,18 @@ export const CUSTOMER_MESSAGE_EVENTS = [
     body: 'Hi Asha, {bakery} has updated the design for your cake.\n\n'
         + "Tap below to take a look. Reply to this message if you'd like anything changed.",
     button: 'View design',
+  },
+  {
+    slug: 'order_ready_customer',
+    image: true,
+    label: 'Order ready',
+    when: 'When you mark an order ready',
+    recommended: true,
+    messages: 1,
+    body: 'Hi Asha, your cake from {bakery} is ready.\n\n'
+        + 'Pickup: 20 September 2026, 2:30 PM\n\n'
+        + 'Reply to this message if you need to change anything.',
+    button: null,
   },
   {
     slug: 'order_completed_customer',
