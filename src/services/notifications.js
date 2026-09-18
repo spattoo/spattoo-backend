@@ -436,6 +436,26 @@ const TEMPLATE_FIELD_BUILDERS = {
   account_erasure_notice:   readableErasureFields,
 };
 
+/* ── Fields the CODE writes that a STORED payload may not have ───────────────────────────────────
+ *
+ * Admin builds its field picker from the most recent notification of a type. That is usually right
+ * and is self-correcting — but only for fields that were already being written when it was sent.
+ *
+ * ⚠️ ADD A FIELD TO A NOTIFY FUNCTION AND IT IS UNPICKABLE UNTIL ONE MORE IS SENT. Worse than
+ * invisible: `validateChannel` refuses a name that is not in the list, so an admin who types it
+ * correctly is told "not a field this notification carries" about a field that plainly is. Observed
+ * the day `orderId` was added to `order_placed_customer` — the template that most needs it, because
+ * its whole purpose is a URL button whose tail is the order id.
+ *
+ * So the code states what it now writes. Deliberately a SHORT list of fields added after the fact,
+ * not a second copy of every payload: each entry earns its place by having broken something, and
+ * each can be deleted once a notification of that type has been sent in every environment.
+ */
+export const LATE_ADDED_FIELDS = {
+  // 2026-09-18, for the WhatsApp URL button. Every other customer type already carried it.
+  order_placed_customer: ['orderId'],
+};
+
 /* A payload as a template sees it: the stored fields plus the ready-to-show copies, in the baker's time
    zone. For admin's "Send test", which fills a template from a notification that may have been sent
    before those copies existed. */

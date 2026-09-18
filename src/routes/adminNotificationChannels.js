@@ -6,7 +6,7 @@ import { requireCapability } from '../middleware/rbac.js';
 import { pushConfigured } from '../services/fcm.js';
 import { templateSmsConfigured } from '../services/msg91.js';
 import { whatsappConfigured } from '../services/aisensy.js';
-import { addedTemplateFields, withTemplateFields } from '../services/notifications.js';
+import { addedTemplateFields, withTemplateFields, LATE_ADDED_FIELDS } from '../services/notifications.js';
 import { normalizePhone } from '../lib/phone.js';
 import { config } from '../config.js';
 import {
@@ -67,7 +67,16 @@ async function payloadFields(type) {
     .map(([k]) => k);
   // Plus the ready-to-show fields the code now adds for this type. The latest notification may predate
   // them; without this, `planLabel` could not be picked and the save check refused it as unknown.
-  return [...new Set([...stored, ...addedTemplateFields(type.slug, payload)])].sort();
+  //
+  // ⚠️ And the same for RAW fields added to a payload after the last notification was sent —
+  // `LATE_ADDED_FIELDS`. Same failure, different half: `orderId` reached order_placed_customer on
+  // 2026-09-18 and was unpickable, so the URL button on the one template built around it could not be
+  // configured, and typing the name by hand was refused as "not a field this notification carries".
+  return [...new Set([
+    ...stored,
+    ...addedTemplateFields(type.slug, payload),
+    ...(LATE_ADDED_FIELDS[type.slug] ?? []),
+  ])].sort();
 }
 
 // ── GET /api/admin/notification-channels ─────────────────────────────────────────────────────────
