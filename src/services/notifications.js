@@ -5,6 +5,7 @@ import { reminderDedupeKey, isEndedMilestone } from './trialReminders.js';
 import { renewalDedupeKey } from './renewalReminders.js';
 import { titleCase, rupees, dateLabel, calendarDate, clockTime, customerOrderLink, storefrontLink } from '../lib/notificationFormat.js';
 import { config } from '../config.js';
+import { toPublicUrl } from '../lib/publicUrl.js';
 
 async function getTypeId(slug) {
   const { data } = await supabase
@@ -371,7 +372,7 @@ const priceRs = v => {
  *      it, and that is the whole reason the baker uploaded it
  *   2. the design thumbnail — the 3D render, or a manual order's first reference photo
  *   3. the BAKERY'S LOGO — not the cake, but still theirs
- *   4. a standard fallback (config.fallbackPictureUrl)
+ *   4. a standard fallback (config.fallbackPictureKey, expanded against our own bucket)
  *
  * ⚠️ WHY FOUR AND NOT TWO. A WhatsApp image header MUST be given an image; there is no degrading to
  * text. And an order's own picture is NOT guaranteed — a manual order has no design and its reference
@@ -385,7 +386,7 @@ const priceRs = v => {
  */
 function readablePicture(p) {
   const first = Array.isArray(p?.photoUrls) ? p.photoUrls.find(Boolean) : null;
-  return { pictureUrl: first ?? p?.thumbnailUrl ?? p?.bakerLogoUrl ?? config.fallbackPictureUrl ?? null };
+  return { pictureUrl: first ?? p?.thumbnailUrl ?? p?.bakerLogoUrl ?? toPublicUrl(config.fallbackPictureKey) ?? null };
 }
 
 function readableCustomerLink(p) {

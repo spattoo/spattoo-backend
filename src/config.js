@@ -371,7 +371,14 @@ export const config = {
   // ⚠️ Choose the image with the branding problem in mind (plans/whose-name-is-on-the-message.md): it
   // appears above a message the BAKER paid to send, under their bakery's name. A neutral cake, not a
   // Spattoo logo.
-  fallbackPictureUrl: process.env.NOTIFICATION_FALLBACK_IMAGE_URL || null,
+  //
+  // ⚠️ A KEY, NOT A URL — "brand/message-fallback.png". We store keys and expand them on the way out
+  // (lib/publicUrl.js: "baking it into a row would rot every one of them the day the bucket or its
+  // domain moves"), and R2_PUBLIC_URL is already required, so a full URL here would restate config we
+  // hold twice and make dev and prod need DIFFERENT values for the same picture. As a key both
+  // environments take the identical string and resolve it against their own bucket.
+  // toPublicUrl passes an absolute URL straight through, so an image hosted elsewhere still works.
+  fallbackPictureKey: process.env.NOTIFICATION_FALLBACK_IMAGE_KEY || null,
   // Marketing site base URL. The legal documents are AUTHORED there (apps/marketing/content/legal),
   // and GET /api/admin/legal/preview fetches their canonical text from it so the admin publish
   // screen freezes exactly what the site serves rather than something retyped by hand.
