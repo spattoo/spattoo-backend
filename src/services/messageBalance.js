@@ -87,6 +87,21 @@ export async function listMessagePacks() {
  *
  * ⚠️ Fetches `limit + 1` so the caller can say whether there is more WITHOUT a second count query —
  * a count over a growing ledger is the query that gets slow first.
+ *
+ * ⚠️ KNOWN: THE CURSOR IS `created_at` ALONE, SO ROWS SHARING AN INSTANT CAN BE SKIPPED. `now()` in
+ * Postgres is TRANSACTION time, so several rows written in one statement get an identical timestamp —
+ * and `.lt(created_at, before)` then steps over the whole tie, not past one row of it. Observed while
+ * testing 098: three probe rows inserted together all shared a microsecond.
+ *
+ * It does not bite today. Each debit is its own write, so production ties need two sends in the same
+ * microsecond. It WILL bite the first time something writes a batch — a digest spending several
+ * messages at once, or a bulk adjustment — and the symptom is a "load more" that quietly omits rows
+ * rather than anything failing.
+ *
+ * The fix is a composite cursor, `(created_at, id)`:
+ *   .or(`created_at.lt.${ts},and(created_at.eq.${ts},id.lt.${id})`)
+ * Left undone deliberately: the ledger view is not built yet, and a cursor format is worth choosing
+ * once, with the screen that pages it, rather than twice.
  */
 export async function listMessageHistory(bakerId, { limit = 25, before = null } = {}) {
   let q = supabase
