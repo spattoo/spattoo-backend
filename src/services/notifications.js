@@ -158,6 +158,9 @@ export async function notifyQuoteIssued({ order, baker, customer }) {
     bakerName:         baker.name,
     bakerSlug:         baker.slug ?? null,
     orderId:           order.id,
+    // The cake itself. A quote with a picture of what is being quoted is a different message from
+    // one without, and this payload carried none.
+    thumbnailUrl:      order.design_thumbnail_url ?? null,
     quotedPrice:       order.quoted_price ?? null,
     quoteValidUntil:   order.quote_valid_until ?? null,
     advanceAmount:     order.advance_amount ?? null,
@@ -348,6 +351,24 @@ const priceRs = v => {
  * Null when there is no slug — `validateChannel` lets admin map a variable to it either way, and the
  * sender skips a template whose variable came back empty rather than sending a message with a hole.
  */
+/* ── The ONE picture a WhatsApp header can show ──────────────────────────────────────────────────
+ *
+ * ⚠️ `photoUrls` CANNOT BE USED DIRECTLY, and the failure is silent-but-total: `fieldValue` returns
+ * null for an array ("a list or an object cannot fill a line of text"), which lands the field in
+ * `missing`, which SKIPS THE WHOLE MESSAGE. A template configured with `image_field: photoUrls` would
+ * simply never send, and the outbox reason would say the notification "has no photoUrls" while the
+ * payload plainly has three.
+ *
+ * So this picks one. The finished-cake PHOTO first — on "your cake is ready" a picture of the real
+ * cake beats a render of it, and that is the whole reason the baker uploaded it — falling back to the
+ * design thumbnail, which every order has. Null when there is neither, and a null image field skips
+ * the send, so an image-header template must only be used where one of the two is certain.
+ */
+function readablePicture(p) {
+  const first = Array.isArray(p?.photoUrls) ? p.photoUrls.find(Boolean) : null;
+  return { pictureUrl: first ?? p?.thumbnailUrl ?? null };
+}
+
 function readableCustomerLink(p) {
   return {
     // The order: ONE fixed host, so it can be a WhatsApp button and a single DLT whitelist entry.
@@ -380,15 +401,15 @@ function readableErasureFields(p, timeZone) {
 const TEMPLATE_FIELD_BUILDERS = {
   ...Object.fromEntries([...SUBSCRIPTION_NOTIFICATION_TYPES].map(t => [t, readableSubscriptionFields])),
   order_placed_baker:       readableOrderFields,
-  order_placed_customer:    readableOrderFields,
+  order_placed_customer:    p => ({ ...readableOrderFields(p), ...readablePicture(p) }),
   quote_accepted_baker:     readableQuoteFields,
   /* Customer-facing: the quote copies PLUS the link, because these are the ones a WhatsApp template
      sends someone to. `design_updated`, `order_ready` and `order_completed` have no price to make
      readable and take the link alone. */
-  quote_issued_customer:    p => ({ ...readableQuoteFields(p), ...readableCustomerLink(p) }),
-  order_confirmed_customer: p => ({ ...readableQuoteFields(p), ...readableCustomerLink(p) }),
+  quote_issued_customer:    p => ({ ...readableQuoteFields(p), ...readableCustomerLink(p), ...readablePicture(p) }),
+  order_confirmed_customer: p => ({ ...readableQuoteFields(p), ...readableCustomerLink(p), ...readablePicture(p) }),
   design_updated_customer:  readableCustomerLink,
-  order_ready_customer:     p => ({ ...readableOrderFields(p), ...readableCustomerLink(p) }),
+  order_ready_customer:     p => ({ ...readableOrderFields(p), ...readableCustomerLink(p), ...readablePicture(p) }),
   order_completed_customer: readableCustomerLink,
   delivery_digest_baker:    readableDigestFields,
   credits_low:              readableCreditsFields,

@@ -1383,7 +1383,7 @@ router.post('/orders/:id/quote', requireAuth, requireCapability('order:manage'),
       .eq('auth_user_id', req.user.id).maybeSingle();
     if (!appUser) return res.status(403).json({ error: 'Not a baker account' });
 
-    const existingRow = await assertBakerOwns(req, 'orders', req.params.id, { select: 'status_id, current_version_id, order_statuses ( key ), bakers(name, slug), customers(email, phone, first_name)' });
+    const existingRow = await assertBakerOwns(req, 'orders', req.params.id, { select: 'status_id, current_version_id, design_thumbnail_url, order_statuses ( key ), bakers(name, slug), customers(email, phone, first_name)' });
     if (!existingRow) return res.status(404).json({ error: 'Order not found' });
     const existing = withStatusKey(existingRow);
 
@@ -1422,7 +1422,8 @@ router.post('/orders/:id/quote', requireAuth, requireCapability('order:manage'),
     });
 
     notifyQuoteIssued({
-      order:    { id: req.params.id, quoted_price: priceNum, quote_valid_until: validUntil ?? null, advance_amount: advanceNum, quote_note: (note ?? '').toString().trim() || null },
+      order:    { id: req.params.id, quoted_price: priceNum, quote_valid_until: validUntil ?? null, advance_amount: advanceNum, quote_note: (note ?? '').toString().trim() || null,
+                  design_thumbnail_url: toPublicUrl(existing.design_thumbnail_url) },
       baker:    existing.bakers ?? {},
       customer: existing.customers ?? {},
     }).catch(err => console.error('[notifications] quote issued failed:', err.message));
