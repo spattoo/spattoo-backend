@@ -344,14 +344,25 @@ router.get('/storefront/:slug/order-channel/:orderId', async (req, res) => {
     const customer = Array.isArray(data?.customers) ? data.customers[0] : data?.customers;
     if (!customer) return fallback();
 
-    // Phone first when we hold both: the message that brought them here was a WhatsApp or an SMS, so
-    // the phone is the one they have just proved they read.
-    const has = [
-      ...(customer.phone ? ['sms'] : []),
-      ...(customer.email ? ['email'] : []),
-    ].filter(c => allowed.includes(c));
+    /* ⚠️ ONE CHANNEL, NOT A LIST OF THE ONES THEY HAVE. Returning both when we hold both puts the
+       "Email me / Text me" pair straight back on the screen, which is the confusion this route was
+       added to remove — and on the live dev baker EVERY customer has both, so "the server decides"
+       would have changed nothing anybody could see.
+       Sandeep, 2026-09-19: "lets ask only phone number from customers - email and phone is confusing."
 
-    return res.json({ channels: has.length ? has : allowed });
+       Phone wins when we hold both: the message that brought them here went to a phone, so it is the
+       one they have just proved they read.
+
+       ⚠️ THE COST, STATED: a customer whose number has changed can no longer fall back to email from
+       this screen. They are not locked out of anything they own — the order link still lands them on
+       the shop front, where the bakery's own contact details are — but it IS a door that used to have
+       two handles. Making it two again is a one-line change here, and it is a product decision rather
+       than a technical one. */
+    const order = ['sms', 'email'];
+    const reachable = order.filter(c =>
+      allowed.includes(c) && (c === 'sms' ? !!customer.phone : !!customer.email));
+
+    return res.json({ channels: reachable.length ? [reachable[0]] : allowed });
   } catch (err) {
     serverError(req, res, err);
   }
