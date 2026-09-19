@@ -92,7 +92,7 @@ export const CUSTOMER_MESSAGE_EVENTS = [
     // needs to know before ticking it — the others cost one message and are done.
     messages: 1,
     repeats: true,
-    body: 'Hi Asha, {bakery} has updated the design for your cake.\n\n'
+    body: 'Hi Asha, {bakery} has updated your cake design.\n\n'
         + 'Tap below to take a look.',
     button: 'View design',
   },
