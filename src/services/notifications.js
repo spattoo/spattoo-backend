@@ -509,6 +509,9 @@ const SAMPLE_VALUES = {
   amount:            499,
   walletBalance:     250,
   paymentId:         'pay_sample',
+  // Razorpay's own hosted retry link (subscription.short_url). A real one is rzp.io/…, which is
+  // why it can never be a WhatsApp URL button: those are one fixed base plus a suffix.
+  shortUrl:          'https://rzp.io/i/sample',
   eraseAfter:        '2026-12-31',
   planName:          'Blaze',
   renewsOn:          '2026-12-31',
@@ -541,6 +544,12 @@ export const NOTIFICATION_PAYLOAD_FIELDS = {
      Checkout knows plan + period + GST together, so a reminder quoting its own figure can be wrong
      in a message about money. `when` is the ready-to-read one: "today" / "tomorrow" / "in 5 days". */
   subscription_renewing:    ['bakerName', 'planName', 'renewsOn', 'days', 'when'],
+  /* Built inline by the billing webhook — notifyPaymentFailed(baker, { planName, shortUrl })
+     at routes/billing.js. ⚠️ That is ALL it carries: no amount, no dates, so
+     readableSubscriptionFields adds `planLabel` and nothing else. Map planLabel, never the raw
+     planName, which prints "blaze". ⚠️ shortUrl is Razorpay-hosted and NULLABLE, so it must not
+     be a template variable — a null would send a blank into the middle of a sentence. */
+  payment_failed:           ['bakerName', 'planName', 'shortUrl'],
 };
 
 export const LATE_ADDED_FIELDS = {

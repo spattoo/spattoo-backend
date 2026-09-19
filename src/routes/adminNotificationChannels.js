@@ -65,9 +65,17 @@ async function payloadFields(type) {
   // Never sent? Fall back to what the code says this type carries, so the picker still offers a list
   // instead of asking someone to type field names from memory.
   if (!payload) {
+    const base = NOTIFICATION_PAYLOAD_FIELDS[type.slug] ?? [];
+    /* ⚠️ addedTemplateFields has to be asked with a payload SHAPED like a real one, not {}.
+     * Every readable builder gates on the raw key being present — readableSubscriptionFields adds
+     * planLabel only `if ('planName' in payload)` — so asking with an empty object answers "this
+     * type has no readable fields at all". For a type that has never been sent that is silently
+     * wrong: payment_failed would offer no planLabel, and mapping the raw planName prints "blaze"
+     * instead of "Blaze". The keys are what the builders test, so null values are enough. */
+    const shaped = Object.fromEntries(base.map(f => [f, null]));
     return [...new Set([
-      ...(NOTIFICATION_PAYLOAD_FIELDS[type.slug] ?? []),
-      ...addedTemplateFields(type.slug, {}),
+      ...base,
+      ...addedTemplateFields(type.slug, shaped),
       ...(LATE_ADDED_FIELDS[type.slug] ?? []),
     ])].sort();
   }
