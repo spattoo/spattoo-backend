@@ -510,6 +510,10 @@ const SAMPLE_VALUES = {
   walletBalance:     250,
   paymentId:         'pay_sample',
   eraseAfter:        '2026-12-31',
+  planName:          'Blaze',
+  renewsOn:          '2026-12-31',
+  days:              5,
+  when:              'in 5 days',
   thumbnailUrl:      null,
   bakerLogoUrl:      null,
   photoUrls:         [],
@@ -533,6 +537,10 @@ export const NOTIFICATION_PAYLOAD_FIELDS = {
   order_completed_customer: ['customerFirstName', 'bakerName', 'bakerLogoUrl', 'bakerSlug', 'orderId', 'thumbnailUrl'],
   order_placed_baker:       ['bakerId', 'customerFirstName', 'bakerName', 'bakerLogoUrl', 'bakerSlug', 'orderId', 'thumbnailUrl'],
   quote_accepted_baker:     ['customerName', 'orderId', 'finalPrice'],
+  /* Built by renewalPayload (services/renewalReminders.js), not inline here. ⚠️ NO AMOUNT — only
+     Checkout knows plan + period + GST together, so a reminder quoting its own figure can be wrong
+     in a message about money. `when` is the ready-to-read one: "today" / "tomorrow" / "in 5 days". */
+  subscription_renewing:    ['bakerName', 'planName', 'renewsOn', 'days', 'when'],
 };
 
 export const LATE_ADDED_FIELDS = {
