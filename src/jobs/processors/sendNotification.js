@@ -428,7 +428,15 @@ export function buildEmail(typeSlug, recipientEmail, payload) {
   // ── Subscription lifecycle (baker-facing, Spattoo-branded) ──────────────────
   // from = Spattoo (config.smtp.from) — these are platform→baker, not baker-branded.
   const plan       = titleCase(p.planName) || 'your';
-  const billingUrl = config.app.url ? `${config.app.url.replace(/\/+$/, '')}/settings/billing` : null;
+  /* ⚠️ `/?panel=billing`, NOT `/settings/billing`. The latter 404s — verified against both
+     app.spattoo.dev and app.spattoo.com — because the baker app is ONE PAGE and billing is a
+     panel on it, not a route. notifications/notificationLink.js has said so since it was
+     written ("the baker app is one page — the order list is a panel") and its test asserts
+     `/?panel=billing`. This line was the only place that disagreed, and it fed the "Manage
+     your plan" button on EVERY subscription email: activated, renewed, cancelled, expired,
+     renewing, the trial reminders, and payment_failed's fallback. Every one of them landed a
+     baker on a 404. */
+  const billingUrl = config.app.url ? `${config.app.url.replace(/\/+$/, '')}/?panel=billing` : null;
   // Shared brand-green CTA button (matches the welcome/verify/invite look).
   const ctaBtn = (href, label) => `<p style="margin:24px 0 0;text-align:center;"><a href="${href}" style="display:inline-block;background:#2C4433;color:#ffffff;text-decoration:none;font-size:16px;font-weight:700;padding:14px 34px;border-radius:12px;">${label} &rarr;</a></p>`;
   const billingCta = billingUrl ? ctaBtn(escUrl(billingUrl), 'Manage your plan') : '';
