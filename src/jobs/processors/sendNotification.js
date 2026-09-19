@@ -666,9 +666,9 @@ export function buildEmail(typeSlug, recipientEmail, payload) {
            Your ${plan} renews ${when}
          </h2>
          <p>Hi${hiName} — this is just a heads-up. Your ${plan} is set to renew on
-            <strong>${esc(p.renewsOn)}</strong> and there is nothing you need to do.</p>
-         <p>If the payment method on file has changed or expired, updating it before then is what
-            keeps the renewal from failing.</p>
+            <strong>${esc(p.renewsOn)}</strong> and it will be billed automatically.</p>
+         <p>Please keep enough balance in your account. If the payment method on file has changed or
+            expired, updating it before then is what keeps the renewal from failing.</p>
          ${billingCta}
          <p style="color:#6b6b6b;font-size:13px;">If you have already cancelled, this one is out of
             date — ignore it.</p>`),
