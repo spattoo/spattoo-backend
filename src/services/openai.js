@@ -991,6 +991,19 @@ Rules:
 // every baker. Validated by the caller — an unrecognised value would be rejected by the provider,
 // and worse, would be recorded at the wrong price.
 export async function generateDecorationStages(referenceBuffer, { title, steps = [], size = '1024x1536', dimension = null, quality = null } = {}) {
+  /* ⚠️ RESOLVED ONCE, INTO A LOCAL — and the local is why this broke.
+   *
+   * 2e7a89d introduced a per-intent `imageModel` local in generateDecorationImage and editImage and
+   * rewrote `form.append('model', config.openai.imageModel)` here to match — but this function never
+   * declared one. A bare identifier, so `imageModel is not defined` at RUNTIME, every time, from
+   * 2026-09-03 onward. The guides that already had a sheet were all generated before that date,
+   * which is exactly why it looked like one bad element rather than a broken function.
+   *
+   * The stages sheet has no intent of its own (the map is empty and every intent resolves to the
+   * global anyway), so it takes the global — but through a named local, so the model that is SENT,
+   * the model the capability gates are asked about, and the model a failure NAMES are one value.
+   * Three separate reads of `config.openai.imageModel` is how they come apart. */
+  const imageModel = config.openai.imageModel;
   const imageQuality = quality || config.openai.guideImageQuality;
   const readable = (t) => String(t ?? '').replace(/\{(\w+)\}/g, (_, r) => r.replace(/_/g, ' '));
   const stepList = (steps ?? []).map((st, i) => {
@@ -1055,7 +1068,19 @@ export async function generateDecorationStages(referenceBuffer, { title, steps =
   form.append('size', size);
   form.append('quality', imageQuality);
   form.append('output_format', 'webp');
-  form.append('input_fidelity', 'high');
+  /* ⚠️ GUARDED, like the sibling call — it was sent unconditionally here.
+   *
+   * gpt-image-2 REJECTS `input_fidelity` rather than ignoring it, so on that model this request
+   * fails outright. config.js already records that exact failure happening once
+   * ("every reference-mode call was a rejected request ... nobody would have known until a baker
+   * pressed the button") and generateDecorationImage was fixed for it; this call was missed, so
+   * setting OPENAI_IMAGE_MODEL=gpt-image-2 would have taken the guide sheet down with no warning.
+   *
+   * It matters here for the same reason it matters there: the sheet must illustrate THIS
+   * decoration, not the model's idea of one. Omitting it is not equivalent to sending it — the
+   * request succeeds at the model's default fidelity, which is a real behavioural difference and
+   * has to be judged by looking at a sheet, not assumed. */
+  if (modelSupportsInputFidelity(imageModel)) form.append('input_fidelity', 'high');
   form.append('n', '1');
 
   const res = await fetch('https://api.openai.com/v1/images/edits', {
@@ -1064,10 +1089,10 @@ export async function generateDecorationStages(referenceBuffer, { title, steps =
     body: form,
   });
 
-  if (!res.ok) throw new Error(`${config.openai.imageModel} stages failed: ${await res.text()}`);
+  if (!res.ok) throw new Error(`${imageModel} stages failed: ${await res.text()}`);
   const data = await res.json();
   const b64 = data?.data?.[0]?.b64_json;
-  if (!b64) throw new Error(`${config.openai.imageModel} returned no image data`);
+  if (!b64) throw new Error(`${imageModel} returned no image data`);
   return {
     buffer: Buffer.from(b64, 'base64'),
     // WHAT WE ASKED FOR, not what came back. Images are billed per image by quality and shape, and
@@ -1080,6 +1105,8 @@ export async function generateDecorationStages(referenceBuffer, { title, steps =
     // Kept when the provider does return it — useful for reconciling against the real invoice,
     // and harmless: imageCostInr takes precedence for an image call.
     usage:  data?.usage ?? null,
-    model:  config.openai.imageModel,
+    // The local, so the ledger records the model that RAN — not a second read of config that a
+    // future per-intent override would silently make disagree with the request above.
+    model:  imageModel,
   };
 }

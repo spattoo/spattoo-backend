@@ -205,6 +205,11 @@ router.get('/admin/templates', requireAuth, requireCapability('catalog:admin'), 
     // it — a baker's template cannot be exported (the closure takes global rows only) and cannot be
     // published unless that bakery authors the catalogue. Without the owner the screen offers both
     // and finds out by 404.
+    //
+    // NEWEST FIRST, not sort_order. sort_order is the STOREFRONT's order; here it buried the template
+    // an admin had just saved somewhere in a list of 27. created_at is enough, with no updated_at:
+    // editing a template saves a new copy rather than changing the row, so a new row IS the latest
+    // change. `id` breaks ties so rows created in the same instant keep a stable order.
     const { data, error } = await supabase
       .from('cake_templates')
       // The FK is NAMED because cake_templates reaches bakers two ways — the owner
@@ -212,7 +217,8 @@ router.get('/admin/templates', requireAuth, requireCapability('catalog:admin'), 
       // (baker_template_exclusions). PostgREST will not guess between them: a bare `bakers(...)`
       // is PGRST201 and a 500 on the whole screen. Wanted here is the owner.
       .select(`${TEMPLATE_FIELDS}, ${TEMPLATE_FILTER_JOIN}, bakers!cake_templates_baker_id_fkey(name, is_catalog_author)`)
-      .order('sort_order');
+      .order('created_at', { ascending: false, nullsFirst: false })
+      .order('id');
 
     if (error) return serverError(req, res, error);
     res.json(data.map(({ bakers, ...t }) => withTagsAndAttrs({

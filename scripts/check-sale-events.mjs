@@ -23,7 +23,7 @@
 // No env stubbing and no import graph: saleEventPayloads.js imports NOTHING, deliberately. The
 // first version of this gate imported billingEvents.js instead, which starts supabase, the mailer
 // and Redis — it printed its result and then hung forever retrying connections to a stub host.
-import { creditPackSalePayload, SUBSCRIPTION_ONLY_FIELDS }
+import { creditPackSalePayload, messagePackSalePayload, SUBSCRIPTION_ONLY_FIELDS }
   from '../src/services/saleEventPayloads.js';
 
 let failures = 0;
@@ -81,6 +81,51 @@ ok('service_period_end' in p && p.service_period_end === null,
 // against Razorpay by this id and cannot see our outbox column.
 ok(p.razorpay_payment_id === 'pay_TESTpack01', 'the payment id is in the payload');
 ok(p.razorpay_order_id === 'order_TESTpack01', 'the order id is carried (a pack is an order)');
+
+
+// ── 4. A MESSAGE pack, which is the same trap wearing a different unit ───────
+//
+// ⚠️ ADDED WITH THE FEATURE, NOT AFTER IT. This gate exists because credit-pack sales emitted
+// NOTHING for their entire existence — money in, no accounting event, no invoice — and nobody
+// noticed because nothing failed. Message packs are a second pack sale on the same rails, so they
+// get the same assertions in the same commit rather than waiting for the same discovery.
+const msgPayment = { id: 'pay_TESTmsg01', order_id: 'order_TESTmsg01', amount: 11800, currency: 'INR' };
+const msgPack    = { id: 2, pack_key: 'msg_225', label: 'Standard', messages: 225, price_paise: 10000 };
+
+const m = messagePackSalePayload({ payment: msgPayment, pack: msgPack, chargedAt, recipient });
+
+ok(m && typeof m === 'object', 'a message pack sale builds a payload');
+ok(m.sale_kind === 'message_pack', 'it is discriminated as a message pack', `got ${m.sale_kind}`);
+ok(m.gross_amount_paise === 11800, 'gross is the GST-INCLUSIVE amount charged', `got ${m.gross_amount_paise}`);
+ok(m.pack_key === 'msg_225', 'the pack key identifies the supply');
+ok(m.pack_label === 'Standard', 'the label is the baker\'s own words for it');
+ok(m.charged_at === chargedAt, 'charged_at is the capture time');
+ok(m.recipient === recipient, 'the recipient snapshot is carried verbatim');
+
+// ⚠️ THE UNIT. "225 credits" on an invoice for a message pack is a support ticket: the baker checks
+// their credit balance, finds it unchanged, and concludes they paid for nothing.
+ok(m.messages === 225, 'the quantity is stated in MESSAGES', `got ${m.messages}`);
+ok(!('credits' in m), 'it does NOT say credits — wrong unit on a legal document');
+
+// The gross follows the payment, for the same reason it does on a credit pack.
+const msgRepriced = messagePackSalePayload({
+  payment: { ...msgPayment, amount: 5900 }, pack: msgPack, chargedAt, recipient,
+});
+ok(msgRepriced.gross_amount_paise === 5900,
+   'message gross follows the payment, not the current shelf price', `got ${msgRepriced.gross_amount_paise}`);
+
+// ⚠️ Never the BASE as a fallback. message_packs.price_paise is GST-exclusive: passing it would tell
+// accounting ₹100 was collected when ₹118 was, understating the sale by the entire tax.
+const noAmount = messagePackSalePayload({
+  payment: { id: 'p', order_id: 'o' }, pack: msgPack, chargedAt, recipient,
+});
+ok(noAmount.gross_amount_paise === 0,
+   'a payment with no amount reports 0, never the pack base', `got ${noAmount.gross_amount_paise}`);
+
+// And no subscription vocabulary, exactly as for a credit pack.
+for (const f of SUBSCRIPTION_ONLY_FIELDS) {
+  ok(!(f in m), `a message pack payload has no ${f}`);
+}
 
 if (failures) {
   console.error(`\n✗ check:sale-events — ${failures} failure(s)`);

@@ -1,5 +1,6 @@
 import express from 'express';
 import cors from 'cors';
+import orderLinkRouter from './routes/orderLink.js';
 import healthRouter from './routes/health.js';
 import demoRequestRouter from './routes/demoRequest.js';
 import elementsRouter from './routes/elements.js';
@@ -34,8 +35,10 @@ import legalRouter from './routes/legal.js';
 import accountRouter from './routes/account.js';
 import designSessionsRouter from './routes/designSessions.js';
 import aiCreditsRouter from './routes/aiCredits.js';
+import messageBalanceRouter from './routes/messageBalance.js';
 import xraySpecRouter from './routes/xraySpec.js';
 import ediblePrintsRouter from './routes/ediblePrints.js';
+import adminNotificationChannelsRouter from './routes/adminNotificationChannels.js';
 import { requestId } from './middleware/requestId.js';
 import { errorHandler } from './middleware/errorHandler.js';
 import { requireAuth } from './middleware/auth.js';
@@ -69,6 +72,9 @@ app.use(express.json({ limit: '5mb' }));
 app.use('/api/admin', requireAuth, requireAdmin);
 
 app.use(healthRouter);
+// The customer-facing order link, `/o/:orderId`. Mounted at the ROOT, not under /api: the marketing
+// site rewrites `www.spattoo.com/o/*` here, and the path a customer sees is the path we serve.
+app.use(orderLinkRouter);
 // Public, unauthenticated, and rate-limited at the route — the marketing site's demo form.
 // Mounted with the rest rather than under /api/admin precisely because it is NOT privileged.
 app.use('/api', demoRequestRouter);
@@ -93,6 +99,7 @@ app.use('/api', meshyRouter);
 app.use('/api', printSheetsRouter);
 app.use('/api', deviceTokensRouter);
 app.use('/api', notificationsRouter);
+app.use('/api', adminNotificationChannelsRouter);   // which channels each notification uses (admin)
 app.use('/api', webhooksRouter);
 app.use('/api', inspirationRouter);
 app.use('/api', elementExtractRouter);
@@ -104,6 +111,7 @@ app.use('/api', legalRouter);
 app.use('/api', accountRouter);
 app.use('/api', designSessionsRouter);
 app.use('/api', aiCreditsRouter);
+app.use('/api', messageBalanceRouter);
 app.use('/api', xraySpecRouter);
 app.use('/api', ediblePrintsRouter);
 

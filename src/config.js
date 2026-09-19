@@ -281,6 +281,12 @@ export const config = {
     // `v1,whsec_<base64>`. Stored verbatim; the `v1,whsec_` prefix is stripped at verify time.
     hookSecret: process.env.SEND_SMS_HOOK_SECRET,
   },
+  // Outbound WhatsApp — AiSensy's campaign API, behind services/aisensy.js. Optional like sms: unset,
+  // every WhatsApp channel switched on in admin is skipped and says why, and nothing else changes.
+  // Which campaign each notification uses is admin data (notification_channels), not config.
+  whatsapp: {
+    aisensyApiKey: process.env.AISENSY_API_KEY,
+  },
   // Error telemetry. DSN is optional (like meshy/razorpay) so local boot never
   // fails without it — telemetry falls back to structured console logging.
   // The vendor lives behind src/lib/telemetry.js; swapping Sentry for GlitchTip
@@ -350,6 +356,29 @@ export const config = {
   // Baker-facing app base URL, for deep links in lifecycle emails (billing/settings). Optional —
   // the email CTA is omitted when unset, so no broken links. e.g. https://app.spattoo.com
   app: { url: process.env.APP_URL || '' },
+  // ── The picture a customer notification shows when the order has none ──────────────────────────
+  // A WhatsApp template with an image header MUST be given a header image; there is no degrading to
+  // a text message. So the picture has to be guaranteed, and an order's own picture is not: a manual
+  // order has no design and its reference photos are optional (routes/orders.js — `designThumbnailKey
+  // ?? refKeys[0] ?? null`), and `bakers.logo_url` is nullable too. Without a last resort, a baker who
+  // took a phone order without snapping a photo would have their customer silently receive NOTHING.
+  //
+  // UNSET IS SAFE, and deliberately so: `pictureUrl` then resolves to null exactly as before, the send
+  // is skipped with a reason, and nothing changes. Set it, and an image-header template becomes safe
+  // to use. ⚠️ It must be publicly reachable and a JPEG or PNG — AiSensy fetches it, and WhatsApp
+  // refuses anything else in a header.
+  //
+  // ⚠️ Choose the image with the branding problem in mind (plans/whose-name-is-on-the-message.md): it
+  // appears above a message the BAKER paid to send, under their bakery's name. A neutral cake, not a
+  // Spattoo logo.
+  //
+  // ⚠️ A KEY, NOT A URL — "brand/message-fallback.png". We store keys and expand them on the way out
+  // (lib/publicUrl.js: "baking it into a row would rot every one of them the day the bucket or its
+  // domain moves"), and R2_PUBLIC_URL is already required, so a full URL here would restate config we
+  // hold twice and make dev and prod need DIFFERENT values for the same picture. As a key both
+  // environments take the identical string and resolve it against their own bucket.
+  // toPublicUrl passes an absolute URL straight through, so an image hosted elsewhere still works.
+  fallbackPictureKey: process.env.NOTIFICATION_FALLBACK_IMAGE_KEY || null,
   // Marketing site base URL. The legal documents are AUTHORED there (apps/marketing/content/legal),
   // and GET /api/admin/legal/preview fetches their canonical text from it so the admin publish
   // screen freezes exactly what the site serves rather than something retyped by hand.

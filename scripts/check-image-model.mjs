@@ -113,8 +113,66 @@ for (const intent of GENERATION_INTENTS) {
      `intent \`${intent}\` can be asked both capability questions about ${m}`);
 }
 
+/* ── AND THE CALL SITES, not just the resolvers ──────────────────────────────────────────────────
+ *
+ * ⚠️ EVERYTHING ABOVE PASSED WHILE generateDecorationStages WAS DEAD.
+ *
+ * 2e7a89d gave generateDecorationImage and editImage a per-intent `imageModel` local and rewrote the
+ * stages call's `form.append('model', config.openai.imageModel)` to match — into a function that
+ * declares no such local. A bare identifier: `imageModel is not defined`, thrown on EVERY call from
+ * 2026-09-03 on. Nobody generated a decoration guide for ten days, so the first build after the
+ * break was the first symptom, and it read as one bad element rather than a dead function.
+ *
+ * The same edit left `input_fidelity` unguarded there — the exact parameter config.js records
+ * gpt-image-2 rejecting, already fixed once in the sibling function.
+ *
+ * Both are call-site facts, and every assertion above is about a RESOLVER. So this reads the source:
+ * the resolvers being correct says nothing about whether a call uses them. (A bindings check would
+ * also have caught the first one — spattoo-admin has `check:bindings` and this repo does not, which
+ * is worth knowing and is a bigger job than this gate.)
+ */
+const { readFileSync } = await import('node:fs');
+/* ⚠️ COMMENTS STRIPPED FIRST, and this gate learned that the hard way: written naively it matched
+ * the first `form.append('model', …)` in each function — which, in the very function it was built
+ * for, was the one QUOTED IN THE COMMENT ABOVE THE FIX. It read the prose describing the bug,
+ * found a `config.openai.` prefix there, and passed. A source-reading gate that counts comments as
+ * code can be satisfied by writing about the problem instead of fixing it. */
+const stripComments = (src) => src.replace(/\/\*[\s\S]*?\*\//g, '').replace(/(^|[^:])\/\/.*$/gm, '$1');
+const SRC = stripComments(readFileSync(new URL('../src/services/openai.js', import.meta.url), 'utf8'));
+
+// Split on top-level function declarations so a name can be checked against the body that uses it.
+const bodies = [];
+const declRe = /(?:export\s+)?(?:async\s+)?function\s+(\w+)\s*\(/g;
+for (let m; (m = declRe.exec(SRC)); ) {
+  declRe.lastIndex = m.index + m[0].length;
+  const next = new RegExp(declRe.source, 'g');
+  next.lastIndex = declRe.lastIndex;
+  const after = next.exec(SRC);
+  bodies.push({ name: m[1], body: SRC.slice(m.index, after ? after.index : SRC.length) });
+}
+ok(bodies.length > 0, 'the gate can find the functions in openai.js');
+
+for (const { name, body } of bodies) {
+  // A model sent to the provider must be a value this function RESOLVED — a local it declares, or
+  // the config read itself. A bare identifier from a sibling function is the bug this exists for.
+  // EVERY append, not the first — one function can build more than one request, and a gate that
+  // stops at the first match passes on the strength of an unrelated line.
+  for (const sends of body.matchAll(/form\.append\(\s*'model'\s*,\s*([^)]+?)\s*\)/g)) {
+    const expr = sends[1].trim();
+    const declared = new RegExp(`const\\s+${expr.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\s*=`).test(body);
+    ok(declared || expr.startsWith('config.openai.'),
+       `${name} sends a model it actually resolved`, `sends \`${expr}\`, which this function never declares`);
+  }
+  // input_fidelity is rejected outright by gpt-image-2, so it may only go out behind the capability
+  // question — asked in the same body that sends it.
+  if (/form\.append\(\s*'input_fidelity'/.test(body)) {
+    ok(/modelSupportsInputFidelity\s*\(/.test(body),
+       `${name} asks before sending input_fidelity`, 'sent unconditionally — gpt-image-2 rejects the request');
+  }
+}
+
 if (failures) {
   console.error(`\n✗ check:image-model — ${failures} rule(s) broken.`);
   process.exit(1);
 }
-console.log('✓ check:image-model — every intent on the global model, and BOTH capability gates follow the resolved model');
+console.log('✓ check:image-model — every intent on the global model, BOTH capability gates follow the resolved model, and every call site sends a model it resolved');

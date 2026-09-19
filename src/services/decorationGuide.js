@@ -91,6 +91,17 @@ export async function buildElementGuide(el, { ownerBakerId = null, quality = nul
   // Best-effort: the words are the product and the picture is the improvement, so an image failure
   // must not throw away a guide that is otherwise complete — and, on the baker-paid path, one they
   // are about to be charged for.
+  /* ⚠️ The REASON is carried out, not just logged.
+   *
+   * Best-effort was right and silent was not. When this step failed, `stages_key` went in as null,
+   * the route answered `{ ok: true }`, and the panel simply drew no picture — so a PAID step that
+   * failed looked identical to one that was never asked for. Reported as "it's only generating
+   * text", and the only place the answer existed was a Render log line nobody can reach from the
+   * screen that spent the money.
+   *
+   * A rebuild is the obvious next move and the reason decides whether it is worth making: a
+   * provider timeout will pass on a retry, a moderation refusal on the artwork never will. */
+  let imageError = null;
   const stages = await renderStageImage({
     sourceKey: imageKey,                 // an element image IS the isolated decoration; no crop
     objectKey: elementStagesKey(el.id),
@@ -101,7 +112,8 @@ export async function buildElementGuide(el, { ownerBakerId = null, quality = nul
     dimension,
     quality,
   }).catch(err => {
-    console.warn(`[decoration-guide] stage image failed for ${el.id}, guide kept:`, err?.message);
+    imageError = err?.message ?? String(err);
+    console.warn(`[decoration-guide] stage image failed for ${el.id}, guide kept:`, imageError);
     return null;
   });
   if (stages) calls.push({ model: stages.model, usage: stages.usage, image: stages.image });
@@ -114,6 +126,10 @@ export async function buildElementGuide(el, { ownerBakerId = null, quality = nul
     // the image, while the public URL base is deployment config that would rot every stored row.
     source_image_url: imageKey,
     stages_key: stages?.key ?? null,
+    /* ⚠️ Written on EVERY build, not only on failure — `null` on success is the point. A reason
+       sitting beside a picture that now exists describes a superseded attempt and would be read as
+       current, which is worse than no reason at all. Admin-only; see ADMIN_CRAFT_FIELDS. */
+    stages_error: imageError,
     model: model ?? null,
     prompt_version: GUIDE_PROMPT_VERSION,
     // 'draft' means UNREVIEWED BY A HUMAN, which is true of every generated guide including ours.
@@ -132,8 +148,21 @@ export async function buildElementGuide(el, { ownerBakerId = null, quality = nul
     .from('element_craft_guide').select('stages_key')
     .eq('element_id', el.id).eq('guide_type', 'fondant_figure').maybeSingle();
 
-  const { error } = await supabase
+  /* ⚠️ The SAME missing-column window the admin reads guard against, and worse on this side: a
+     rejected upsert loses a guide that has just been paid for. Migrations here are applied by hand,
+     so there is always a stretch where this code knows about `stages_error` and the database does
+     not — and on that read path it merely blanked a screen, while here it would throw away the work
+     of two model calls. Retried without the column rather than pre-flighted, because the common
+     case is that the column IS there and should cost nothing. */
+  let { error } = await supabase
     .from('element_craft_guide').upsert(row, { onConflict: 'element_id,guide_type' });
+  if (error && (error.code === '42703' || /stages_error/.test(error.message ?? ''))) {
+    console.warn('[decoration-guide] element_craft_guide.stages_error is absent — run migration 094. '
+      + 'Saving the guide without the reason.');
+    const { stages_error: _absent, ...withoutReason } = row;
+    ({ error } = await supabase
+      .from('element_craft_guide').upsert(withoutReason, { onConflict: 'element_id,guide_type' }));
+  }
   if (error) throw error;
 
   // Every generation writes a NEW key (the cache is immutable, so a reused key is never refetched),

@@ -311,12 +311,15 @@ router.post('/baker/customers/invite', requireAuth, requireCapability('customer:
         if (sess.customer_id !== customer.id) {
           await supabase.from('design_sessions').update({ customer_id: customer.id }).eq('id', sess.id);
         }
-        liveSessionParam = `&session=${sess.id}`;
+        liveSessionParam = `?session=${sess.id}`;   // `?`, not `&`: /i/<id> carries no query of its own
       }
     }
 
-    // Subdomain link: {slug}.<storefront domain>. The invite id grants nothing — OTP gates access.
-    const link = `${config.storefront.urlTemplate.replace('{slug}', baker.slug)}/?invite=${invite.id}${liveSessionParam}`;
+    /* ⚠️ ONE FIXED HOST — `www.spattoo.com/i/<id>`, resolved by routes/orderLink.js, which puts the
+       customer on `{slug}.spattoo.com/?invite=<id>`. A Meta URL button's base is fixed when the
+       template is approved, so a per-baker host cannot be a button; a DLT CTA whitelist is per domain,
+       so it cannot be one entry either. The invite id still grants nothing — OTP gates access. */
+    const link = `${config.marketing.url.replace(/\/+$/, '')}/i/${invite.id}${liveSessionParam}`;
 
     // Queue the invite email through the durable notification outbox (worker sends it,
     // sweeper retries on failure). The invite is already created — a delivery hiccup
@@ -334,6 +337,8 @@ router.post('/baker/customers/invite', requireAuth, requireCapability('customer:
           link,
           bakerName: baker.name,
           firstName: firstName.trim(),
+          // So an SMS channel on customer_invite can reach them; the email is still the invite itself.
+          customerPhone: phoneNorm,
           brandColor: baker.primary_color,
           logoUrl,
           note: note?.trim() || null,

@@ -3,6 +3,9 @@ import { jobQueue } from '../jobs/queue.js';
 import { digestDedupeKey } from './deliveryDigest.js';
 import { reminderDedupeKey, isEndedMilestone } from './trialReminders.js';
 import { renewalDedupeKey } from './renewalReminders.js';
+import { titleCase, rupees, dateLabel, calendarDate, clockTime, customerOrderLink, storefrontLink } from '../lib/notificationFormat.js';
+import { config } from '../config.js';
+import { toPublicUrl } from '../lib/publicUrl.js';
 
 async function getTypeId(slug) {
   const { data } = await supabase
@@ -20,6 +23,9 @@ async function getTypeId(slug) {
 // retries. We flip to 'enqueued' only while still 'pending', so a worker that already
 // advanced the row (sent/failed) is never clobbered.
 async function insertNotification(typeSlug, recipientEmail, payload, { dedupeKey = null, bakerId = null } = {}) {
+  // Ready-to-show copies of the raw fields, for SMS and WhatsApp templates, added HERE for every type
+  // so no notify function can forget them (withTemplateFields; the builders are further down).
+  payload = withTemplateFields(typeSlug, payload);
   const typeId = await getTypeId(typeSlug);
   if (!typeId) throw new Error(`Unknown notification type: ${typeSlug}`);
 
@@ -69,6 +75,23 @@ export async function bakerNotifyEmail(baker) {
   return data?.email ?? null;
 }
 
+/* ── Is there any way to reach this customer? ────────────────────────────────────────────────────
+ *
+ * ⚠️ THIS USED TO BE `if (!customer?.email) return`, in five places, and it was not skipping EMAIL —
+ * it was skipping the NOTIFICATION. No row, so no bell, no SMS, no WhatsApp, and nothing recorded to
+ * say anything had been withheld. Customer email is optional, and `POST /orders/manual` (a baker
+ * typing in a walk-in) takes phone OR email, so a customer with only a phone is the normal shape
+ * there — and every phone channel we have built for them sat behind an email column none of them use.
+ *
+ * A phone alone is enough now. `recipient_email` is nullable from 097 and means the email delivery
+ * address; the SMS and WhatsApp channels find their own contact from the payload's `orderId`
+ * (`customerContact`, services/notificationChannels.js), never from this column.
+ *
+ * ⚠️ Still a guard, not a formality. With NEITHER there is genuinely nowhere to send, and inserting
+ * would queue a row every channel must skip in turn — noise in the outbox that looks like breakage.
+ */
+const reachable = (customer) => !!(customer?.email || customer?.phone);
+
 export async function notifyOrderPlaced({ order, baker, customer, authoredBy = 'customer' }) {
   const customerName = [customer.first_name, customer.last_name].filter(Boolean).join(' ');
   const payload = {
@@ -77,6 +100,7 @@ export async function notifyOrderPlaced({ order, baker, customer, authoredBy = '
     customerEmail:     customer.email,
     customerPhone:     customer.phone,
     bakerName:         baker.name,
+    bakerLogoUrl:      baker.logo_url ?? null,   // step 3 of the picture chain (readablePicture)
     deliveryDate:      order.delivery_date,
     deliveryTime:      order.delivery_time,
     deliveryMode:      order.delivery_mode,
@@ -85,20 +109,28 @@ export async function notifyOrderPlaced({ order, baker, customer, authoredBy = '
     flavours:          order.flavours,
     specialInstructions: order.special_instructions,
     thumbnailUrl:      order.design_thumbnail_url ?? null,
+    /* ⚠️ The ONE field a WhatsApp URL button needs, and this payload did not carry it. A Meta button
+       is a static base plus a variable tail (`www.spattoo.com/o/{{1}}`), so the tail — the order id —
+       has to be a payload field or the template cannot have a button at all. Every other customer
+       notification already had it; this one was built before there was a reason to. */
+    orderId:           order.id,
     // Who put this order in. The customer's email thanks them for designing it only when they did —
     // a baker designing for a customer must not be thanked on their behalf. Defaults to 'customer'
     // so an older caller that does not pass it keeps the wording it has always had.
     authoredBy,
   };
-
   const jobs = [];
 
   const bakerEmail = await bakerNotifyEmail(baker);
   if (bakerEmail) {
     jobs.push(insertNotification('order_placed_baker', bakerEmail, payload, { bakerId: baker.id }));
   }
-  if (customer.email) {
-    jobs.push(insertNotification('order_placed_customer', customer.email, payload));
+  /* ⚠️ MISSED BY THE FIRST PASS AT THIS BUG, and worth saying why. The five early returns fixed with
+     migration 097 were spelled `if (!customer?.email) return` — a grep for that shape walks straight
+     past this one, which is the same mistake written inside-out. A customer who gave a phone and no
+     email got no "we have your order" at all. Same fix, same reason. */
+  if (reachable(customer)) {
+    jobs.push(insertNotification('order_placed_customer', customer.email ?? null, payload));
   }
 
   await Promise.all(jobs);
@@ -108,10 +140,11 @@ export async function notifyOrderPlaced({ order, baker, customer, authoredBy = '
 // customer that there are recommendations / an update to review. `mode` tunes the
 // copy: 'recommendations' (initiated) vs 'updated' (quoted, i.e. after a quote).
 export async function notifyDesignUpdated({ order, baker, customer, mode = 'updated' }) {
-  if (!customer?.email) return;
-  await insertNotification('design_updated_customer', customer.email, {
+  if (!reachable(customer)) return;
+  await insertNotification('design_updated_customer', customer.email ?? null, {
     customerFirstName: customer.first_name,
     bakerName:         baker.name,
+    bakerLogoUrl:      baker.logo_url ?? null,   // step 3 of the picture chain (readablePicture)
     bakerSlug:         baker.slug ?? null,
     orderId:           order.id,
     mode,                                   // 'recommendations' | 'updated'
@@ -122,12 +155,16 @@ export async function notifyDesignUpdated({ order, baker, customer, mode = 'upda
 // Baker issued a quote. Email the customer the price + advance + the baker's note,
 // with a link to review/approve it.
 export async function notifyQuoteIssued({ order, baker, customer }) {
-  if (!customer?.email) return;
-  await insertNotification('quote_issued_customer', customer.email, {
+  if (!reachable(customer)) return;
+  await insertNotification('quote_issued_customer', customer.email ?? null, {
     customerFirstName: customer.first_name,
     bakerName:         baker.name,
+    bakerLogoUrl:      baker.logo_url ?? null,   // step 3 of the picture chain (readablePicture)
     bakerSlug:         baker.slug ?? null,
     orderId:           order.id,
+    // The cake itself. A quote with a picture of what is being quoted is a different message from
+    // one without, and this payload carried none.
+    thumbnailUrl:      order.design_thumbnail_url ?? null,
     quotedPrice:       order.quoted_price ?? null,
     quoteValidUntil:   order.quote_valid_until ?? null,
     advanceAmount:     order.advance_amount ?? null,
@@ -160,22 +197,28 @@ export async function notifyQuoteQuestion({ order, baker, customer, message }) {
   }, { bakerId: baker.id });
 }
 
-// Baker invited a customer to a design session. Email the customer the private
-// storefront link (OTP gates access). Async via the outbox — the invite route no
-// longer sends inline. No-op if there's no email (SMS/WhatsApp not yet wired).
-export async function notifyCustomerInvited({ to, bakerName, firstName, link, brandColor, logoUrl, note, expiresAt }) {
-  if (!to) return;
-  await insertNotification('customer_invite', to, {
+// Baker invited a customer to a design session. Sends the private storefront link (OTP gates
+// access). Async via the outbox — the invite route no longer sends inline.
+//
+// ⚠️ The only customer notification with no `orderId`, so `customerContact` cannot look the phone up
+// and the invite has to CARRY it. That is what `customerPhone` is for, and why the reachability test
+// here is spelled out rather than calling `reachable()`: the contact arrives loose, not as a
+// customer row.
+export async function notifyCustomerInvited({ to, bakerName, firstName, link, brandColor, logoUrl, note, expiresAt, customerPhone = null }) {
+  if (!to && !customerPhone) return;
+  await insertNotification('customer_invite', to ?? null, {
     bakerName, firstName, link, brandColor, logoUrl, note, expiresAt,
+    customerPhone,   // an invite has no order to look the customer up by
   });
 }
 
 // Baker confirmed the order (advance received). Email the customer.
 export async function notifyOrderConfirmed({ order, baker, customer }) {
-  if (!customer?.email) return;
-  await insertNotification('order_confirmed_customer', customer.email, {
+  if (!reachable(customer)) return;
+  await insertNotification('order_confirmed_customer', customer.email ?? null, {
     customerFirstName: customer.first_name,
     bakerName:         baker.name,
+    bakerLogoUrl:      baker.logo_url ?? null,   // step 3 of the picture chain (readablePicture)
     bakerSlug:         baker.slug ?? null,
     orderId:           order.id,
     finalPrice:        order.final_price ?? null,
@@ -185,10 +228,11 @@ export async function notifyOrderConfirmed({ order, baker, customer }) {
 
 // Baker marked the order ready (for pickup / delivery). Tell the customer.
 export async function notifyOrderReady({ order, baker, customer }) {
-  if (!customer?.email) return;
-  await insertNotification('order_ready_customer', customer.email, {
+  if (!reachable(customer)) return;
+  await insertNotification('order_ready_customer', customer.email ?? null, {
     customerFirstName: customer.first_name,
     bakerName:         baker.name,
+    bakerLogoUrl:      baker.logo_url ?? null,   // step 3 of the picture chain (readablePicture)
     bakerSlug:         baker.slug ?? null,
     orderId:           order.id,
     deliveryMode:      order.delivery_mode ?? null,
@@ -202,10 +246,11 @@ export async function notifyOrderReady({ order, baker, customer }) {
 // Baker marked the order complete (delivered / picked up). Thank the customer and
 // close the loop.
 export async function notifyOrderCompleted({ order, baker, customer }) {
-  if (!customer?.email) return;
-  await insertNotification('order_completed_customer', customer.email, {
+  if (!reachable(customer)) return;
+  await insertNotification('order_completed_customer', customer.email ?? null, {
     customerFirstName: customer.first_name,
     bakerName:         baker.name,
+    bakerLogoUrl:      baker.logo_url ?? null,   // step 3 of the picture chain (readablePicture)
     bakerSlug:         baker.slug ?? null,
     orderId:           order.id,
     thumbnailUrl:      order.design_thumbnail_url ?? null,
@@ -218,14 +263,207 @@ export async function notifyOrderCompleted({ order, baker, customer }) {
 // uses the same bakers.email → primary-owner fallback as the order emails. `timeZone` rides along
 // so the template formats dates in the baker's zone (not UTC). One internal helper; thin per-event
 // exports (DRY). `baker` = { id, name, email, timezone }.
-async function notifySubscription(typeSlug, baker, payload) {
+async function notifySubscription(typeSlug, baker, payload = {}) {
   const email = await bakerNotifyEmail(baker);
   if (!email) return;
+  const timeZone = baker?.timezone ?? null;
   await insertNotification(typeSlug, email, {
     bakerName: baker?.name ?? null,
-    timeZone:  baker?.timezone ?? null,
+    timeZone,
     ...payload,
   });
+}
+
+/* Ready-to-show copies of the raw fields, for SMS and WhatsApp templates. An email formats these
+   itself, but a template gap prints a field exactly as stored — "blaze", "2026-10-15T10:00:00.000Z",
+   149900 — so without these the baker would read the raw values.
+
+   Added only for fields the event actually carries, so admin's field list for a type does not offer a
+   date that type never has. A present-but-empty raw field gives a null copy: the channel is then
+   skipped with the reason recorded, rather than sending a dash. */
+function readableSubscriptionFields(payload, timeZone) {
+  const out = {};
+  if ('planName' in payload)      out.planLabel       = payload.planName ? titleCase(payload.planName) : null;
+  if ('nextBillingAt' in payload) out.nextBillingDate = dateLabel(payload.nextBillingAt, timeZone);
+  if ('accessUntil' in payload)   out.accessUntilDate = dateLabel(payload.accessUntil, timeZone);
+  if ('amount' in payload)        out.amountLabel     = payload.amount != null ? rupees(payload.amount) : null;
+  return out;
+}
+
+// The types that go through notifySubscription — the exports just below this block.
+export const SUBSCRIPTION_NOTIFICATION_TYPES = new Set([
+  'subscription_activated', 'subscription_renewed', 'payment_failed', 'subscription_cancelled', 'subscription_expired',
+]);
+
+/* The ready-to-show field NAMES a notification of this type gets, given a payload of it.
+ *
+ * ⚠️ For admin's field list. That list is read off a type's most recent notification, and one sent
+ * before these fields existed does not carry them — so admin could not pick `planLabel` and its save
+ * check refused it as unknown, leaving only the raw `planName`. Derived from the same function that
+ * adds them, so the two cannot drift. */
+export function addedTemplateFields(typeSlug, payload) {
+  const build = TEMPLATE_FIELD_BUILDERS[typeSlug];
+  return build ? Object.keys(build(payload ?? {}, null)) : [];
+}
+
+/* Ready-to-show copies of an order's details, for SMS and WhatsApp templates.
+ *
+ * ⚠️ NEVER NULL, unlike the subscription copies. An order may have no date, no size and no flavour
+ * yet — the storefront allows it — and a template gap with no value skips the whole message. A new
+ * quote request is the one notification a baker must not miss, so an unknown detail is written as
+ * unknown ("No date given") instead of silencing the WhatsApp. */
+function readableOrderFields(p) {
+  const date = calendarDate(p.deliveryDate);
+  const time = clockTime(p.deliveryTime);
+  // The same reading of a flavour as the email's order table (sendNotification.js orderDetailsHtml).
+  const flavourNames = (Array.isArray(p.flavours) ? p.flavours : [])
+    .map(f => (typeof f === 'string' ? f : (f?.name ?? f?.flavour)))
+    .filter(Boolean);
+  return {
+    deliveryWhen:    date ? (time ? `${date}, ${time}` : date) : 'No date given',
+    fulfilmentLabel: p.deliveryMode === 'home_delivery' ? 'Home delivery' : 'Pickup',
+    weightLabel:     p.weightKg ? `${p.weightKg} kg` : 'Not given',
+    flavoursLabel:   flavourNames.length ? flavourNames.join(', ') : 'Not chosen',
+  };
+}
+
+// Which types carry ready-to-show fields, and the function that makes them.
+/* A price as SMS can carry it: "Rs. 1,499". No ₹, which would turn the whole SMS into 70-character
+   Unicode. Order prices are stored in RUPEES (numeric(10,2)), so no paise maths, and "1499.00" and 1499
+   read the same.
+ *
+ * ⚠️ "Rs. " IS INSIDE THE VALUE, AND THAT IS THE POINT — the template used to write it and hold a bare
+ * number. DLT tags are typed and exclusive: `{#number#}` takes digits only, `{#alphanumeric#}` REJECTS a
+ * value that is all digits. A price is sometimes one and sometimes the other — "999" is digits, "1,499"
+ * has a comma, "1,499.5" has both — so a bare price fails whichever tag the template uses. Prefixed, it
+ * always carries letters, so `{#alphanumeric#}` is always right.
+ *
+ * ⚠️ Rounding to plain digits was the other way out and is worse: the price field is inputMode="decimal"
+ * (OrdersPanel), so 1499.50 is reachable, and a quote SMS stating a price the baker did not quote is not
+ * a formatting detail. The separator and the paise both survive this way. */
+const priceRs = v => {
+  const n = Number(v);
+  return v != null && v !== '' && Number.isFinite(n)
+    ? `Rs. ${n.toLocaleString('en-IN', { maximumFractionDigits: 2 })}`
+    : null;
+};
+
+/* The storefront link, as a template VARIABLE.
+ *
+ * ⚠️ WHY IT HAS TO BE A STORED FIELD. The email builds this URL itself, at send time, from
+ * `bakerSlug`. A WhatsApp template cannot: its text is approved at Meta and filled positionally from
+ * `config.params`, which names PAYLOAD FIELDS. There is no expression to evaluate, so a link that is
+ * not a field is a link a WhatsApp template can never say.
+ *
+ * Null when there is no slug — `validateChannel` lets admin map a variable to it either way, and the
+ * sender skips a template whose variable came back empty rather than sending a message with a hole.
+ */
+/* ── The ONE picture a WhatsApp header can show ──────────────────────────────────────────────────
+ *
+ * ⚠️ `photoUrls` CANNOT BE USED DIRECTLY, and the failure is silent-but-total: `fieldValue` returns
+ * null for an array ("a list or an object cannot fill a line of text"), which lands the field in
+ * `missing`, which SKIPS THE WHOLE MESSAGE. A template configured with `image_field: photoUrls` would
+ * simply never send, and the outbox reason would say the notification "has no photoUrls" while the
+ * payload plainly has three.
+ *
+ * So this picks one, in order of how much it is worth showing:
+ *
+ *   1. the finished-cake PHOTO — on "your cake is ready" a picture of the real cake beats a render of
+ *      it, and that is the whole reason the baker uploaded it
+ *   2. the design thumbnail — the 3D render, or a manual order's first reference photo
+ *   3. the BAKERY'S LOGO — not the cake, but still theirs
+ *   4. a standard fallback (config.fallbackPictureKey, expanded against our own bucket)
+ *
+ * ⚠️ WHY FOUR AND NOT TWO. A WhatsApp image header MUST be given an image; there is no degrading to
+ * text. And an order's own picture is NOT guaranteed — a manual order has no design and its reference
+ * photos are optional, so `design_thumbnail_url` is genuinely null (Sandeep, 2026-09-18). `logo_url`
+ * is nullable too. Without step 4 a baker who took a phone order without snapping a photo would have
+ * their customer silently receive nothing at all.
+ *
+ * Still null when even the fallback is unconfigured, and that is the safe default: the send is
+ * skipped with a reason, exactly as before, rather than an image-header template being used on a
+ * promise nothing keeps.
+ */
+function readablePicture(p) {
+  const first = Array.isArray(p?.photoUrls) ? p.photoUrls.find(Boolean) : null;
+  return { pictureUrl: first ?? p?.thumbnailUrl ?? p?.bakerLogoUrl ?? toPublicUrl(config.fallbackPictureKey) ?? null };
+}
+
+function readableCustomerLink(p) {
+  return {
+    // The order: ONE fixed host, so it can be a WhatsApp button and a single DLT whitelist entry.
+    orderLink:      customerOrderLink(p, config.marketing.url),
+    // The shop: the bakery's OWN subdomain. A customer sent back to buy again lands under their name.
+    storefrontLink: storefrontLink(p, config.storefront.urlTemplate),
+  };
+}
+
+function readableQuoteFields(p) {
+  const out = {};
+  if ('quotedPrice' in p) out.quotedPriceRs = priceRs(p.quotedPrice);
+  if ('finalPrice' in p)  out.finalPriceRs  = priceRs(p.finalPrice);
+  return out;
+}
+
+function readableDigestFields(p) {
+  const n = Number(p.count) || 0;
+  return { deliveriesLabel: n === 1 ? '1 order' : `${n} orders` };
+}
+
+function readableCreditsFields(p, timeZone) {
+  return 'resetsOn' in p ? { resetsOnDate: dateLabel(p.resetsOn, timeZone) } : {};
+}
+
+function readableErasureFields(p, timeZone) {
+  return 'eraseAfter' in p ? { eraseDate: dateLabel(p.eraseAfter, timeZone) } : {};
+}
+
+const TEMPLATE_FIELD_BUILDERS = {
+  ...Object.fromEntries([...SUBSCRIPTION_NOTIFICATION_TYPES].map(t => [t, readableSubscriptionFields])),
+  order_placed_baker:       readableOrderFields,
+  order_placed_customer:    p => ({ ...readableOrderFields(p), ...readablePicture(p) }),
+  quote_accepted_baker:     readableQuoteFields,
+  /* Customer-facing: the quote copies PLUS the link, because these are the ones a WhatsApp template
+     sends someone to. `design_updated`, `order_ready` and `order_completed` have no price to make
+     readable and take the link alone. */
+  quote_issued_customer:    p => ({ ...readableQuoteFields(p), ...readableCustomerLink(p), ...readablePicture(p) }),
+  order_confirmed_customer: p => ({ ...readableQuoteFields(p), ...readableCustomerLink(p), ...readablePicture(p) }),
+  design_updated_customer:  readableCustomerLink,
+  order_ready_customer:     p => ({ ...readableOrderFields(p), ...readableCustomerLink(p), ...readablePicture(p) }),
+  order_completed_customer: readableCustomerLink,
+  delivery_digest_baker:    readableDigestFields,
+  credits_low:              readableCreditsFields,
+  credits_exhausted:        readableCreditsFields,
+  account_erasure_notice:   readableErasureFields,
+};
+
+/* ── Fields the CODE writes that a STORED payload may not have ───────────────────────────────────
+ *
+ * Admin builds its field picker from the most recent notification of a type. That is usually right
+ * and is self-correcting — but only for fields that were already being written when it was sent.
+ *
+ * ⚠️ ADD A FIELD TO A NOTIFY FUNCTION AND IT IS UNPICKABLE UNTIL ONE MORE IS SENT. Worse than
+ * invisible: `validateChannel` refuses a name that is not in the list, so an admin who types it
+ * correctly is told "not a field this notification carries" about a field that plainly is. Observed
+ * the day `orderId` was added to `order_placed_customer` — the template that most needs it, because
+ * its whole purpose is a URL button whose tail is the order id.
+ *
+ * So the code states what it now writes. Deliberately a SHORT list of fields added after the fact,
+ * not a second copy of every payload: each entry earns its place by having broken something, and
+ * each can be deleted once a notification of that type has been sent in every environment.
+ */
+export const LATE_ADDED_FIELDS = {
+  // 2026-09-18, for the WhatsApp URL button. Every other customer type already carried it.
+  order_placed_customer: ['orderId'],
+};
+
+/* A payload as a template sees it: the stored fields plus the ready-to-show copies, in the baker's time
+   zone. For admin's "Send test", which fills a template from a notification that may have been sent
+   before those copies existed. */
+export function withTemplateFields(typeSlug, payload) {
+  const p = payload ?? {};
+  const build = TEMPLATE_FIELD_BUILDERS[typeSlug];
+  return build ? { ...p, ...build(p, p.timeZone ?? null) } : p;
 }
 
 // Welcome a NEW baker after their bakery is created (post-confirmation onboarding kit). Recipient

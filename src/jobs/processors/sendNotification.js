@@ -4,26 +4,22 @@ import { sendEmail } from '../../services/mailer.js';
 import { esc, escUrl } from '../../lib/htmlEscape.js';
 import { sendPush, pushConfigured } from '../../services/fcm.js';
 import { linkFor } from '../../lib/notificationLink.js';
+import { templateSmsConfigured } from '../../services/msg91.js';
+import { whatsappConfigured } from '../../services/aisensy.js';
+import { maySpendMessage, spendMessage } from '../../services/messageBalance.js';
+import {
+  loadChannels, orderChannels, singleAttemptChannels, bakerContact, customerContact, sendTemplateMessage,
+  isMissingTable, customerMayReceive,
+} from '../../services/notificationChannels.js';
 
 function formatDate(str) {
   if (!str) return '—';
   return new Date(str).toLocaleDateString('en-IN', { day: 'numeric', month: 'long', year: 'numeric' });
 }
 
-// Format an INSTANT (ISO timestamptz) as a calendar date in the recipient's timezone — NOT the
-// server's UTC — so "renews on Aug 2" doesn't display as Aug 1 for an IST baker (the datetime
-// convention: convert at the edge using the actor's zone). Falls back to Asia/Kolkata.
-function formatDateTz(iso, tz) {
-  if (!iso) return '—';
-  try {
-    return new Date(iso).toLocaleDateString('en-IN', { day: 'numeric', month: 'long', year: 'numeric', timeZone: tz || 'Asia/Kolkata' });
-  } catch {
-    return new Date(iso).toLocaleDateString('en-IN', { day: 'numeric', month: 'long', year: 'numeric' });
-  }
-}
-
-const titleCase = s => (s ? String(s).charAt(0).toUpperCase() + String(s).slice(1) : '');
-const rupees    = paise => `₹${(Number(paise || 0) / 100).toLocaleString('en-IN')}`;
+// formatDateTz, titleCase and rupees live in lib/notificationFormat.js, shared with the ready-to-show
+// payload fields that SMS and WhatsApp templates read (services/notifications.js).
+import { formatDateTz, titleCase, rupees, customerOrderLink, storefrontLink } from '../../lib/notificationFormat.js';
 
 // Branded, email-client-safe (table layout, inline styles) invite email. Returns
 // { subject, text, html }. Kept here (with the other notification templates) so the
@@ -104,7 +100,7 @@ function platformShell(inner) {
           ${inner}
         </td></tr>
       </table>
-      <p style="max-width:480px;margin:16px auto 0;color:#9aa;font-size:11px;font-family:Arial,sans-serif;text-align:center;">Spattoo — the 3D cake designer for bakeries</p>
+      <p style="max-width:480px;margin:16px auto 0;color:#9aa;font-size:11px;font-family:Arial,sans-serif;text-align:center;">Spattoo · Your whole cake business, in one place.</p>
     </td></tr>
   </table>
 </body></html>`;
@@ -246,8 +242,8 @@ export function buildEmail(typeSlug, recipientEmail, payload) {
     //
     // Falls back to the storefront root when there is no orderId, which is still better than no
     // link at all.
-    const base = p.bakerSlug ? config.storefront.urlTemplate.replace('{slug}', p.bakerSlug) : null;
-    const link = base && p.orderId ? `${base.replace(/\/+$/, '')}/orders/${p.orderId}` : base;
+    const base = storefrontLink(p, config.storefront.urlTemplate);
+    const link = customerOrderLink(p, config.marketing.url) ?? base;
     return {
       from:    `${p.bakerName} <${rawEmail(config.smtp.from)}>`,
       to:      recipientEmail,
@@ -269,8 +265,8 @@ export function buildEmail(typeSlug, recipientEmail, payload) {
   if (typeSlug === 'quote_issued_customer') {
     // Deep-link to the customer's quote summary screen (review + accept), not the
     // storefront root.
-    const base = p.bakerSlug ? config.storefront.urlTemplate.replace('{slug}', p.bakerSlug) : null;
-    const link = base && p.orderId ? `${base.replace(/\/+$/, '')}/orders/${p.orderId}` : base;
+    const base = storefrontLink(p, config.storefront.urlTemplate);
+    const link = customerOrderLink(p, config.marketing.url) ?? base;
     const priceLine = p.quotedPrice != null ? `Your quote: <b>₹${esc(p.quotedPrice)}</b>` : "Your quote is ready";
     const advanceLine = p.advanceAmount != null
       ? `<p style="font-size:14px;color:#444">Advance to confirm: <b>₹${esc(p.advanceAmount)}</b></p>` : "";
@@ -361,7 +357,7 @@ export function buildEmail(typeSlug, recipientEmail, payload) {
   }
 
   if (typeSlug === 'order_completed_customer') {
-    const base = p.bakerSlug ? config.storefront.urlTemplate.replace('{slug}', p.bakerSlug) : null;
+    const base = storefrontLink(p, config.storefront.urlTemplate);
     return {
       from:    `${p.bakerName} <${rawEmail(config.smtp.from)}>`,
       to:      recipientEmail,
@@ -443,7 +439,7 @@ export function buildEmail(typeSlug, recipientEmail, payload) {
     const renews = formatDateTz(p.nextBillingAt, p.timeZone);
     return { from: config.smtp.from, to: recipientEmail, subject: `Your ${plan} plan is active`,
       html: shell(`<h2 style="margin:0 0 12px;font-size:22px;color:#2C4433;font-weight:800;">You're all set${hi}</h2>
-        <p>Your <b>${esc(plan)}</b> plan is now active${renews !== '—' ? ` and renews on <b>${renews}</b>` : ''}. Your storefront and 3D cake designer are ready to go.</p>
+        <p>Your <b>${esc(plan)}</b> plan is now active${renews !== '—' ? ` and renews on <b>${renews}</b>` : ''}. Everything in your plan is unlocked and ready to use.</p>
         ${billingCta}`) };
   }
 
@@ -768,87 +764,255 @@ export function buildPush(typeSlug, payload) {
   return null;
 }
 
+/* ── What each channel did on earlier attempts ────────────────────────────────────────────────────
+ * Keyed by channel. Empty before 095 has run — every channel then looks untried, which is how a
+ * retry behaved before there were rows to read. */
+async function loadDeliveries(notificationId) {
+  const { data, error } = await supabase
+    .from('notification_deliveries')
+    .select('channel, status, attempts, detail')
+    .eq('notification_id', notificationId);
+  if (error && !isMissingTable(error, 'notification_deliveries')) {
+    console.error('[notifications] could not read deliveries', JSON.stringify({ notificationId, error: error.message }));
+  }
+  return new Map((data ?? []).map(d => [d.channel, d]));
+}
+
+async function recordDelivery(notificationId, channel, result, prior) {
+  const { error } = await supabase.from('notification_deliveries').upsert({
+    notification_id:     notificationId,
+    channel,
+    status:              result.status,
+    recipient:           result.recipient ?? null,
+    provider_message_id: result.providerMessageId ?? null,
+    detail:              result.detail ?? null,
+    attempts:            (prior?.attempts ?? 0) + 1,
+  }, { onConflict: 'notification_id,channel' });
+  if (error && !isMissingTable(error, 'notification_deliveries')) {
+    console.error('[notifications] could not record delivery', JSON.stringify({ notificationId, channel, error: error.message }));
+  }
+}
+
+/* ── Send ONE channel. Never throws: returns { status: sent | failed | skipped, recipient, detail } ──
+ *
+ * `skipped` is for what no retry can fix — no phone number, no template set, a provider not set up, a
+ * payload without the field a template needs. It is recorded with the reason and never retried.
+ * `failed` is for what a later attempt might get through: the provider refused or did not answer. */
+async function deliver(row, notification, type) {
+  const notificationId = notification.id;
+  const typeSlug = type.slug;
+  const payload = notification.payload ?? {};
+  const skipped = (detail, recipient = null) => ({ status: 'skipped', recipient, detail });
+
+  if (row.channel === 'email') {
+    /* ⚠️ Nullable since 097, so this is now a real case rather than an impossible one: a customer
+       with a phone and no email. Skipped, not failed — no later attempt conjures an address, and
+       `failed` would keep the row open for a retry that can only end the same way. The notification
+       itself is fine; its SMS and WhatsApp rows resolve their own contact and are unaffected. */
+    if (!notification.recipient_email) return skipped('No email address for this recipient');
+    let mail = null;
+    try {
+      mail = buildEmail(typeSlug, notification.recipient_email, payload);
+
+      /* ── Copy us in on the few that matter ──────────────────────────────────────────────────────
+       *
+       * A blind copy on a SHORT LIST of types, decided here rather than in mailer.js. A bcc down there
+       * would copy us on every quote, order update and reminder any customer ever receives — a flood,
+       * and somebody else's mail.
+       *
+       * BCC rather than a second internal message because everything worth knowing is already in the
+       * one the baker gets: the To header is who signed up, and the body carries their bakery name and
+       * storefront slug. A separate mail would restate all of it and become a second template to keep
+       * in step with the first.
+       *
+       * ⚠️ It rides the SAME send. If the copy is going to fail — a bad address in the variable — the
+       * baker's own welcome fails with it, and the outbox records the whole thing as failed. That is
+       * the honest trade for not sending twice, and the reason this stays a short list of low-volume
+       * types rather than something that could be switched on broadly.
+       */
+      const bcc = BCC_TYPES.has(typeSlug) ? (config.smtp.internalBcc || null) : null;
+
+      const result = await sendEmail({ ...mail, ...(bcc ? { bcc } : {}) });
+      // 'sent' only means the provider ACCEPTED the message — not that it reached the inbox. Log
+      // what the provider actually said (normalized id + response + any rejected recipients) so
+      // deliverability problems (sandbox, SPF/DKIM, bounces) are diagnosable from Render logs
+      // instead of being invisible behind status=sent.
+      console.log('[notifications] sent', JSON.stringify({
+        notificationId,
+        type:      typeSlug,
+        to:        mail.to,
+        messageId: result.id,
+        response:  result.response,
+        accepted:  result.accepted,
+        rejected:  result.rejected,
+      }));
+      return { status: 'sent', recipient: mail.to, providerMessageId: result.id ?? null };
+    } catch (err) {
+      console.error('[notifications] send failed', JSON.stringify({ notificationId, type: typeSlug, to: mail?.to ?? notification.recipient_email, error: err.message }));
+      return { status: 'failed', recipient: notification.recipient_email, detail: err.message };
+    }
+  }
+
+  if (row.channel === 'push') {
+    // The fast channel, not the reliable one. ONE attempt (singleAttemptChannels): a dead token, an
+    // expired credential or a Firebase outage is not fixed by trying again, and it must never hold
+    // the notification open for a retry.
+    const push = buildPush(typeSlug, payload);
+    if (!push) return skipped('No push text for this notification');   // e.g. a trial reminder a week out
+    if (!pushConfigured()) return skipped('Push is not configured on this server');
+    // A device token is registered against an auth user, and `sendPush` finds them BY EMAIL — so
+    // with no address there is nothing to look up. Every push type is baker-facing today and a baker
+    // always has one, but that is a fact about the seed data, not a guarantee from the schema.
+    if (!notification.recipient_email) return skipped('No email address to find a device by');
+    try {
+      const r = await sendPush({ email: notification.recipient_email, ...push });
+      // ALWAYS logged, including the do-nothing outcomes. Logging only successes made the two
+      // failures that actually happen — nothing configured, and nobody with a registered device —
+      // look identical to push never having been attempted, which is a bad evening.
+      console.log('[notifications] push', JSON.stringify({
+        notificationId, type: typeSlug, to: notification.recipient_email, ...r,
+      }));
+      if (r.sent > 0) return { status: 'sent', recipient: notification.recipient_email };
+      if (r.failed > 0) return { status: 'failed', recipient: notification.recipient_email, detail: `${r.failed} device(s) refused it` };
+      return skipped(r.reason || 'No registered device', notification.recipient_email);
+    } catch (err) {
+      console.error('[notifications] push failed', JSON.stringify({ notificationId, type: typeSlug, error: err.message }));
+      return { status: 'failed', recipient: notification.recipient_email, detail: err.message };
+    }
+  }
+
+  // ── SMS and WhatsApp ───────────────────────────────────────────────────────────────────────────
+  const isSms = row.channel === 'sms';
+  // Both phone channels may reach a customer about their own order. The check stays because the
+  // answer is a policy decision that has changed once already — see CUSTOMER_CHANNELS in
+  // services/notificationChannels.js, which also records what WhatsApp's open channel is risking.
+  if (type.audience === 'customer' && !customerMayReceive(row.channel)) {
+    return skipped(`Customers may not be reached on ${isSms ? 'SMS' : 'WhatsApp'} yet`);
+  }
+  // ⚠️ A baker is not messaged on their phone about something they did themselves. An order a baker
+  // types in (manual, or on their own storefront while signed in) still raises the new-quote email
+  // and push — Sandeep's call: those double as a record — but a WhatsApp or SMS about it is noise
+  // that also costs a message. Read off `authoredBy`, which the order route derives from the signed-in
+  // user and never from the request body, so a customer cannot switch their baker's alert off.
+  if (type.audience === 'baker' && payload.authoredBy === 'baker') {
+    return skipped('The bakery placed this itself, so no SMS or WhatsApp');
+  }
+  if (!row.template_ref) return skipped(isSms ? 'No MSG91 template ID set in admin' : 'No AiSensy campaign set in admin');
+  if (isSms ? !templateSmsConfigured() : !whatsappConfigured()) {
+    return skipped(`${isSms ? 'MSG91' : 'AiSensy'} is not configured on this server`);
+  }
+
+  const forCustomer = type.audience === 'customer';
+  const contact = forCustomer
+    ? await customerContact({ payload })
+    : await bakerContact({ bakerId: notification.baker_id, email: notification.recipient_email });
+  const phone = isSms ? contact?.phone : contact?.whatsapp;
+  if (!phone) return skipped(forCustomer ? 'No phone number for this customer' : "No phone number on the bakery's account");
+
+  /* ── The baker pays for a message to their customer ──────────────────────────────────────────
+   *
+   * Checked LAST, after everything else that could stop this send, so a baker is never told they
+   * have no messages left by a send that a missing template would have stopped anyway.
+   *
+   * ⚠️ A refusal here is a SKIP, not a failure. The notification still goes by email, which is free
+   * and always on — that is the whole basis of charging for this at all. The reason lands on the
+   * delivery record so "why did my customer not get a text" has an answer.
+   *
+   * Baker messages are not billed: a baker paying to be told about their own bakery is absurd, and
+   * it is their own phone either way. */
+  let payer = null;
+  if (forCustomer) {
+    const may = await maySpendMessage({ typeSlug, payload });
+    if (!may.ok) return skipped(may.reason, phone);
+    payer = may.bakerId;
+  }
+
+  // Fill and send through the one path admin's "Send test" also takes (services/notificationChannels.js).
+  const result = await sendTemplateMessage({ channel: row.channel, row, payload, phone, name: contact.name });
+
+  /* ⚠️ DEBIT ON 'sent', AND ONLY THEN. Not on 'skipped' (a missing field stopped it before the
+     provider), and not on 'failed' (the provider refused it). Charging for either is charging for a
+     message the customer never got. */
+  if (payer && result.status === 'sent') {
+    await spendMessage({ bakerId: payer, typeSlug, channel: row.channel, recipient: phone });
+  }
+
+  if (result.status === 'sent') {
+    console.log(`[notifications] ${row.channel}`, JSON.stringify({ notificationId, type: typeSlug, to: phone, response: result.response }));
+  } else if (result.status === 'failed') {
+    console.error(`[notifications] ${row.channel} failed`, JSON.stringify({ notificationId, type: typeSlug, to: phone, error: result.detail }));
+  }
+  return { status: result.status, recipient: phone, providerMessageId: result.providerMessageId ?? null, detail: result.detail };
+}
+
 export async function sendNotification({ notificationId }) {
   // Fetch notification with its type
   const { data: notification, error } = await supabase
     .from('notifications')
-    .select('*, notification_types(slug)')
+    .select('*, notification_types(id, slug, audience)')
     .eq('id', notificationId)
     .single();
 
   if (error || !notification) throw new Error(`Notification ${notificationId} not found`);
 
-  const typeSlug = notification.notification_types.slug;
-  const mail = buildEmail(typeSlug, notification.recipient_email, notification.payload);
+  const type = notification.notification_types;
 
-  /* ── Copy us in on the few that matter ────────────────────────────────────────────────────────
+  /* ── Every channel switched on for this type, once each (migrations/095) ───────────────────────
    *
-   * A blind copy on a SHORT LIST of types, decided here rather than in mailer.js. A bcc down there
-   * would copy us on every quote, order update and reminder any customer ever receives — a flood,
-   * and somebody else's mail.
+   * Which channels, and which template each uses, is admin data (notification_channels). A type with
+   * no rows — or a database 095 has not reached — runs on today's defaults: email, plus push where
+   * buildPush() has text.
    *
-   * BCC rather than a second internal message because everything worth knowing is already in the
-   * one the baker gets: the To header is who signed up, and the body carries their bakery name and
-   * storefront slug. A separate mail would restate all of it and become a second template to keep
-   * in step with the first.
+   * ⚠️ NOTHING IS SENT TWICE. Each channel's outcome is its own row, so the retry that follows a
+   * failed email re-sends the email and nothing else: a channel already sent or skipped is done, and
+   * a single-attempt channel (push, or anything a fallback covers) keeps its first answer.
    *
-   * ⚠️ It rides the SAME send. If the copy is going to fail — a bad address in the variable — the
-   * baker's own welcome fails with it, and the outbox records the whole thing as failed. That is
-   * the honest trade for not sending twice, and the reason this stays a short list of low-volume
-   * types rather than something that could be switched on broadly.
+   * A fallback runs after the channel it covers and only when that one did not deliver.
    */
-  const bcc = BCC_TYPES.has(typeSlug) ? (config.smtp.internalBcc || null) : null;
+  const rows = await loadChannels(type.id, type.slug);
+  const once = singleAttemptChannels(rows);
+  const earlier = await loadDeliveries(notificationId);
+  const outcome = new Map();
+  const failures = [];
+  let retry = false;
 
-  try {
-    const result = await sendEmail({ ...mail, ...(bcc ? { bcc } : {}) });
-    // 'sent' only means the provider ACCEPTED the message — not that it reached the inbox. Log
-    // what the provider actually said (normalized id + response + any rejected recipients) so
-    // deliverability problems (sandbox, SPF/DKIM, bounces) are diagnosable from Render logs
-    // instead of being invisible behind status=sent.
-    console.log('[notifications] sent', JSON.stringify({
-      notificationId,
-      type:      typeSlug,
-      to:        mail.to,
-      messageId: result.id,
-      response:  result.response,
-      accepted:  result.accepted,
-      rejected:  result.rejected,
-    }));
-    await supabase.from('notifications').update({
-      status:  'sent',
-      sent_at: new Date().toISOString(),
-    }).eq('id', notificationId);
-
-    // ── Push, AFTER the email and never instead of it ────────────────────────────────────────────
-    // Best-effort on purpose. Email is the durable channel and its status is what `sent` means; push
-    // is the fast one. A dead token, an expired credential or a Firebase outage must not fail a
-    // notification the baker has already received — and must not mark it for retry, which would
-    // re-send the email to fix the push.
-    //
-    // Deliberately not awaited into the status: this runs, logs, and cannot change the outcome above.
-    const push = buildPush(typeSlug, notification.payload);
-    if (push && pushConfigured()) {
-      try {
-        const r = await sendPush({ email: notification.recipient_email, ...push });
-        // ALWAYS logged, including the do-nothing outcomes. Logging only successes made the two
-        // failures that actually happen — nothing configured, and nobody with a registered device —
-        // look identical to push never having been attempted, which is a bad evening.
-        console.log('[notifications] push', JSON.stringify({
-          notificationId, type: typeSlug, to: notification.recipient_email, ...r,
-        }));
-      } catch (err) {
-        console.error('[notifications] push failed (email already sent)', JSON.stringify({
-          notificationId, type: typeSlug, error: err.message,
-        }));
-      }
+  for (const row of orderChannels(rows)) {
+    const prior = earlier.get(row.channel);
+    if (prior && (prior.status !== 'failed' || once.has(row.channel))) {
+      outcome.set(row.channel, prior.status);
+      if (prior.status === 'failed') failures.push(`${row.channel}: ${prior.detail}`);
+      continue;
     }
-  } catch (err) {
-    console.error('[notifications] send failed', JSON.stringify({ notificationId, type: typeSlug, to: mail.to, error: err.message }));
-    const exhausted = notification.attempts >= notification.max_attempts;
+
+    const result = row.fallback_for && outcome.get(row.fallback_for) === 'sent'
+      ? { status: 'skipped', detail: `Not needed: ${row.fallback_for} delivered` }
+      : await deliver(row, { ...notification, id: notificationId }, type);
+
+    await recordDelivery(notificationId, row.channel, result, prior);
+    outcome.set(row.channel, result.status);
+    if (result.status === 'failed') {
+      failures.push(`${row.channel}: ${result.detail}`);
+      if (!once.has(row.channel)) retry = true;
+    }
+  }
+
+  // `sent` = at least one channel reached them. A retry is only worth it while a retryable channel
+  // failed and attempts remain; the sweeper picks `pending` rows back up.
+  const exhausted = notification.attempts >= notification.max_attempts;
+  const errorMessage = failures.join(' · ') || null;
+  if (retry && !exhausted) {
     await supabase.from('notifications').update({
-      status:        exhausted ? 'failed' : 'pending',
-      error_message: err.message,
-      ...(exhausted ? { failed_at: new Date().toISOString() } : {}),
+      status: 'pending', error_message: errorMessage,
+    }).eq('id', notificationId);
+  } else if ([...outcome.values()].includes('sent')) {
+    await supabase.from('notifications').update({
+      status: 'sent', sent_at: new Date().toISOString(), error_message: errorMessage,
+    }).eq('id', notificationId);
+  } else {
+    await supabase.from('notifications').update({
+      status:        'failed',
+      failed_at:     new Date().toISOString(),
+      error_message: errorMessage || (outcome.size ? 'Nothing was delivered' : 'No channel is switched on for this notification type'),
     }).eq('id', notificationId);
   }
 }

@@ -18,6 +18,62 @@ import { toPublicUrl } from './elements.js';
 const router = Router();
 
 const CRAFT_FIELDS = 'element_id, guide_type, nozzle_recs, consistency, technique, guide, stages_key, status, model, prompt_version, generated_at, updated_at';
+/* ⚠️ `stages_error` is ADMIN-ONLY, and THIS LIST IS THE ENFORCEMENT.
+ *
+ * It holds a provider's raw error string — it names models and quotes internal API text — written
+ * for whoever authors the catalogue and never for a baker. So it is not in CRAFT_FIELDS, which is
+ * what the two baker-reachable reads use (X-Ray's batch fetch, and the baker's own decoration-steps
+ * route): they cannot return it even by accident, and a future baker-facing read that reaches for
+ * "the guide fields" gets the safe list by default.
+ *
+ * Only the two admin reads widen it. Keep it that way — if this column ever needs to reach a baker,
+ * it needs its OWN wording, not this string. */
+const ADMIN_CRAFT_FIELDS = `${CRAFT_FIELDS}, stages_error`;
+
+/* ⚠️ THE COLUMN MAY NOT BE THERE YET, AND A SCREEN MUST NOT DIE BECAUSE OF IT.
+ *
+ * Migrations here are applied BY HAND (see migrations/README and check:migrations), so there is
+ * always a window — minutes on dev, potentially much longer on prod — where the code knows about a
+ * column the database does not. Selecting it in that window is not a degraded read: Postgres
+ * rejects the whole statement, the route 500s, and the admin panel falls back to "No guide yet" for
+ * an element that HAS a guide. Reported exactly that way, as a missing Rebuild button — because
+ * Rebuild only renders when a guide is present, so a failed read looks like a deleted control.
+ *
+ * So the field list is resolved at runtime and remembered. One wasted round trip the first time,
+ * then never again, and the feature degrades to exactly what it was before 094: the panel knows
+ * there is no picture, just not why.
+ *
+ * `null` = not yet known. Deliberately not a startup probe — that would make every boot depend on
+ * this table being reachable, to answer a question that only matters when somebody opens the page.
+ *
+ * ⚠️ "ABSENT" EXPIRES; "PRESENT" DOES NOT. A column can be added to a live database — that is the
+ * whole situation this exists for — but it is never taken away, so only one of the two answers can
+ * go stale. Remembering `false` forever meant a process that asked BEFORE the migration ran kept
+ * omitting the column afterwards, and the feature stayed half-dead until somebody happened to
+ * redeploy. Self-healing by restart is luck, not design. Ten minutes costs at most one extra failed
+ * query per ten minutes in a database that genuinely lacks the column, which is a window nobody
+ * sits in for long.
+ */
+const ABSENT_RECHECK_MS = 10 * 60 * 1000;
+let hasStagesError = null;      // true = use it · false = absent as of `absentSince` · null = unasked
+let absentSince = 0;
+const missingStagesError = (error) =>
+  error?.code === '42703' || /stages_error/.test(error?.message ?? '');
+
+// Read one guide row with the widest field list this database actually supports.
+async function selectGuideForAdmin(build) {
+  const believedAbsent = hasStagesError === false && (Date.now() - absentSince) < ABSENT_RECHECK_MS;
+  if (!believedAbsent) {
+    const res = await build(ADMIN_CRAFT_FIELDS);
+    if (!res.error) { hasStagesError = true; return res; }
+    if (!missingStagesError(res.error)) return res;      // a real failure, not a missing column
+    hasStagesError = false;
+    absentSince = Date.now();
+    console.warn('[craft-guide] element_craft_guide.stages_error is absent — run migration 094. '
+      + 'Falling back; a guide with no picture will not say why. Re-checking in 10 minutes.');
+  }
+  return build(CRAFT_FIELDS);
+}
 const CONSISTENCIES = ['stiff', 'medium', 'soft'];
 const RANKS = ['primary', 'secondary', 'alternative'];
 
@@ -63,6 +119,19 @@ function normalizeNozzleRecs(input) {
 function withStageUrl(row) {
   if (!row?.stages_key) return row;
   return { ...row, stages_url: toPublicUrl(row.stages_key) };
+}
+
+/* ⚠️ The baker path returns the row object buildElementGuide just BUILT, not one read back through
+ * CRAFT_FIELDS — so the select list that keeps `stages_error` admin-only does not protect it. This
+ * does. Dropped rather than never set, because the same object is what gets upserted, and the
+ * column is the whole point on the admin side.
+ *
+ * Belt and braces on purpose: one guard is a select list, the other is here, and a baker-facing
+ * response has to get past both. */
+function forBaker(row) {
+  if (!row || !('stages_error' in row)) return row;
+  const { stages_error: _dropped, ...rest } = row;
+  return rest;
 }
 
 // ── Read (any authenticated user — bakers viewing X-Ray, admins authoring) ─────
@@ -182,16 +251,16 @@ router.post('/admin/craft-guide/suggest', requireAuth, requireCapability('catalo
 // Single fetch for the authoring editor. Returns null if not yet authored.
 router.get('/admin/craft-guide/:elementId', requireAuth, requireCapability('catalog:admin'), async (req, res) => {
   try {
-    const { data, error } = await supabase
+    const { data, error } = await selectGuideForAdmin(fields => supabase
       .from('element_craft_guide')
-      .select(CRAFT_FIELDS)
+      .select(fields)
       .eq('element_id', req.params.elementId)
       // REQUIRED since migration 025 widened the key to (element_id, guide_type). Without it an
       // element carrying BOTH a nozzle guide and a decoration guide returns two rows and
       // maybeSingle() errors — so the authoring editor broke for exactly the elements that have
       // the most guidance. This endpoint is the nozzle editor; the decoration guide has its own.
       .eq('guide_type', 'piping_nozzle')
-      .maybeSingle();
+      .maybeSingle());
 
     if (error) return serverError(req, res, error);
     res.json(data); // null when no row exists yet
@@ -262,9 +331,9 @@ router.get('/admin/elements/:id/decoration-guide', requireAuth, requireCapabilit
       .eq('id', req.params.id).maybeSingle();
     if (!el) return res.status(404).json({ error: 'Element not found' });
 
-    const { data, error } = await supabase
-      .from('element_craft_guide').select(CRAFT_FIELDS)
-      .eq('element_id', el.id).eq('guide_type', 'fondant_figure').maybeSingle();
+    const { data, error } = await selectGuideForAdmin(fields => supabase
+      .from('element_craft_guide').select(fields)
+      .eq('element_id', el.id).eq('guide_type', 'fondant_figure').maybeSingle());
     if (error) return serverError(req, res, error);
 
     res.json({
@@ -329,6 +398,10 @@ router.post('/admin/elements/:id/decoration-guide', requireAuth, requireCapabili
     if (out.status === 'not_modelled') {
       return res.json({ ok: true, notModelled: true, guide: out.guide ?? null });
     }
+    /* The guide carries its own `stages_error` now, so there is no second field saying the same
+       thing on the response — the row IS the answer, on this build and on every later reload.
+       Not an error status either: the guide is real and stored, and answering 500 because the
+       picture failed would throw away words we just paid for. */
     res.json({ ok: true, guide: withStageUrl(out.row) });
   } catch (err) {
     serverError(req, res, err);
@@ -433,7 +506,7 @@ router.post('/elements/:id/xray/decoration-steps', requireAuth, requireCapabilit
     const { data: existing } = await supabase
       .from('element_craft_guide').select(CRAFT_FIELDS)
       .eq('element_id', el.id).eq('guide_type', 'fondant_figure').maybeSingle();
-    if (existing) return res.json({ ok: true, reused: true, guide: withStageUrl(existing) });
+    if (existing) return res.json({ ok: true, reused: true, guide: forBaker(withStageUrl(existing)) });
 
 
     // ── WHO PAYS ────────────────────────────────────────────────────────────────────
@@ -483,7 +556,7 @@ router.post('/elements/:id/xray/decoration-steps', requireAuth, requireCapabilit
       return res.status(422).json({ error: "We couldn't read that decoration.", code: 'GUIDE_FAILED' });
     }
 
-    res.json({ ok: true, reused: false, charged: !oursToPayFor, guide: withStageUrl(out.value.row) });
+    res.json({ ok: true, reused: false, charged: !oursToPayFor, guide: forBaker(withStageUrl(out.value.row)) });
   } catch (err) {
     if (err instanceof InsufficientCreditsError) {
       return res.status(err.status).json({ error: err.message, code: err.code, ...err.detail });

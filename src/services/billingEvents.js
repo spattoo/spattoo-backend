@@ -15,7 +15,7 @@ import { supabase } from './supabase.js';
 import { bakerNotifyEmail } from './notifications.js';
 import { PLAN } from '../constants/subscriptionPlans.js';
 import { PERIOD } from '../constants/billingPeriods.js';
-import { creditPackSalePayload } from './saleEventPayloads.js';
+import { creditPackSalePayload, messagePackSalePayload } from './saleEventPayloads.js';
 
 const toIso = unixSeconds => (unixSeconds ? new Date(unixSeconds * 1000).toISOString() : null);
 
@@ -93,4 +93,15 @@ export async function emitCreditPackSaleEvent({ payment, baker, pack, chargedAt 
     chargedAt: chargedAt ?? new Date().toISOString(),
   });
   await raise(payment.id, 'sale.credit_pack_captured', payload);
+}
+
+/* A message pack sale, raised on capture exactly as a credit pack is. Best-effort and idempotent on
+   the payment id — a webhook redelivery cannot raise a second invoice. */
+export async function emitMessagePackSaleEvent({ payment, baker, pack, chargedAt }) {
+  if (!payment?.id) return;
+  const payload = messagePackSalePayload({
+    payment, pack, recipient: await recipientSnapshot(baker),
+    chargedAt: chargedAt ?? new Date().toISOString(),
+  });
+  await raise(payment.id, 'sale.message_pack_captured', payload);
 }

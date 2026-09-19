@@ -28,6 +28,11 @@ export const FOLDER_KIND = {
   // decorations in it, which says what the category holds better than the one borrowed element
   // thumbnail it falls back to. See migration 068.
   'categories/thumbnails': 'image',
+  // A photograph of a piping nozzle and its tip, for the nozzle catalogue (migration 096). A baker
+  // recognises a tip by its shape long before its model number, which is all the X-Ray report can
+  // say today. ⚠️ Registered here for the reason spelled out above: without this line the catalogue
+  // promotes to prod and every picture silently stays behind.
+  'nozzles/images':       'image',
   'templates/files':      'model_or_json',
   'templates/thumbnails': 'image',
   // Front view of a cake shape, captured through the real designer renderer when admin saves the shape.

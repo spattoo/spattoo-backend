@@ -41,11 +41,25 @@ const REVIEWED = new Map([
   ['routes/ediblePrints.js',         'randomUUID() per generated print — one press, one new key'],
   ['routes/bakers.js',               'randomUUID() per gallery copy'],
   ['jobs/processors/extractImage.js','randomUUID() per output'],
+  // Reviewed 2026-09-13. One write each, both on the CREATE path, both minting a fresh key:
+  //   garnishes.js:108     `garnishes/thumbs/${randomUUID()}.png`
+  //   cardToppers.js:137   `card-toppers/thumbs/${randomUUID()}.png`
+  // No update path writes a thumbnail, so no key is ever written twice. (Were one added, it would
+  // mint a new key and leave the old object behind — a leak to sweep, never stale bytes served
+  // from an immutable URL, which is the failure this list exists to prevent.)
+  ['routes/garnishes.js',            'randomUUID() per garnish thumbnail'],
+  ['routes/cardToppers.js',          'randomUUID() per card-topper thumbnail'],
   // Derived keys. Safe because the key they are built FROM is minted once, so the derivation is too.
   // Each is written when its source object is first processed and not again.
   ['jobs/processors/removeLogoBg.js','derived: <logoKey>-nobg.webp'],
   ['services/thumbnails.js',         'derived: <thumbnailKey>-<maxDim>.webp'],
   ['services/imageOptimize.js',      'derived: <key>.webp'],
+  // Reviewed 2026-09-16. WhatsApp headers accept only JPEG/PNG and our thumbnails are WebP, so the
+  // picture is transcoded once and cached: `notifications/whatsapp-media/<sourceKey minus its
+  // extension>.jpg`, built from a key that was itself minted once by a signed upload. One source
+  // picture, one converted object; `objectExists` short-circuits every later send, so the same
+  // bytes are written at most once and the immutable URL keeps telling the truth.
+  ['services/whatsappMedia.js',      'derived: notifications/whatsapp-media/<sourceKey>.jpg'],
   // Timestamped rather than random: a guide is REBUILT, so the key must differ per generation or the
   // immutable cache pins the old picture forever. The caller deletes the previous object.
   ['services/decorationStages.js',   'stamp() — Date.now() base36, new key per generation'],

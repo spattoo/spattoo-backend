@@ -30,3 +30,10 @@ COPY_BIN="$DOCS_DIR/bin/check-plan-copy.mjs"
 # migrations/ ended up with 052 and 053 twice. Local duplicates, plus a new file landing
 # on a number already pushed to origin/dev, which is the collision a local check cannot see.
 node scripts/check-migrations.mjs
+
+# ── A name used where nothing declares it ───────────────────────────────────────────────
+# Here rather than only in `npm run check`, because the failure this catches is made AT THE
+# COMMIT and is invisible afterwards. 2e7a89d renamed a local in one function and used the
+# new name in another; it committed clean, deployed clean, and the decoration guide sheet
+# was dead for ten days before anybody ran the line. ~0.1s over 131 files.
+node scripts/check-bindings.mjs
