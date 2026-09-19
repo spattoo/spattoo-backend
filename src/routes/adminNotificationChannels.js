@@ -7,7 +7,7 @@ import { pushConfigured } from '../services/fcm.js';
 import { templateSmsConfigured } from '../services/msg91.js';
 import { whatsappConfigured } from '../services/aisensy.js';
 import { addedTemplateFields, withTemplateFields, LATE_ADDED_FIELDS,
-         NOTIFICATION_PAYLOAD_FIELDS } from '../services/notifications.js';
+         NOTIFICATION_PAYLOAD_FIELDS, samplePayload } from '../services/notifications.js';
 import { normalizePhone } from '../lib/phone.js';
 import { config } from '../config.js';
 import {
@@ -200,10 +200,13 @@ router.post('/admin/notification-channels/:typeId/:channel/test', requireAuth, r
       return res.status(409).json({ error: `${channel === 'sms' ? 'MSG91' : 'AiSensy'} is not set up on this server.` });
     }
 
-    const sample = await latestPayload(type.id);
+    // Never sent? Test with stand-in details rather than refusing — setting a template up is exactly
+    // when a type has not fired yet. The picture still comes from the real fallback image, so what
+    // arrives is a real message, not a mock.
+    const sample = (await latestPayload(type.id)) ?? samplePayload(type.slug);
     if (!sample) {
       return res.status(409).json({
-        error: `No "${type.label}" notification has been sent yet, so there are no details to fill the template with.`,
+        error: `No "${type.label}" notification has been sent yet, and this type has no sample details to test with.`,
       });
     }
 

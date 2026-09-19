@@ -476,6 +476,52 @@ const TEMPLATE_FIELD_BUILDERS = {
  * Kept separate from LATE_ADDED_FIELDS on purpose: that one is a short, deletable list of fields
  * added after a send. This is the permanent shape of the payload.
  */
+/* Stand-in values for "Send test" when a type has never been sent.
+ *
+ * The test normally fills the template from the most recent real notification. A type that has never
+ * fired has none — which is exactly when someone is setting its template up. Keyed by field NAME, so
+ * a new field gets a sensible value without another map to maintain.
+ *
+ * ⚠️ thumbnailUrl and bakerLogoUrl are left NULL on purpose: readablePicture then falls through to
+ * the configured fallback image, which is a real reachable PNG. A made-up URL here would be fetched
+ * by AiSensy and refused by WhatsApp.
+ */
+const SAMPLE_VALUES = {
+  customerFirstName: 'Asha',
+  customerName:      'Asha Menon',
+  firstName:         'Asha',
+  bakerName:         'Sample Bakery',
+  bakerSlug:         'sample-bakery',
+  slug:              'sample-bakery',
+  orderId:           '00000000-0000-0000-0000-000000000000',
+  bakerId:           '00000000-0000-0000-0000-000000000000',
+  quotedPrice:       1499,
+  finalPrice:        1499,
+  advanceAmount:     500,
+  quoteNote:         'Looking forward to baking this.',
+  quoteValidUntil:   '2026-12-31',
+  deliveryMode:      'pickup',
+  deliveryDate:      '2026-12-31',
+  deliveryTime:      '14:30',
+  mode:              'updated',
+  timeZone:          'Asia/Kolkata',
+  credits:           100,
+  amount:            499,
+  walletBalance:     250,
+  paymentId:         'pay_sample',
+  eraseAfter:        '2026-12-31',
+  thumbnailUrl:      null,
+  bakerLogoUrl:      null,
+  photoUrls:         [],
+};
+
+/* A believable payload for a type that has never been sent, so its template can still be tested. */
+export function samplePayload(typeSlug) {
+  const fields = NOTIFICATION_PAYLOAD_FIELDS[typeSlug];
+  if (!fields) return null;
+  return Object.fromEntries(fields.map(f => [f, f in SAMPLE_VALUES ? SAMPLE_VALUES[f] : `sample ${f}`]));
+}
+
 export const NOTIFICATION_PAYLOAD_FIELDS = {
   order_placed_customer:    ['customerFirstName', 'bakerName', 'bakerLogoUrl', 'bakerSlug', 'orderId', 'thumbnailUrl'],
   quote_issued_customer:    ['customerFirstName', 'bakerName', 'bakerLogoUrl', 'bakerSlug', 'orderId', 'thumbnailUrl',
