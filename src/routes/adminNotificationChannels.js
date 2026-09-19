@@ -6,7 +6,8 @@ import { requireCapability } from '../middleware/rbac.js';
 import { pushConfigured } from '../services/fcm.js';
 import { templateSmsConfigured } from '../services/msg91.js';
 import { whatsappConfigured } from '../services/aisensy.js';
-import { addedTemplateFields, withTemplateFields, LATE_ADDED_FIELDS } from '../services/notifications.js';
+import { addedTemplateFields, withTemplateFields, LATE_ADDED_FIELDS,
+         NOTIFICATION_PAYLOAD_FIELDS } from '../services/notifications.js';
 import { normalizePhone } from '../lib/phone.js';
 import { config } from '../config.js';
 import {
@@ -61,7 +62,15 @@ async function latestPayload(typeId) {
 
 async function payloadFields(type) {
   const payload = await latestPayload(type.id);
-  if (!payload) return [];
+  // Never sent? Fall back to what the code says this type carries, so the picker still offers a list
+  // instead of asking someone to type field names from memory.
+  if (!payload) {
+    return [...new Set([
+      ...(NOTIFICATION_PAYLOAD_FIELDS[type.slug] ?? []),
+      ...addedTemplateFields(type.slug, {}),
+      ...(LATE_ADDED_FIELDS[type.slug] ?? []),
+    ])].sort();
+  }
   const stored = Object.entries(payload)
     .filter(([, v]) => v === null || typeof v !== 'object')   // a list cannot fill a line of text
     .map(([k]) => k);

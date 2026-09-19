@@ -461,6 +461,29 @@ const TEMPLATE_FIELD_BUILDERS = {
  * not a second copy of every payload: each entry earns its place by having broken something, and
  * each can be deleted once a notification of that type has been sent in every environment.
  */
+/* What each notification always carries, so admin can offer its fields before one has ever been sent.
+ *
+ * The picker normally reads the most recent notification of a type. That works, and it is
+ * self-correcting — but a type that has NEVER been sent has nothing to read, so the screen fell back
+ * to "type each field name exactly", which is a worse version of a dropdown for anyone configuring a
+ * new template.
+ *
+ * Kept separate from LATE_ADDED_FIELDS on purpose: that one is a short, deletable list of fields
+ * added after a send. This is the permanent shape of the payload.
+ */
+export const NOTIFICATION_PAYLOAD_FIELDS = {
+  order_placed_customer:    ['customerFirstName', 'bakerName', 'bakerLogoUrl', 'bakerSlug', 'orderId', 'thumbnailUrl'],
+  quote_issued_customer:    ['customerFirstName', 'bakerName', 'bakerLogoUrl', 'bakerSlug', 'orderId', 'thumbnailUrl',
+                             'quotedPrice', 'quoteValidUntil', 'advanceAmount', 'quoteNote'],
+  order_confirmed_customer: ['customerFirstName', 'bakerName', 'bakerLogoUrl', 'bakerSlug', 'orderId', 'finalPrice', 'thumbnailUrl'],
+  design_updated_customer:  ['customerFirstName', 'bakerName', 'bakerLogoUrl', 'bakerSlug', 'orderId', 'mode', 'thumbnailUrl'],
+  order_ready_customer:     ['customerFirstName', 'bakerName', 'bakerLogoUrl', 'bakerSlug', 'orderId',
+                             'deliveryMode', 'deliveryDate', 'deliveryTime', 'thumbnailUrl', 'photoUrls'],
+  order_completed_customer: ['customerFirstName', 'bakerName', 'bakerLogoUrl', 'bakerSlug', 'orderId', 'thumbnailUrl'],
+  order_placed_baker:       ['bakerId', 'customerFirstName', 'bakerName', 'bakerLogoUrl', 'bakerSlug', 'orderId', 'thumbnailUrl'],
+  quote_accepted_baker:     ['customerName', 'orderId', 'finalPrice'],
+};
+
 export const LATE_ADDED_FIELDS = {
   // 2026-09-18, for the WhatsApp URL button. Every other customer type already carried it.
   order_placed_customer: ['orderId'],
