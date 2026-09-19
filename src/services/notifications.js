@@ -437,7 +437,12 @@ const TEMPLATE_FIELD_BUILDERS = {
      readable and take the link alone. */
   quote_issued_customer:    p => ({ ...readableQuoteFields(p), ...readableCustomerLink(p), ...readablePicture(p) }),
   order_confirmed_customer: p => ({ ...readableQuoteFields(p), ...readableCustomerLink(p), ...readablePicture(p) }),
-  design_updated_customer:  readableCustomerLink,
+  /* ⚠️ readablePicture HERE TOO — the template was built in AiSensy with an IMAGE header
+     (2026-09-19). Without it the only image on the payload is `thumbnailUrl`, which is
+     `order.design_thumbnail_url ?? null`, and an image-header template with a null image is skipped
+     ENTIRELY — the same silent failure `order_placed_baker` hit a day earlier. pictureUrl falls
+     through design render → bakery logo → the configured fallback, so it is never null. */
+  design_updated_customer:  p => ({ ...readableCustomerLink(p), ...readablePicture(p) }),
   order_ready_customer:     p => ({ ...readableOrderFields(p), ...readableCustomerLink(p), ...readablePicture(p) }),
   order_completed_customer: readableCustomerLink,
   delivery_digest_baker:    readableDigestFields,
