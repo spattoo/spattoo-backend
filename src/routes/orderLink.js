@@ -1,4 +1,5 @@
 import express from 'express';
+import { UUID_RE } from '../lib/uuid.js';
 import { supabase } from '../services/supabase.js';
 import { config } from '../config.js';
 import { rateLimit } from '../middleware/rateLimit.js';
@@ -48,7 +49,7 @@ const perIp = rateLimit({
   message: 'Too many requests. Please wait a few minutes and try again.',
 });
 
-const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+// The shape check lives in lib/uuid.js — it was written out in four places.
 
 router.get('/o/:orderId', perIp, async (req, res) => {
   const { orderId } = req.params;
@@ -59,7 +60,7 @@ router.get('/o/:orderId', perIp, async (req, res) => {
   const giveUp = () => res.redirect(302, config.marketing.url);
 
   // Shape-check before touching the database — a malformed id is a bad link, not a lookup.
-  if (!UUID.test(orderId ?? '')) return giveUp();
+  if (!UUID_RE.test(orderId ?? '')) return giveUp();
 
   const { data, error } = await supabase
     .from('orders')
@@ -96,7 +97,7 @@ router.get('/o/:orderId', perIp, async (req, res) => {
 router.get('/i/:inviteId', perIp, async (req, res) => {
   const { inviteId } = req.params;
   const giveUp = () => res.redirect(302, config.marketing.url);
-  if (!UUID.test(inviteId ?? '')) return giveUp();
+  if (!UUID_RE.test(inviteId ?? '')) return giveUp();
 
   const { data, error } = await supabase
     .from('customer_invites')
@@ -121,7 +122,7 @@ router.get('/i/:inviteId', perIp, async (req, res) => {
      invite still works, so nothing errors, and the baker is simply left sitting in an empty room
      wondering why the customer never joined. Only this one param: anything else on the URL is not
      ours and has no meaning on the storefront. */
-  const session = typeof req.query.session === 'string' && UUID.test(req.query.session)
+  const session = typeof req.query.session === 'string' && UUID_RE.test(req.query.session)
     ? `&session=${req.query.session}` : '';
   return res.redirect(302, `${base}/?invite=${inviteId}${session}`);
 });
