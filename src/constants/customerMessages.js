@@ -80,7 +80,7 @@ export const CUSTOMER_MESSAGE_EVENTS = [
     recommended: false,
     messages: 1,
     body: 'Hi Asha, your cake order with {bakery} is confirmed. Total: Rs. 1,499.\n\n'
-        + "We'll message you again when it's ready.",
+        + 'Tap below to see your order.',
     button: 'View order',
   },
   {
