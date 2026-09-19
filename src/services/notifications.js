@@ -420,7 +420,16 @@ function readableErasureFields(p, timeZone) {
 
 const TEMPLATE_FIELD_BUILDERS = {
   ...Object.fromEntries([...SUBSCRIPTION_NOTIFICATION_TYPES].map(t => [t, readableSubscriptionFields])),
-  order_placed_baker:       readableOrderFields,
+  /* ⚠️ readablePicture HERE TOO, not only on the customer types. `order_placed_baker` is an Image
+     template that is SWITCHED ON, and it read `thumbnailUrl` — null for a manual order, because a
+     manual order has no design and its reference photos are optional. An image-header template with
+     no image is skipped entirely, so a baker writing down a phone order was silently sent nothing.
+     And it could not be fixed from Admin: the picker offers the fields a type's builder produces, so
+     `pictureUrl` was not in the dropdown, and typing it would have been refused as "not a field this
+     notification carries". The payload was already carrying the inputs — `bakerLogoUrl` has said
+     "step 3 of the picture chain (readablePicture)" since it was written — only this line was missing.
+     Found 2026-09-19 when Sandeep went to make the flip and the option was not there. */
+  order_placed_baker:       p => ({ ...readableOrderFields(p), ...readablePicture(p) }),
   order_placed_customer:    p => ({ ...readableOrderFields(p), ...readablePicture(p) }),
   quote_accepted_baker:     readableQuoteFields,
   /* Customer-facing: the quote copies PLUS the link, because these are the ones a WhatsApp template
