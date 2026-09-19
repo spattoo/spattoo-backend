@@ -70,7 +70,7 @@ export const CUSTOMER_MESSAGE_EVENTS = [
     recommended: true,
     messages: 1,
     body: 'Hi Asha, {bakery} has sent you a quote for your cake: Rs. 1,499.\n\n'
-        + "Tap below to see the details and accept it. Reply to this message if you'd like to change anything.",
+        + 'Tap below to see the details and accept it.',
     button: 'View quote',
   },
   {
@@ -93,7 +93,7 @@ export const CUSTOMER_MESSAGE_EVENTS = [
     messages: 1,
     repeats: true,
     body: 'Hi Asha, {bakery} has updated the design for your cake.\n\n'
-        + "Tap below to take a look. Reply to this message if you'd like anything changed.",
+        + 'Tap below to take a look.',
     button: 'View design',
   },
   {
@@ -104,8 +104,7 @@ export const CUSTOMER_MESSAGE_EVENTS = [
     recommended: true,
     messages: 1,
     body: 'Hi Asha, your cake from {bakery} is ready.\n\n'
-        + 'Pickup: 20 September 2026, 2:30 PM\n\n'
-        + 'Reply to this message if you need to change anything.',
+        + 'Pickup: 20 September 2026, 2:30 PM',
     button: null,
   },
   {
