@@ -1,4 +1,5 @@
 import { supabase } from './supabase.js';
+import { getEntitlements } from './entitlements.js';
 
 // ── A baker's paid-message balance, settings and history ─────────────────────────────────────────
 //
@@ -252,6 +253,57 @@ export async function maySpendMessage({ typeSlug, payload }) {
   if (balance <= 0) return { ok: false, reason: 'The bakery has no messages left' };
 
   return { ok: true, bakerId };
+}
+
+/* ── The first messages are on us, once, and only for a paying bakery ────────────────────────────
+ *
+ * A baker who has never sent a customer update has no way to judge whether they are worth buying.
+ * So the first few are given, at the moment a subscription becomes ACTIVE.
+ *
+ * ⚠️ HOW MANY IS AN ENTITLEMENT, NOT A NUMBER IN HERE. `welcome_message_credits` falls back to 0, so
+ * Spark grants nothing because its plan row says nothing — "we don't spend on trial bakers" is true
+ * by DATA, which is why this can be called from every activation path without first asking which
+ * tier it is. A plan worth 0 inserts no row and the call costs one entitlements read.
+ *
+ * ⚠️ AND ONCE IS THE DATABASE'S JOB. The partial unique index from migration 099 makes a second
+ * welcome row impossible, so this inserts optimistically and reads a unique violation as "they have
+ * already had it". An `if (alreadyGranted)` would lose to a retried webhook, a reactivation, or an
+ * upgrade — and every loss is money given away twice.
+ *
+ * Never throws. A subscription must not fail to activate because a gift did not land; a baker
+ * without their welcome credits is a support question, a baker without their subscription is not.
+ */
+export async function grantWelcomeMessages({ bakerId }) {
+  if (!bakerId) return { granted: 0, reason: 'no bakery' };
+  try {
+    /* ⚠️ THE VALUES ARE UNDER `.ent`, not on the object itself — `getEntitlements` returns
+       { planId, plan, status, active, ent, anchor }. Destructuring the key straight off the result
+       reads `undefined`, which is falsy, so the grant silently became "this plan includes none" for
+       EVERY baker including paying ones. Caught by running it against dev rather than by reading it:
+       a paid-tier bakery whose plan row says 25 was refused, and so was ai_credits_per_month, which
+       is what named the real cause. */
+    const { ent, active } = await getEntitlements(bakerId);
+    const amount = ent?.welcome_message_credits;
+    // A lapsed or blocked subscription already reads the floor, but saying it plainly keeps the
+    // reason on the log useful rather than "this plan includes none" for a plan that includes some.
+    if (!active) return { granted: 0, reason: 'No active subscription' };
+    if (!(amount > 0)) return { granted: 0, reason: 'This plan includes no welcome messages' };
+
+    const { error } = await supabase.from('message_transactions').insert({
+      baker_id: bakerId, kind: 'welcome', messages: amount,
+    });
+    // 23505 = unique_violation: the index did its job and they already have theirs.
+    if (error) {
+      if (error.code === '23505') return { granted: 0, reason: 'Already had their welcome messages' };
+      console.error('[messages] welcome grant failed', JSON.stringify({ bakerId, error: error.message }));
+      return { granted: 0, reason: error.message };
+    }
+    console.log('[messages] welcome grant', JSON.stringify({ bakerId, messages: amount }));
+    return { granted: amount };
+  } catch (err) {
+    console.error('[messages] welcome grant threw', JSON.stringify({ bakerId, error: err.message }));
+    return { granted: 0, reason: err.message };
+  }
 }
 
 /**

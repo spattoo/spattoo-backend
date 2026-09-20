@@ -3,6 +3,7 @@ import { serverError } from '../lib/httpError.js';
 import crypto from 'crypto';
 import Razorpay from 'razorpay';
 import { supabase } from '../services/supabase.js';
+import { grantWelcomeMessages } from '../services/messageBalance.js';
 import { requireAuth } from '../middleware/auth.js';
 import { requireCapability } from '../middleware/rbac.js';
 import { config } from '../config.js';
@@ -443,6 +444,13 @@ router.post('/billing/subscribe', requireAuth, requireCapability('billing:manage
       event, previousTier: current.plan?.name ?? null, newTier: tier,
       previousStatus: current.status, newStatus: 'active', changedBy: 'baker',
     });
+
+    /* The first customer updates are on us — see grantWelcomeMessages. Called on every activation
+       without asking which tier: the amount is an entitlement that falls back to 0, so a free plan
+       grants nothing by DATA rather than by a branch here. Once per bakery, enforced by a unique
+       index, so an upgrade or a reactivation arriving through this path cannot grant a second time.
+       Not awaited for correctness — it never throws and a subscription must not fail over a gift. */
+    await grantWelcomeMessages({ bakerId: baker.id });
 
     res.json({ ok: true, mock: true });
   } catch (err) {
@@ -1044,6 +1052,19 @@ router.post('/billing/webhook', async (req, res) => {
         const { error: bakerUpdErr } = await supabase.from('bakers')
           .update({ subscription_status_id: subUpdate.status_id }).eq('id', bakerId);
         if (bakerUpdErr) throw new Error(`bakers status update failed: ${bakerUpdErr.message}`);
+
+        /* ── The welcome message credits, on the path that actually takes money ─────────────────
+         * AFTER the status is written, because the amount is read through getEntitlements() and a
+         * subscription that is not yet ACTIVE derives as blocked, which returns the floor — 0. Grant
+         * first and the gift would silently be nothing on the very path it exists for.
+         *
+         * Every ACTIVE-making event, not just 'activated': a renewal charge, a resume and a recovery
+         * from halted all land here, and a baker whose first charge arrived as 'charged' should not
+         * be the one who never gets theirs. Once per bakery is the index's job, so repeating the
+         * call is free — see grantWelcomeMessages. */
+        if (subUpdate.status_id === SUBSCRIPTION_STATUS.ACTIVE) {
+          await grantWelcomeMessages({ bakerId });
+        }
       }
     }
 
