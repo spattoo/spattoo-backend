@@ -615,6 +615,33 @@ export async function notifyCreditsPurchased(baker, { credits, amount, walletBal
   });
 }
 
+// ── Message credits, on the house ────────────────────────────────────────────
+// Sent when an admin grants a baker complimentary message credits. Not a sibling of
+// notifyCreditsPurchased despite the shape: nothing was paid, so there is no amount, no payment
+// reference and no GST invoice to point at — and saying "thanks for your payment" to somebody who
+// did not make one is the one thing this email must never do.
+//
+// ⚠️ IT EXISTS BECAUSE CREDITS THAT APPEAR UNANNOUNCED ARE CREDITS NOBODY SPENDS. The balance is a
+// number on a settings screen a baker opens rarely; a gift they never noticed changes no behaviour,
+// which makes it an expense with no effect. The email is the whole point of the gesture.
+//
+// `note` is the admin's own words and is deliberately NOT passed on. It is written for us — "comped
+// after the 14th outage", "onboarding nudge" — and reads as either an apology we did not choose to
+// make or a sales note we did not choose to send. What the baker is told is what they got.
+//
+// `balance` is the balance AFTER the grant, passed in from the ledger read rather than looked up
+// again here, so the number in the email is the one the grant actually produced.
+export async function notifyComplimentaryMessages(baker, { messages, balance }) {
+  const email = await bakerNotifyEmail(baker);
+  if (!email) return;
+  await insertNotification('message_credits_complimentary', email, {
+    bakerName: baker?.name ?? null,
+    timeZone:  baker?.timezone ?? null,
+    messages:  messages ?? null,
+    balance:   balance  ?? null,
+  }, { bakerId: baker?.id ?? null });
+}
+
 export const notifySubscriptionActivated = (baker, p) => notifySubscription('subscription_activated', baker, p);
 export const notifySubscriptionRenewed   = (baker, p) => notifySubscription('subscription_renewed',   baker, p);
 export const notifyPaymentFailed         = (baker, p) => notifySubscription('payment_failed',          baker, p);

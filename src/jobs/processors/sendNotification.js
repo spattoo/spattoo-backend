@@ -508,6 +508,47 @@ export function buildEmail(typeSlug, recipientEmail, payload) {
         <p style="color:#6b6b6b;font-size:13px;margin:22px 0 0;">A GST invoice for this payment is sent separately.${p.paymentId ? ` Payment reference <b>${esc(p.paymentId)}</b> — quote it if you ever need to ask us about this charge.` : ''}</p>`) };
   }
 
+  // ── Message credits, on the house ───────────────────────────────────────────
+  // ⚠️ THE ONE THING THIS EMAIL MUST NOT DO IS READ AS A RECEIPT. Nothing was paid, so there is no
+  // amount, no payment reference and no invoice — and credits_purchased above is one copy-paste
+  // away from thanking somebody for a payment they never made.
+  //
+  // It says three things, in this order, because the third is what makes the gift do anything:
+  // what landed, what the balance is now, and what the credits are FOR. A baker who has never
+  // switched on a paid update has no idea these buy anything — the whole reason the first ones are
+  // given away (plans/message-recharge.md) is that the only evidence they are worth buying is a
+  // customer replying to a quote.
+  //
+  // ⚠️ NO NUMBER BEYOND WHAT THE LEDGER JUST RETURNED. Not what a message costs, not how many
+  // orders this covers, not which channels are on — those live on other surfaces (credit_costs,
+  // notification_channels, the baker's own enabled types) and a second copy here starts lying the
+  // day any of them moves. Root CLAUDE.md rule 1: name the dependency, quantify nothing.
+  //
+  // ⚠️ AND IT DOES NOT PROMISE THE CREDITS WILL BE USED. `maySpendMessage` refuses when the type is
+  // off, so for a baker who has switched nothing on these sit there — which is exactly why the
+  // email points at the setting rather than congratulating them.
+  //
+  // ⚠️ WHATSAPP ONLY, AND SMS IS NOT AN OVERSIGHT. The first draft said "WhatsApp and SMS" because
+  // the ledger's `channel` column allows both and `message_packs` is priced on the SMS rate. Neither
+  // is a customer-facing fact: checked against dev on 2026-09-21, there is NO sms row in
+  // notification_channels for any customer type — the only three exist for trial_ending,
+  // trial_ended and subscription_renewing, they are baker-facing, and all three are OFF pending DLT
+  // template approval. So SMS cannot spend one of these credits, and naming it sells a channel we do
+  // not have. `check:complimentary-credits` now fails on the word; when SMS goes live for customers,
+  // that line is the one to change, and it will say so.
+  if (typeSlug === 'message_credits_complimentary') {
+    const n       = Number(p.messages) || 0;
+    const given   = n.toLocaleString('en-IN');
+    const balance = p.balance != null ? Number(p.balance).toLocaleString('en-IN') : null;
+    const appUrl  = config.app.url ? config.app.url.replace(/\/+$/, '') : null;
+    return { from: config.smtp.from, to: recipientEmail,
+      subject: `${given} message credits, on us`,
+      html: shell(`<h2 style="margin:0 0 12px;font-size:22px;color:#2C4433;font-weight:800;">We've added ${esc(given)} message credits${hi}</h2>
+        <p>They're on us — nothing to pay, and nothing you need to do to claim them.${balance ? ` Your balance is now <b>${esc(balance)} message credits</b>.` : ''}</p>
+        <p>Message credits let your customers hear about their order on <b>WhatsApp</b>, not just email — a quote they can reply to from their phone, or a "your cake is ready" the morning they collect it. You choose which updates go out that way in <b>Settings &rarr; Customer updates</b>, and only the ones you switch on ever use a credit.</p>
+        ${appUrl ? ctaBtn(escUrl(appUrl), 'Open Spattoo') : ''}`) };
+  }
+
   // ── AI credits — running low / used up ──────────────────────────────────────
   // The pill and the billing card already go amber at 70% and red at 100%, but those are PASSIVE:
   // they work only if the baker is looking at the screen they are on. Someone who spends a month's
