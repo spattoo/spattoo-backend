@@ -116,6 +116,31 @@ function expandPlacementConfig(pc) {
   return out;
 }
 
+/* ── GET /api/decoration-mediums ─────────────────────────────────────────────────────────────────
+ * What a decoration can be MADE OF, and what X-Ray may offer for each. Migration 101.
+ *
+ * ⚠️ THE LIST IS DATA AND MUST HAVE EXACTLY ONE HOME. It used to live in three places that drifted
+ * apart without anything failing: a CHECK constraint on the column, a `switch` in
+ * decorationPolicy.js, and a hardcoded `<select>` in admin. Two of the switch's branches named
+ * values the column could not store, and two of admin's options were rejected on save. A new
+ * material — isomalt, wafer paper — needed a migration and edits in two repos, which is precisely
+ * why nobody kept them in step.
+ *
+ * `design:create` like element-types beside it: this is catalogue vocabulary, not privileged data,
+ * and the designer and admin both need it to render a picker.
+ */
+router.get('/decoration-mediums', requireAuth, requireCapability('design:create'), async (req, res) => {
+  try {
+    const { data, error } = await supabase
+      .from('decoration_mediums')
+      .select('key, label, can_model, can_print, guide_format, build_note')
+      .eq('is_active', true)
+      .order('sort_order');
+    if (error) return serverError(req, res, error);
+    res.json(data ?? []);
+  } catch (err) { serverError(req, res, err); }
+});
+
 router.get('/element-types', requireAuth, requireCapability('design:create'), async (req, res) => {
   try {
     const { data, error } = await supabase
@@ -920,7 +945,7 @@ async function ensureDecorationGuide(elementId) {
   try {
     const { data: el } = await supabase
       .from('cake_elements')
-      .select('id, name, description, image_url, thumbnail_url, thumb_key, medium, placement_config, element_types(name)')
+      .select('id, name, description, image_url, thumbnail_url, thumb_key, medium, placement_config, element_types(name), decoration_mediums(key, label, can_model, can_print, guide_format, build_note)')
       .eq('id', elementId).maybeSingle();
     if (!el) return;
 
@@ -928,7 +953,7 @@ async function ensureDecorationGuide(elementId) {
     // image genuinely cannot say fondant from printed sheet from acrylic
     // (services/decorationPolicy.js). This is the guide built AT CREATION, so the flag has to be
     // visible here or a bought decoration ships with a how-to for making it.
-    const policy = decorationPolicy(el);
+    const policy = decorationPolicy(el, el.decoration_mediums);
     if (!policy.modelling) return;
 
     const out = await buildElementGuide(el, { ownerBakerId: null });   // ours, never a baker's

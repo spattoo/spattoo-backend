@@ -351,8 +351,19 @@ router.post('/orders/:id/xray/decoration-steps', requireAuth, requireCapability(
         } else {
           // `focus` puts the model in whole-cake mode: read this ONE decoration and ignore the
           // rest. Without it, given a busy cake, it describes whichever object is most prominent.
+          /* ⚠️ A GUESS, NOT AN AUTHORED FACT, and passed as one. This decoration exists only in the
+             customer's photo — there is no catalogue element and so no `medium` row. What the
+             x-ray spec carries is the vision model's own reading of the material, which is worth
+             handing on (a guide for a sugar-glass shard should not describe rolling paste) but
+             carries no `build_note`, so the prompt keeps its sugar-paste fallback and says so.
+             ⚠️ The spec's material vocabulary is its OWN list, written into the x-ray prompt, and
+             does NOT match decoration_mediums — see plans/element-help.md. Deliberately not
+             reconciled here: mapping a guessed label onto an authored key would make a reading
+             look like a decision. */
+          const seen = findDecoration(order.xray_spec, key);
           ({ guide, usage, model } = await suggestBuildGuide({
             imageUrl: photo.url, name: label, focus: label,
+            material: seen?.material ? { label: String(seen.material) } : null,
           }));
         }
         // No steps = "this is piped or printed, not modelled by hand". A real answer — the piping

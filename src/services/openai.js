@@ -797,11 +797,36 @@ function decodeImages(data) {
 // extend one end to form a tail", which is a lovely fondant animal and not the decoration on the
 // cake. The two crafts share almost no steps, so this is not a nuance — it is the difference
 // between a usable guide and a wrong one.
-export async function suggestBuildGuide({ imageUrl, name, description, focus = null, dimension = null, roles = [] }) {
+// `material` — the element's `decoration_mediums` row (migration 101). EVERY INSTRUCTION BELOW USED
+// TO ASSUME SUGAR PASTE: "cut from a rolled sheet of fondant", "roll into a ball", "firming up
+// flat". Those are facts about fondant, not about decorating, and they are wrong for most of the
+// catalogue — isomalt is cooked and poured at 170C and never rolled, wafer paper is cut dry then
+// wetted so it curls, royal icing is piped onto parchment and lifted off when hard. A guide that
+// tells a baker to roll out isomalt describes a process that does not exist.
+//
+// The material's own `build_note` says how it is worked, and it is authored in admin — so a
+// material added next year arrives with its technique rather than needing this file edited.
+// Absent, the prompt falls back to sugar paste and SAYS SO, rather than silently assuming it.
+export async function suggestBuildGuide({ imageUrl, name, description, focus = null, dimension = null, roles = [], material = null }) {
+  const matLabel = material?.label || 'fondant / sugar paste';
+  const matNote  = material?.build_note
+    ? `HOW THIS MATERIAL IS WORKED — this is fact, follow it over any habit:\n${material.build_note}`
+    : `No material was stated for this decoration. Assume fondant / sugar paste, and say so in a tip
+so the baker knows the guide is written for that and can adapt it.`;
   const prompt = `You are a master sugar-artist writing a build guide for ONE decoration, so another baker can make it by hand.
 
 Decoration name: ${name || '(unnamed)'}
 Keywords: ${description || '(none)'}
+MATERIAL: ${matLabel}
+
+${matNote}
+
+⚠️ WRITE THE GUIDE FOR THAT MATERIAL AND NO OTHER. Every technique below is described in the
+vocabulary of sugar paste because that is the most common case — rolling, cutting, firming. Where
+the material above is worked differently, follow the material and IGNORE the sugar-paste wording:
+do not tell a baker to roll something that is poured, to knead something that is piped, or to dry
+something flat that must be curled while wet. Naming the wrong process is worse than a thin guide,
+because a baker will follow it.
 
 ${focus
   ? `The image is a photo of a WHOLE CAKE. Read ONLY this one decoration on it: ${focus}.
@@ -811,8 +836,9 @@ a different decoration instead.`
   : `Look ONLY at the object in the image. Do not describe a cake, a board, or a background.`}
 
 ${dimension === '2d'
-  ? `THIS IS A FLAT, 2D DECORATION. It is cut from a rolled sheet of fondant and laid on the cake —
-it is NOT modelled in the round.
+  ? `THIS IS A FLAT, 2D DECORATION. It is cut to an outline from a sheet of ${matLabel} and laid on
+the cake — it is NOT modelled in the round. (How that sheet is produced depends on the material: a
+paste is rolled, a wafer sheet comes flat, isomalt is poured and set.)
 
 FIRST, LIST EVERY DISTINCT PIECE. Look at the decoration and break it down completely — a palm tree
 is a trunk, five leaves, five petals and a flower centre, not "a tree and a flower". A piece that is
@@ -842,7 +868,7 @@ NEVER say "roll into a ball", "form a cylinder", "attach the legs" or "blend the
 no joints on a flat cut-out. A guide that starts from finished shapes and only assembles them has
 missed the point entirely.`
   : dimension === '3d'
-    ? `THIS IS A 3D DECORATION, modelled in the round from shaped pieces of fondant.`
+    ? `THIS IS A 3D DECORATION, built in the round from shaped pieces of ${matLabel}.`
     : ''}
 
 ${roles.length ? `THIS DECORATION'S PARTS ARE ALREADY KNOWN. They were authored, not observed, so they are FACT and
