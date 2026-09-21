@@ -80,6 +80,16 @@ export const ENTITLEMENTS = {
   // reset. fallback 0 (the safe floor) means a lapsed subscription can spend nothing; null on a
   // plan means unlimited, per the int convention above.
   ai_credits_per_month:   { type: 'int',  fallback: 0, label: 'AI credits / month' },
+  // One-time message credits, handed over when a subscription first becomes ACTIVE. The second
+  // entitlement with real marginal cost behind it (WhatsApp is ₹0.145 a send), and the reason it is
+  // an entitlement rather than a constant is the same as above: it is the number we will want to
+  // move once conversion is visible, and moving it must not be a deploy.
+  //
+  // ⚠️ fallback 0 IS THE FEATURE, not a placeholder. Spark — the free tier — has no key, so it grants
+  // nothing, and "we don't spend on trial bakers" is true because the data says so rather than
+  // because a branch remembers to check the tier. A new tier that should give nothing needs no code.
+  // Granted once per bakery, enforced by a partial unique index (migration 099), never by an `if`.
+  welcome_message_credits:{ type: 'int',  fallback: 0, label: 'Welcome message credits (one-time)' },
   // Can this plan BUY more credits when the monthly allowance runs out?
   //
   // This is the Flame→Blaze lever, and it is the only thing that stops the two plans collapsing

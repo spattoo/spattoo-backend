@@ -1,4 +1,5 @@
 import { Router } from 'express';
+import { UUID_RE } from '../lib/uuid.js';
 import { serverError } from '../lib/httpError.js';
 import { supabase, supabaseAuth } from '../services/supabase.js';
 import { config } from '../config.js';
@@ -301,6 +302,67 @@ router.get('/storefront/:slug/settings', async (req, res) => {
       // having been offered it.
       otp_channels: config.storefront.otpChannels,
     });
+  } catch (err) {
+    serverError(req, res, err);
+  }
+});
+
+// ── GET /api/storefront/:slug/order-channel/:orderId ──────────────────────────
+// Public, and deliberately says almost nothing.
+//
+// The order-link gate used to offer "Email me / Text me" and ask which. That is a question only we
+// can answer: the order has a customer, and that customer has an email, or a phone, or both. Making
+// somebody choose is asking them to guess which one we hold — and getting it wrong sends a code to
+// an address that will never arrive.
+//
+// ⚠️ IT RETURNS THE CHANNEL, NEVER THE CONTACT. Not even masked. The link is the token, and a masked
+// number is still a fact about a person handed to anyone who has the URL. Which channel is the least
+// that makes the screen work.
+//
+// ⚠️ AND IT IS NOT AN EXISTENCE ORACLE. An unknown order, a malformed id, or a customer we cannot
+// reach all answer exactly what GET /settings answers — the baker's configured channels. So the
+// response cannot be used to discover whether an order id is real.
+//
+// Intersected with what the SERVER will accept: a customer with a phone is no use if this deployment
+// has no SMS. Server first, then the customer's own reachability, then the baker's order.
+router.get('/storefront/:slug/order-channel/:orderId', async (req, res) => {
+  try {
+    const allowed = config.storefront.otpChannels;
+    const fallback = () => res.json({ channels: allowed });
+
+    const baker = await loadOpenStorefront(req.params.slug);
+    if (!baker) return res.status(404).json({ error: 'Storefront not found' });
+    if (!UUID_RE.test(req.params.orderId ?? '')) return fallback();
+
+    const { data } = await supabase
+      .from('orders')
+      .select('id, customers(email, phone)')
+      .eq('id', req.params.orderId)
+      .eq('baker_id', baker.id)
+      .maybeSingle();
+
+    const customer = Array.isArray(data?.customers) ? data.customers[0] : data?.customers;
+    if (!customer) return fallback();
+
+    /* ⚠️ ONE CHANNEL, NOT A LIST OF THE ONES THEY HAVE. Returning both when we hold both puts the
+       "Email me / Text me" pair straight back on the screen, which is the confusion this route was
+       added to remove — and on the live dev baker EVERY customer has both, so "the server decides"
+       would have changed nothing anybody could see.
+       Sandeep, 2026-09-19: "lets ask only phone number from customers - email and phone is confusing."
+
+       Phone wins when we hold both: the message that brought them here went to a phone, so it is the
+       one they have just proved they read.
+
+       ⚠️ THE COST, STATED: a customer whose number has changed can no longer fall back to email from
+       this screen. They are not locked out of anything they own — the order link still lands them on
+       the shop front, where the bakery's own contact details are — but it IS a door that used to have
+       two handles. Making it two again is a one-line change here, and it is a product decision rather
+       than a technical one. */
+    const order = ['sms', 'email'];
+    const reachable = order.filter(c =>
+      allowed.includes(c) && (c === 'sms' ? !!customer.phone : !!customer.email));
+
+    return res.json({ channels: reachable.length ? [reachable[0]] : allowed });
   } catch (err) {
     serverError(req, res, err);
   }

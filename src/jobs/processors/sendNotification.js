@@ -428,7 +428,15 @@ export function buildEmail(typeSlug, recipientEmail, payload) {
   // ── Subscription lifecycle (baker-facing, Spattoo-branded) ──────────────────
   // from = Spattoo (config.smtp.from) — these are platform→baker, not baker-branded.
   const plan       = titleCase(p.planName) || 'your';
-  const billingUrl = config.app.url ? `${config.app.url.replace(/\/+$/, '')}/settings/billing` : null;
+  /* ⚠️ `/?panel=billing`, NOT `/settings/billing`. The latter 404s — verified against both
+     app.spattoo.dev and app.spattoo.com — because the baker app is ONE PAGE and billing is a
+     panel on it, not a route. notifications/notificationLink.js has said so since it was
+     written ("the baker app is one page — the order list is a panel") and its test asserts
+     `/?panel=billing`. This line was the only place that disagreed, and it fed the "Manage
+     your plan" button on EVERY subscription email: activated, renewed, cancelled, expired,
+     renewing, the trial reminders, and payment_failed's fallback. Every one of them landed a
+     baker on a 404. */
+  const billingUrl = config.app.url ? `${config.app.url.replace(/\/+$/, '')}/?panel=billing` : null;
   // Shared brand-green CTA button (matches the welcome/verify/invite look).
   const ctaBtn = (href, label) => `<p style="margin:24px 0 0;text-align:center;"><a href="${href}" style="display:inline-block;background:#2C4433;color:#ffffff;text-decoration:none;font-size:16px;font-weight:700;padding:14px 34px;border-radius:12px;">${label} &rarr;</a></p>`;
   const billingCta = billingUrl ? ctaBtn(escUrl(billingUrl), 'Manage your plan') : '';
@@ -498,6 +506,47 @@ export function buildEmail(typeSlug, recipientEmail, payload) {
                  : `<p>They never expire, and they're only used once your monthly credits are gone.</p>`}
         ${appUrl ? ctaBtn(escUrl(appUrl), 'Back to the designer') : ''}
         <p style="color:#6b6b6b;font-size:13px;margin:22px 0 0;">A GST invoice for this payment is sent separately.${p.paymentId ? ` Payment reference <b>${esc(p.paymentId)}</b> — quote it if you ever need to ask us about this charge.` : ''}</p>`) };
+  }
+
+  // ── Message credits, on the house ───────────────────────────────────────────
+  // ⚠️ THE ONE THING THIS EMAIL MUST NOT DO IS READ AS A RECEIPT. Nothing was paid, so there is no
+  // amount, no payment reference and no invoice — and credits_purchased above is one copy-paste
+  // away from thanking somebody for a payment they never made.
+  //
+  // It says three things, in this order, because the third is what makes the gift do anything:
+  // what landed, what the balance is now, and what the credits are FOR. A baker who has never
+  // switched on a paid update has no idea these buy anything — the whole reason the first ones are
+  // given away (plans/message-recharge.md) is that the only evidence they are worth buying is a
+  // customer replying to a quote.
+  //
+  // ⚠️ NO NUMBER BEYOND WHAT THE LEDGER JUST RETURNED. Not what a message costs, not how many
+  // orders this covers, not which channels are on — those live on other surfaces (credit_costs,
+  // notification_channels, the baker's own enabled types) and a second copy here starts lying the
+  // day any of them moves. Root CLAUDE.md rule 1: name the dependency, quantify nothing.
+  //
+  // ⚠️ AND IT DOES NOT PROMISE THE CREDITS WILL BE USED. `maySpendMessage` refuses when the type is
+  // off, so for a baker who has switched nothing on these sit there — which is exactly why the
+  // email points at the setting rather than congratulating them.
+  //
+  // ⚠️ WHATSAPP ONLY, AND SMS IS NOT AN OVERSIGHT. The first draft said "WhatsApp and SMS" because
+  // the ledger's `channel` column allows both and `message_packs` is priced on the SMS rate. Neither
+  // is a customer-facing fact: checked against dev on 2026-09-21, there is NO sms row in
+  // notification_channels for any customer type — the only three exist for trial_ending,
+  // trial_ended and subscription_renewing, they are baker-facing, and all three are OFF pending DLT
+  // template approval. So SMS cannot spend one of these credits, and naming it sells a channel we do
+  // not have. `check:complimentary-credits` now fails on the word; when SMS goes live for customers,
+  // that line is the one to change, and it will say so.
+  if (typeSlug === 'message_credits_complimentary') {
+    const n       = Number(p.messages) || 0;
+    const given   = n.toLocaleString('en-IN');
+    const balance = p.balance != null ? Number(p.balance).toLocaleString('en-IN') : null;
+    const appUrl  = config.app.url ? config.app.url.replace(/\/+$/, '') : null;
+    return { from: config.smtp.from, to: recipientEmail,
+      subject: `${given} message credits, on us`,
+      html: shell(`<h2 style="margin:0 0 12px;font-size:22px;color:#2C4433;font-weight:800;">We've added ${esc(given)} message credits${hi}</h2>
+        <p>They're on us — nothing to pay, and nothing you need to do to claim them.${balance ? ` Your balance is now <b>${esc(balance)} message credits</b>.` : ''}</p>
+        <p>Message credits let your customers hear about their order on <b>WhatsApp</b>, not just email — a quote they can reply to from their phone, or a "your cake is ready" the morning they collect it. You choose which updates go out that way in <b>Settings &rarr; Customer updates</b>, and only the ones you switch on ever use a credit.</p>
+        ${appUrl ? ctaBtn(escUrl(appUrl), 'Open Spattoo') : ''}`) };
   }
 
   // ── AI credits — running low / used up ──────────────────────────────────────
@@ -666,9 +715,9 @@ export function buildEmail(typeSlug, recipientEmail, payload) {
            Your ${plan} renews ${when}
          </h2>
          <p>Hi${hiName} — this is just a heads-up. Your ${plan} is set to renew on
-            <strong>${esc(p.renewsOn)}</strong> and there is nothing you need to do.</p>
-         <p>If the card on file has changed or expired, updating it before then is what keeps the
-            renewal from failing.</p>
+            <strong>${esc(p.renewsOn)}</strong> and it will be billed automatically.</p>
+         <p>Please keep enough balance in your account. If the payment method on file has changed or
+            expired, updating it before then is what keeps the renewal from failing.</p>
          ${billingCta}
          <p style="color:#6b6b6b;font-size:13px;">If you have already cancelled, this one is out of
             date — ignore it.</p>`),

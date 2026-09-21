@@ -6,6 +6,7 @@ import { withGst, gstBreakup } from '../lib/gst.js';
 import {
   getMessageBalance, getMessageSettings, setMessageSettings,
   listMessagePacks, listMessageHistory, countMessagesSent,
+  grantComplimentaryMessages,
 } from '../services/messageBalance.js';
 import { CUSTOMER_MESSAGE_EVENTS, MESSAGE_SENDER } from '../constants/customerMessages.js';
 import { getMessagePack } from '../services/messageBalance.js';
@@ -13,6 +14,7 @@ import { config } from '../config.js';
 import { toPublicUrl } from '../lib/publicUrl.js';
 import { razorpay, razorpayEnabled } from './billing.js';
 import { supabase } from '../services/supabase.js';
+import { notifyComplimentaryMessages } from '../services/notifications.js';
 
 // ── Customer updates: the balance, the choices, the packs, the ledger ────────────────────────────
 // Everything Settings → Customer updates reads. Sending and spending are not here — a message is
@@ -162,6 +164,83 @@ router.post('/baker/message-packs/purchase', requireAuth, resolvePrincipal,
         ...gstBreakup(pack.price_paise),   // so a confirmation can show the split
       });
     } catch (err) { serverError(req, res, err); }
+  });
+
+/* ── Admin: message credits for one baker ────────────────────────────────────────────────────────
+ *
+ * ⚠️ UNDER /admin BECAUSE THAT IS WHERE THE BOUNDARY IS. `app.use('/api/admin', requireAuth,
+ * requireAdmin)` in server.js gates every admin path once, at the mount, so a route cannot forget
+ * it — and a privileged route that lives anywhere else is outside that backstop no matter which
+ * capability it names. `check:admin-routes` fails the build for exactly this.
+ *
+ * Two routes, two capabilities, on purpose: LOOKING at a baker's balance is support work, and
+ * GIVING them credits is spending money. The same person usually does both; the point is that the
+ * second is a grant somebody can be given or not, independently of the first. */
+
+/* GET /api/admin/bakers/:id/message-credits
+ * The balance, and what has moved it lately. `baker:support` — the same grant that opens a baker's
+ * subscription and payments for a support question. */
+router.get('/admin/bakers/:id/message-credits', requireAuth, requireCapability('baker:support'),
+  async (req, res) => {
+    try {
+      const { data: baker } = await supabase
+        .from('bakers').select('id, name, email').eq('id', req.params.id).maybeSingle();
+      if (!baker) return res.status(404).json({ error: 'Baker not found' });
+
+      // Both reads in parallel — a balance that arrives before its history makes the number look
+      // like it is still settling while somebody reads it.
+      const [balance, history] = await Promise.all([
+        getMessageBalance(baker.id),
+        listMessageHistory(baker.id, { limit: 10 }),
+      ]);
+      res.json({ baker, balance, recent: history.rows });
+    } catch (err) { serverError(req, res, err); }
+  });
+
+/* POST /api/admin/bakers/:id/message-credits
+ * Give this baker complimentary message credits.
+ *
+ * ⚠️ `billing:discount`, NOT `baker:support`. This is the capability's first use and it is the
+ * right one: the seed calls it "Issue discounts — apply discounts to a baker", it is marked
+ * SENSITIVE, and `admin_staff` does not hold it. Giving away credits is giving away money — every
+ * one of them is a WhatsApp or SMS send we pay a provider for — so it is a grant somebody makes
+ * deliberately, not something that arrives with a support login.
+ *
+ * ⚠️ THE NOTIFICATION IS NOT AWAITED INTO THE RESPONSE'S SUCCESS. The credits are in the ledger the
+ * moment the insert returns; an email provider having a bad minute must not report the grant as
+ * failed, because the retry is another grant. Logged and moved past — the opposite trade to the one
+ * the grant itself makes, and for the opposite reason. */
+router.post('/admin/bakers/:id/message-credits', requireAuth, requireCapability('billing:discount'),
+  async (req, res) => {
+    try {
+      const { data: baker } = await supabase
+        .from('bakers').select('id, name, email, timezone').eq('id', req.params.id).maybeSingle();
+      if (!baker) return res.status(404).json({ error: 'Baker not found' });
+
+      const { messages, note } = req.body ?? {};
+      const result = await grantComplimentaryMessages({
+        bakerId:        baker.id,
+        messages,
+        note,
+        grantedBy:      req.user.id,
+        grantedByEmail: req.user.email ?? null,
+      });
+
+      try {
+        await notifyComplimentaryMessages(baker, result);
+      } catch (err) {
+        console.error('[messages] complimentary grant landed but the baker was not told',
+          JSON.stringify({ bakerId: baker.id, error: err.message }));
+      }
+
+      res.json({ ok: true, ...result });
+    } catch (err) {
+      // A 400 from the service is a message written for the admin reading it — the amount is out of
+      // range, or the reason is missing. Passing it through beats a generic 500 for a form they can
+      // fix in place.
+      if (err.status === 400) return res.status(400).json({ error: err.message });
+      serverError(req, res, err);
+    }
   });
 
 export default router;

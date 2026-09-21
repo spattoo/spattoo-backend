@@ -74,7 +74,17 @@ const svc = code(service);
 ok(/kind: 'debit', messages: -1/.test(svc),
    'a debit is exactly one message, and negative',
    'the balance is a SUM, so the sign is the arithmetic');
-ok(!/throw/.test(svc.slice(svc.indexOf('export async function spendMessage'))),
+/* ⚠️ SCOPED TO spendMessage's OWN BODY, not "everything after it". This used to slice to the end of
+   the file, which was the same thing only while spendMessage happened to be the LAST function in it
+   — and that is a property of the file's layout, not of the rule. The first function appended after
+   it (grantComplimentaryMessages, 2026-09-20, which throws on purpose because an admin is watching
+   for the answer) failed this line without touching spendMessage at all.
+   The first `}` at column 0 after the declaration closes the function: everything nested is
+   indented, so this is exact rather than a guess. */
+const spendFrom = svc.indexOf('export async function spendMessage');
+const spendBody = svc.slice(spendFrom, svc.indexOf('\n}', spendFrom) + 2);
+ok(spendFrom > 0 && spendBody.length > 0, 'spendMessage is findable in the service');
+ok(!/throw/.test(spendBody),
    'spendMessage never throws',
    'the message has already gone; failing here retries a send that already happened');
 

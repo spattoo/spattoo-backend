@@ -14,7 +14,13 @@ const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 const ROUTES = join(ROOT, 'src', 'routes');
 
 // Capabilities only INTERNAL admins should hold. A route guarded by one is a privileged/admin route.
-const ADMIN_CAPS = new Set(['catalog:admin', 'subscription:override', 'baker:onboard', 'legal:manage']);
+// ⚠️ `billing:discount` joined this list on 2026-09-20, with its first route: complimentary message
+// credits. It is seeded `category: 'platform', is_sensitive: true` and `admin_staff` does not hold
+// it — every property that makes a capability admin-only — so a route guarded by it outside
+// /api/admin would sit beyond the boundary with nothing but its own line of middleware between a
+// baker's session and giving away credits.
+const ADMIN_CAPS = new Set(['catalog:admin', 'subscription:override', 'baker:onboard', 'legal:manage',
+                            'billing:discount']);
 // Documented exceptions: privileged routes not under /admin. Currently NONE — every admin-capability
 // route lives under /api/admin. (SEC-15 relocated the last straggler, the old /jobs/extract; that
 // route has since been superseded by /admin/element-extract/*.) Kept as the

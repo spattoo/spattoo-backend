@@ -21,8 +21,28 @@ const ok = (cond, label, extra = '') => {
 // reason.
 const STICKER = 'Cake Topper';
 const CREAM   = 'Cream Piping';
+
+/* ⚠️ THE FIXTURES USED TO INVENT THEIR OWN MEDIUM STRINGS, AND THAT IS HOW THE BUG SURVIVED.
+   This file asserted behaviour for `medium: 'edible_paper'` and `'chocolate'` — values the database
+   has never been able to store — so it was green while a printed sheet ('edible_print', the real
+   value) fell through to the permissive default and was offered a hand-modelling guide.
+   Migration 101 makes the vocabulary a TABLE, and these rows mirror its seed. `check:schema-vocab`
+   is what keeps the mirror honest; this file's job is the policy, not the list. */
+const MEDIUMS = {
+  fondant:      { key: 'fondant',      label: 'Fondant / gumpaste',          can_model: true,  can_print: true  },
+  isomalt:      { key: 'isomalt',      label: 'Isomalt / sugar glass',       can_model: true,  can_print: false },
+  wafer_paper:  { key: 'wafer_paper',  label: 'Wafer paper (shaped)',        can_model: true,  can_print: true  },
+  edible_print: { key: 'edible_print', label: 'Edible print (printed sheet)', can_model: false, can_print: true  },
+  modelling_chocolate: { key: 'modelling_chocolate', label: 'Modelling chocolate', can_model: true, can_print: true },
+  acrylic:      { key: 'acrylic',      label: 'Acrylic / non-edible',        can_model: false, can_print: false },
+};
+
 const el = (over = {}) => ({ element_types: { name: STICKER }, ...over });
-const p  = (over) => decorationPolicy(el(over));
+// Resolves the medium the way a route does — the joined row rides on the element.
+const p  = (over) => {
+  const e = el(over);
+  return decorationPolicy(e, e.medium ? MEDIUMS[e.medium] ?? null : null);
+};
 
 // ── ready-made beats every inference ─────────────────────────────────────────
 // A faux ball, a bought topper, a candle. Every other branch INFERS whether something is hand-made
@@ -39,7 +59,7 @@ const p  = (over) => decorationPolicy(el(over));
 // baker's question with silence.
 ok(p({ medium: 'fondant', placement_config: { ready_made: true } }).print === true,
    'a ready-made fondant piece can still be printed');
-ok(p({ medium: 'edible_paper', placement_config: { ready_made: true } }).print === true,
+ok(p({ medium: 'wafer_paper', placement_config: { ready_made: true } }).print === true,
    'a bought wafer decoration can still be printed');
 // Where printing genuinely is impossible the MEDIUM says so, and that answer must survive.
 ok(p({ medium: 'acrylic', placement_config: { ready_made: true } }).print === false,
@@ -72,15 +92,53 @@ ok(p({ medium: 'fondant', placement_config: { ready_made: false } }).modelling =
 // ── the rules that were already here, so the new branch cannot quietly move them ──
 ok(p({ element_types: { name: CREAM } }).modelling === false, 'cream is covered by the nozzle guide');
 ok(p({ medium: 'fondant' }).print === true,       'fondant offers both paths — bakers substitute constantly');
-ok(p({ medium: 'chocolate' }).modelling === false, 'chocolate has no guide format yet');
-ok(p({ medium: 'chocolate' }).print === true,      'chocolate can still be printed');
-ok(p({ medium: 'edible_paper' }).modelling === false, 'a printed sheet has no hand-made version');
+/* ⚠️ THESE TWO ASSERTED THE OPPOSITE OF WHAT NOW HOLDS, against values the database never accepted.
+   'chocolate' claimed modelling:false "no guide format yet" — but modelling chocolate IS modelled,
+   by hand, and the only reason it was refused is that nobody had written the format. That is a gap
+   in our tooling being encoded as a fact about the craft. It is `modelling_chocolate` now and it
+   gets the same build sheet as fondant, because the two are worked the same way.
+   'edible_paper' conflated a PRINTED sheet with SHAPED wafer paper; they are separate rows now and
+   only one of them has a hand-made version. */
+ok(p({ medium: 'edible_print' }).modelling === false, 'a printed sheet has no hand-made version');
 ok(p({ medium: 'acrylic' }).modelling === false,   'acrylic is bought, not made');
 ok(p({ medium: 'acrylic' }).print === false,       'acrylic is not printed either');
 ok(p({}).modelling === true,                       'an unset medium offers both and lets the model answer');
 ok(decorationPolicy({}).modelling === true,        'an unrecognised type does not silently withhold a guide');
 // A row that never loaded, rather than a row with nothing set.
 ok(decorationPolicy(null).modelling === true,      'a null row does not throw');
+
+
+// ── The regression this file failed to catch, asserted directly ─────────────────────────────────
+// Each of these was WRONG before migration 101 and the policy reading the material's own row.
+{
+  // A printed sheet has no hand-made version. This returned `modelling: true` because 'edible_print'
+  // matched no case in the old switch and fell to the generous default.
+  const print = p({ medium: 'edible_print' });
+  ok(print.modelling === false, 'a printed sheet offers no modelling guide', JSON.stringify(print));
+  ok(print.print === true, 'a printed sheet can still be printed');
+  ok(!/not stated/.test(print.reason), 'a STATED medium never reports "not stated"', print.reason);
+
+  // Isomalt is cooked and poured, never printed — and it must still get a build guide. Before 101
+  // the material could not be stored at all, so this had no answer.
+  const iso = p({ medium: 'isomalt' });
+  ok(iso.modelling === true,  'isomalt offers a build guide', JSON.stringify(iso));
+  ok(iso.print === false,     'isomalt cannot be printed',    JSON.stringify(iso));
+
+  // Shaped wafer paper IS made by hand — cut, wetted to curl, dried, dusted. The distinction from
+  // a printed sheet is the whole reason the two are separate rows.
+  const wafer = p({ medium: 'wafer_paper' });
+  ok(wafer.modelling === true, 'shaped wafer paper offers a build guide', JSON.stringify(wafer));
+
+  // ⚠️ AN UNRESOLVED MEDIUM IS NOT "NOT STATED". A join the caller forgot must not land on the most
+  // permissive answer available — that is exactly how the original bug stayed invisible.
+  const unresolved = decorationPolicy(el({ medium: 'something_new' }), null);
+  ok(unresolved.modelling === false, 'an unresolved medium refuses the modelling guide', JSON.stringify(unresolved));
+  ok(/not resolved/.test(unresolved.reason), 'and says so rather than claiming "not stated"', unresolved.reason);
+
+  // Genuinely unset still means "let the model answer".
+  const unset = p({});
+  ok(unset.modelling === true && /not stated/.test(unset.reason), 'an unset medium still offers both', JSON.stringify(unset));
+}
 
 if (failures) {
   console.error(`\n✗ check:decoration-policy — ${failures} rule(s) broken.`);

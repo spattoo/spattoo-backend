@@ -1,4 +1,9 @@
 // ── What a decoration is, and what may be offered for it ─────────────────────────────
+//
+// ⚠️ `medium` here is the DECORATION's material (decoration_mediums, migration 101). It is NOT the
+// `materials` table, which is what the CAKE IS COATED IN — buttercream, whipped, fondant, glaze,
+// satin — and is consumed by the designer's frostings.js for rendering. `fondant` is in both and
+// means a different thing in each.
 // PURE. No imports, so the policy can be exercised without a database, a provider or an env file —
 // the same reason inspirationMaps.js holds the match gates rather than inspirationMatch.js. These
 // are decisions about our own catalogue, and a decision that is expensive to test does not get
@@ -106,6 +111,10 @@ export function decorationDimension(el) {
 
 // Returns { modelling, print, reason } — what X-Ray may offer for this decoration.
 //
+// `medium` is the element's `decoration_mediums` row. Pass it explicitly, or let it ride on the
+// element as `el.decoration_mediums` from a PostgREST join. Only flat stickers and toppers read it:
+// every other type answers the question by itself (see above).
+//
 // `print` is deliberately generous. Printing a decoration at actual size is a real option for
 // anything flat, and a baker substitutes a print for hand-modelling constantly: for time, for a
 // customer's budget, or because the cake is travelling. Withholding it would take away a decision
@@ -113,7 +122,7 @@ export function decorationDimension(el) {
 //
 // `modelling` is the narrow one, because offering a way to hand-make something nobody hand-makes
 // is worse than offering nothing.
-export function decorationPolicy(el) {
+export function decorationPolicy(el, medium = null) {
   const type = el?.element_types?.name ?? el?.element_type ?? null;
 
   // ── Ready-made: not MADE, but often still PRINTED ─────────────────────────────────────────────
@@ -145,19 +154,36 @@ export function decorationPolicy(el) {
   }
 
   if (STICKER_TYPES.has(type)) {
-    switch (el?.medium) {
-      // The substitution case: hand-model it, or print it. Both, always.
-      case 'fondant':      return settle({ modelling: true, print: true, reason: 'fondant' });
-      case 'chocolate':    return settle({ modelling: false, print: true, reason: 'chocolate — no guide format yet' });
-      // There is no hand-modelled version of a printed sheet. A modelling guide here would invent
-      // a process.
-      case 'edible_paper': return settle({ modelling: false, print: true, reason: 'printed sheet' });
-      // Bought, not made.
-      case 'acrylic':      return settle({ modelling: false, print: false, reason: 'acrylic — not made by hand' });
-      // Not stated. Offer both and let the model answer: it self-reports when something is not
-      // hand-made, returning empty steps and saying so, which costs at most one generation.
-      default:             return settle({ modelling: true, print: true, reason: 'medium not stated' });
-    }
+    /* ⚠️ THE MATERIAL'S OWN ROW DECIDES, NOT A SWITCH IN HERE. This was a `switch (el.medium)` over
+       four string literals, and two of them — 'chocolate' and 'edible_paper' — were values the
+       database could not store, so they were dead branches. The value it actually holds for a
+       printed sheet, 'edible_print', matched no case and fell to the generous default, which
+       offered a hand-modelling guide for something nobody hand-makes and reported the reason as
+       "medium not stated" about a medium that was stated. Nothing failed; `check:decoration-policy`
+       stayed green, because its fixtures used the impossible values too. See migration 101.
+
+       The row arrives joined on the element (`decoration_mediums` via the `medium` FK) or is passed
+       in by the caller. This function stays PURE — it reads what it is handed and never queries —
+       so the policy is still exercisable without a database, which is the property that makes it
+       tested at all. */
+    const m = medium ?? el?.decoration_mediums ?? null;
+
+    // Not stated. Offer both and let the model answer: it self-reports when something is not
+    // hand-made, returning empty steps and saying so, which costs at most one generation.
+    if (!el?.medium) return settle({ modelling: true, print: true, reason: 'medium not stated' });
+
+    /* ⚠️ A MEDIUM WE CANNOT RESOLVE IS NOT "NOT STATED". The element names a material and we failed
+       to look it up — a join the caller forgot, or a row removed under us. Saying "not stated"
+       would hide that behind the most permissive answer available, which is exactly how the
+       original bug survived. Refuse the modelling guide and name the reason instead: withholding
+       one guide is recoverable, spending credits to invent a process is not. */
+    if (!m) return settle({ modelling: false, print: true, reason: `medium "${el.medium}" not resolved` });
+
+    return settle({
+      modelling: m.can_model !== false,
+      print:     m.can_print !== false,
+      reason:    m.label ? String(m.label).toLowerCase() : String(el.medium),
+    });
   }
 
   // An unrecognised or absent type. Same reasoning as an unset medium — let the model answer

@@ -420,7 +420,16 @@ function readableErasureFields(p, timeZone) {
 
 const TEMPLATE_FIELD_BUILDERS = {
   ...Object.fromEntries([...SUBSCRIPTION_NOTIFICATION_TYPES].map(t => [t, readableSubscriptionFields])),
-  order_placed_baker:       readableOrderFields,
+  /* ⚠️ readablePicture HERE TOO, not only on the customer types. `order_placed_baker` is an Image
+     template that is SWITCHED ON, and it read `thumbnailUrl` — null for a manual order, because a
+     manual order has no design and its reference photos are optional. An image-header template with
+     no image is skipped entirely, so a baker writing down a phone order was silently sent nothing.
+     And it could not be fixed from Admin: the picker offers the fields a type's builder produces, so
+     `pictureUrl` was not in the dropdown, and typing it would have been refused as "not a field this
+     notification carries". The payload was already carrying the inputs — `bakerLogoUrl` has said
+     "step 3 of the picture chain (readablePicture)" since it was written — only this line was missing.
+     Found 2026-09-19 when Sandeep went to make the flip and the option was not there. */
+  order_placed_baker:       p => ({ ...readableOrderFields(p), ...readablePicture(p) }),
   order_placed_customer:    p => ({ ...readableOrderFields(p), ...readablePicture(p) }),
   quote_accepted_baker:     readableQuoteFields,
   /* Customer-facing: the quote copies PLUS the link, because these are the ones a WhatsApp template
@@ -428,7 +437,12 @@ const TEMPLATE_FIELD_BUILDERS = {
      readable and take the link alone. */
   quote_issued_customer:    p => ({ ...readableQuoteFields(p), ...readableCustomerLink(p), ...readablePicture(p) }),
   order_confirmed_customer: p => ({ ...readableQuoteFields(p), ...readableCustomerLink(p), ...readablePicture(p) }),
-  design_updated_customer:  readableCustomerLink,
+  /* ⚠️ readablePicture HERE TOO — the template was built in AiSensy with an IMAGE header
+     (2026-09-19). Without it the only image on the payload is `thumbnailUrl`, which is
+     `order.design_thumbnail_url ?? null`, and an image-header template with a null image is skipped
+     ENTIRELY — the same silent failure `order_placed_baker` hit a day earlier. pictureUrl falls
+     through design render → bakery logo → the configured fallback, so it is never null. */
+  design_updated_customer:  p => ({ ...readableCustomerLink(p), ...readablePicture(p) }),
   order_ready_customer:     p => ({ ...readableOrderFields(p), ...readableCustomerLink(p), ...readablePicture(p) }),
   order_completed_customer: readableCustomerLink,
   delivery_digest_baker:    readableDigestFields,
@@ -452,6 +466,92 @@ const TEMPLATE_FIELD_BUILDERS = {
  * not a second copy of every payload: each entry earns its place by having broken something, and
  * each can be deleted once a notification of that type has been sent in every environment.
  */
+/* What each notification always carries, so admin can offer its fields before one has ever been sent.
+ *
+ * The picker normally reads the most recent notification of a type. That works, and it is
+ * self-correcting — but a type that has NEVER been sent has nothing to read, so the screen fell back
+ * to "type each field name exactly", which is a worse version of a dropdown for anyone configuring a
+ * new template.
+ *
+ * Kept separate from LATE_ADDED_FIELDS on purpose: that one is a short, deletable list of fields
+ * added after a send. This is the permanent shape of the payload.
+ */
+/* Stand-in values for "Send test" when a type has never been sent.
+ *
+ * The test normally fills the template from the most recent real notification. A type that has never
+ * fired has none — which is exactly when someone is setting its template up. Keyed by field NAME, so
+ * a new field gets a sensible value without another map to maintain.
+ *
+ * ⚠️ thumbnailUrl and bakerLogoUrl are left NULL on purpose: readablePicture then falls through to
+ * the configured fallback image, which is a real reachable PNG. A made-up URL here would be fetched
+ * by AiSensy and refused by WhatsApp.
+ */
+const SAMPLE_VALUES = {
+  customerFirstName: 'Asha',
+  customerName:      'Asha Menon',
+  firstName:         'Asha',
+  bakerName:         'Sample Bakery',
+  bakerSlug:         'sample-bakery',
+  slug:              'sample-bakery',
+  orderId:           '00000000-0000-0000-0000-000000000000',
+  bakerId:           '00000000-0000-0000-0000-000000000000',
+  quotedPrice:       1499,
+  finalPrice:        1499,
+  advanceAmount:     500,
+  quoteNote:         'Looking forward to baking this.',
+  quoteValidUntil:   '2026-12-31',
+  deliveryMode:      'pickup',
+  deliveryDate:      '2026-12-31',
+  deliveryTime:      '14:30',
+  mode:              'updated',
+  timeZone:          'Asia/Kolkata',
+  credits:           100,
+  amount:            499,
+  walletBalance:     250,
+  paymentId:         'pay_sample',
+  // Razorpay's own hosted retry link (subscription.short_url). A real one is rzp.io/…, which is
+  // why it can never be a WhatsApp URL button: those are one fixed base plus a suffix.
+  shortUrl:          'https://rzp.io/i/sample',
+  eraseAfter:        '2026-12-31',
+  planName:          'Blaze',
+  renewsOn:          '2026-12-31',
+  days:              5,
+  when:              'in 5 days',
+  thumbnailUrl:      null,
+  bakerLogoUrl:      null,
+  photoUrls:         [],
+};
+
+/* A believable payload for a type that has never been sent, so its template can still be tested. */
+export function samplePayload(typeSlug) {
+  const fields = NOTIFICATION_PAYLOAD_FIELDS[typeSlug];
+  if (!fields) return null;
+  return Object.fromEntries(fields.map(f => [f, f in SAMPLE_VALUES ? SAMPLE_VALUES[f] : `sample ${f}`]));
+}
+
+export const NOTIFICATION_PAYLOAD_FIELDS = {
+  order_placed_customer:    ['customerFirstName', 'bakerName', 'bakerLogoUrl', 'bakerSlug', 'orderId', 'thumbnailUrl'],
+  quote_issued_customer:    ['customerFirstName', 'bakerName', 'bakerLogoUrl', 'bakerSlug', 'orderId', 'thumbnailUrl',
+                             'quotedPrice', 'quoteValidUntil', 'advanceAmount', 'quoteNote'],
+  order_confirmed_customer: ['customerFirstName', 'bakerName', 'bakerLogoUrl', 'bakerSlug', 'orderId', 'finalPrice', 'thumbnailUrl'],
+  design_updated_customer:  ['customerFirstName', 'bakerName', 'bakerLogoUrl', 'bakerSlug', 'orderId', 'mode', 'thumbnailUrl'],
+  order_ready_customer:     ['customerFirstName', 'bakerName', 'bakerLogoUrl', 'bakerSlug', 'orderId',
+                             'deliveryMode', 'deliveryDate', 'deliveryTime', 'thumbnailUrl', 'photoUrls'],
+  order_completed_customer: ['customerFirstName', 'bakerName', 'bakerLogoUrl', 'bakerSlug', 'orderId', 'thumbnailUrl'],
+  order_placed_baker:       ['bakerId', 'customerFirstName', 'bakerName', 'bakerLogoUrl', 'bakerSlug', 'orderId', 'thumbnailUrl'],
+  quote_accepted_baker:     ['customerName', 'orderId', 'finalPrice'],
+  /* Built by renewalPayload (services/renewalReminders.js), not inline here. ⚠️ NO AMOUNT — only
+     Checkout knows plan + period + GST together, so a reminder quoting its own figure can be wrong
+     in a message about money. `when` is the ready-to-read one: "today" / "tomorrow" / "in 5 days". */
+  subscription_renewing:    ['bakerName', 'planName', 'renewsOn', 'days', 'when'],
+  /* Built inline by the billing webhook — notifyPaymentFailed(baker, { planName, shortUrl })
+     at routes/billing.js. ⚠️ That is ALL it carries: no amount, no dates, so
+     readableSubscriptionFields adds `planLabel` and nothing else. Map planLabel, never the raw
+     planName, which prints "blaze". ⚠️ shortUrl is Razorpay-hosted and NULLABLE, so it must not
+     be a template variable — a null would send a blank into the middle of a sentence. */
+  payment_failed:           ['bakerName', 'planName', 'shortUrl'],
+};
+
 export const LATE_ADDED_FIELDS = {
   // 2026-09-18, for the WhatsApp URL button. Every other customer type already carried it.
   order_placed_customer: ['orderId'],
@@ -513,6 +613,33 @@ export async function notifyCreditsPurchased(baker, { credits, amount, walletBal
     walletBalance: walletBalance ?? null,
     paymentId:     paymentId     ?? null,   // the handle support runs on, if they ever need us
   });
+}
+
+// ── Message credits, on the house ────────────────────────────────────────────
+// Sent when an admin grants a baker complimentary message credits. Not a sibling of
+// notifyCreditsPurchased despite the shape: nothing was paid, so there is no amount, no payment
+// reference and no GST invoice to point at — and saying "thanks for your payment" to somebody who
+// did not make one is the one thing this email must never do.
+//
+// ⚠️ IT EXISTS BECAUSE CREDITS THAT APPEAR UNANNOUNCED ARE CREDITS NOBODY SPENDS. The balance is a
+// number on a settings screen a baker opens rarely; a gift they never noticed changes no behaviour,
+// which makes it an expense with no effect. The email is the whole point of the gesture.
+//
+// `note` is the admin's own words and is deliberately NOT passed on. It is written for us — "comped
+// after the 14th outage", "onboarding nudge" — and reads as either an apology we did not choose to
+// make or a sales note we did not choose to send. What the baker is told is what they got.
+//
+// `balance` is the balance AFTER the grant, passed in from the ledger read rather than looked up
+// again here, so the number in the email is the one the grant actually produced.
+export async function notifyComplimentaryMessages(baker, { messages, balance }) {
+  const email = await bakerNotifyEmail(baker);
+  if (!email) return;
+  await insertNotification('message_credits_complimentary', email, {
+    bakerName: baker?.name ?? null,
+    timeZone:  baker?.timezone ?? null,
+    messages:  messages ?? null,
+    balance:   balance  ?? null,
+  }, { bakerId: baker?.id ?? null });
 }
 
 export const notifySubscriptionActivated = (baker, p) => notifySubscription('subscription_activated', baker, p);

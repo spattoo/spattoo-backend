@@ -90,7 +90,14 @@ async function matchDecoration(deco, calls) {
   const best = scored[0] || null;
   const confident = isConfidentMatch(best);
   return {
-    decoration: { type: deco.type, subtype: deco.subtype, placement: deco.placement, rim_side: deco.rim_side, color_hex: deco.color_hex, count: deco.count, text: deco.text, bbox: deco.bbox ?? null, tier_width_ratio: deco.tier_width_ratio ?? null },
+    /* ⚠️ AN EXPLICIT PROJECTION, SO A FIELD NOT LISTED HERE IS GONE — not null, ABSENT, which
+       downstream reads as "the model did not say" rather than "we dropped it". `material` was
+       missing until 2026-09-21 and the loss was invisible: nothing consumed it. The day the build
+       guide started reading it, a wafer-paper flower came through with `material: null`, the prompt
+       took its "unknown" branch, and the baker was handed six steps of rolling fondant — for a
+       decoration the vision model had correctly identified as wafer paper two functions earlier.
+       Anything a downstream reader needs must be named here. Guarded by check:decoration-material. */
+    decoration: { type: deco.type, subtype: deco.subtype, placement: deco.placement, rim_side: deco.rim_side, color_hex: deco.color_hex, count: deco.count, text: deco.text, material: deco.material ?? null, bbox: deco.bbox ?? null, tier_width_ratio: deco.tier_width_ratio ?? null },
     match: confident ? best : null,
     alternatives: scored.slice(1, 4),
     confidence: best ? +best.score.toFixed(3) : 0,

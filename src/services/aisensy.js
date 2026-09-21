@@ -46,7 +46,7 @@ export async function sendWhatsAppCampaign({ phone, campaignName, userName, para
     body.media = { url: mediaUrl, filename: mediaUrl.split('/').pop()?.split('?')[0] || 'image' };
   }
 
-  /* ── A dynamic URL button ────────────────────────────────────────────────────────────────────────
+  /* ── A dynamic URL button is JUST ANOTHER TEMPLATE PARAM ─────────────────────────────────────────
    *
    * A Meta URL button is a STATIC BASE plus a variable SUFFIX, fixed when the template is approved —
    * `https://www.spattoo.com/o/{{1}}`. `buttonSuffix` is that {{1}}, and NOT a whole URL: passing one
@@ -54,19 +54,24 @@ export async function sendWhatsAppCampaign({ phone, campaignName, userName, para
    * one fixed host (`lib/notificationFormat.js`) is that the base cannot vary, so for our order
    * templates the suffix is simply the order id.
    *
-   * ⚠️ ONE BUTTON, AT INDEX 0, deliberately. `index` is the button's position in the approved
-   * template, and every template we send has at most one URL button. Supporting an arbitrary set
-   * would mean inventing a shape nothing uses and getting the indices wrong the first time something
-   * does.
+   * ⚠️ IT GOES ON THE END OF templateParams — NOT in a `buttons` component. This sent Meta's own
+   * component format for a while, on the reasoning that AiSensy passes it through. It does not:
+   * their API reference documents exactly nine body fields and `buttons` is not among them, and it
+   * says "the length of the template params array should be equal to the number of params required
+   * in the CAMPAIGN, otherwise the request will be rejected". A campaign built on a template with
+   * three body variables and one URL button needs FOUR. We sent three and an unrecognised array, and
+   * every send answered "Template params does not match the campaign".
    *
-   * Shape is Meta's own component format, which AiSensy passes through.
+   * ⚠️ AND THE OLD SHAPE WAS "VERIFIED" — by intercepting our own outbound JSON and reading it. That
+   * proves what we send, never that the other end accepts it. No WhatsApp with a button had ever
+   * been delivered; the campaign's Sent counter was 0. A send is only proven by a send.
+   * Found 2026-09-19, with Sandeep reaching the same conclusion from the AiSensy side: the button is
+   * already configured in the approved template, so it only needs its value.
+   *
+   * The button's param comes LAST, after the body's, because that is the order Meta lists components
+   * in and the order AiSensy flattens them.
    */
-  if (buttonSuffix) {
-    body.buttons = [{
-      type: 'button', sub_type: 'url', index: '0',
-      parameters: [{ type: 'text', text: String(buttonSuffix) }],
-    }];
-  }
+  if (buttonSuffix) body.templateParams = [...params, String(buttonSuffix)];
 
   const res = await fetch(CAMPAIGN_URL, {
     method:  'POST',

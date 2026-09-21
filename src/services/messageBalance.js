@@ -1,4 +1,5 @@
 import { supabase } from './supabase.js';
+import { getEntitlements } from './entitlements.js';
 
 // ── A baker's paid-message balance, settings and history ─────────────────────────────────────────
 //
@@ -106,7 +107,7 @@ export async function listMessagePacks() {
 export async function listMessageHistory(bakerId, { limit = 25, before = null } = {}) {
   let q = supabase
     .from('message_transactions')
-    .select('id, kind, messages, pack_key, type_slug, channel, recipient, created_at')
+    .select('id, kind, messages, pack_key, type_slug, channel, recipient, note, created_at')
     .eq('baker_id', bakerId)
     .order('created_at', { ascending: false })
     .limit(limit + 1);
@@ -254,6 +255,57 @@ export async function maySpendMessage({ typeSlug, payload }) {
   return { ok: true, bakerId };
 }
 
+/* ── The first messages are on us, once, and only for a paying bakery ────────────────────────────
+ *
+ * A baker who has never sent a customer update has no way to judge whether they are worth buying.
+ * So the first few are given, at the moment a subscription becomes ACTIVE.
+ *
+ * ⚠️ HOW MANY IS AN ENTITLEMENT, NOT A NUMBER IN HERE. `welcome_message_credits` falls back to 0, so
+ * Spark grants nothing because its plan row says nothing — "we don't spend on trial bakers" is true
+ * by DATA, which is why this can be called from every activation path without first asking which
+ * tier it is. A plan worth 0 inserts no row and the call costs one entitlements read.
+ *
+ * ⚠️ AND ONCE IS THE DATABASE'S JOB. The partial unique index from migration 099 makes a second
+ * welcome row impossible, so this inserts optimistically and reads a unique violation as "they have
+ * already had it". An `if (alreadyGranted)` would lose to a retried webhook, a reactivation, or an
+ * upgrade — and every loss is money given away twice.
+ *
+ * Never throws. A subscription must not fail to activate because a gift did not land; a baker
+ * without their welcome credits is a support question, a baker without their subscription is not.
+ */
+export async function grantWelcomeMessages({ bakerId }) {
+  if (!bakerId) return { granted: 0, reason: 'no bakery' };
+  try {
+    /* ⚠️ THE VALUES ARE UNDER `.ent`, not on the object itself — `getEntitlements` returns
+       { planId, plan, status, active, ent, anchor }. Destructuring the key straight off the result
+       reads `undefined`, which is falsy, so the grant silently became "this plan includes none" for
+       EVERY baker including paying ones. Caught by running it against dev rather than by reading it:
+       a paid-tier bakery whose plan row says 25 was refused, and so was ai_credits_per_month, which
+       is what named the real cause. */
+    const { ent, active } = await getEntitlements(bakerId);
+    const amount = ent?.welcome_message_credits;
+    // A lapsed or blocked subscription already reads the floor, but saying it plainly keeps the
+    // reason on the log useful rather than "this plan includes none" for a plan that includes some.
+    if (!active) return { granted: 0, reason: 'No active subscription' };
+    if (!(amount > 0)) return { granted: 0, reason: 'This plan includes no welcome messages' };
+
+    const { error } = await supabase.from('message_transactions').insert({
+      baker_id: bakerId, kind: 'welcome', messages: amount,
+    });
+    // 23505 = unique_violation: the index did its job and they already have theirs.
+    if (error) {
+      if (error.code === '23505') return { granted: 0, reason: 'Already had their welcome messages' };
+      console.error('[messages] welcome grant failed', JSON.stringify({ bakerId, error: error.message }));
+      return { granted: 0, reason: error.message };
+    }
+    console.log('[messages] welcome grant', JSON.stringify({ bakerId, messages: amount }));
+    return { granted: amount };
+  } catch (err) {
+    console.error('[messages] welcome grant threw', JSON.stringify({ bakerId, error: err.message }));
+    return { granted: 0, reason: err.message };
+  }
+}
+
 /**
  * Record one message against the baker's balance.
  *
@@ -274,4 +326,65 @@ export async function spendMessage({ bakerId, typeSlug, channel, recipient }) {
     console.error('[messages] debit failed after a successful send',
       JSON.stringify({ bakerId, typeSlug, channel, error: error.message }));
   }
+}
+
+/**
+ * Give a baker message credits, on the house.
+ *
+ * The third way a balance can go UP, and the only one that is a decision rather than an event: a
+ * purchase is the baker paying, a welcome grant is their subscription activating, and this is
+ * somebody at Spattoo choosing to. Goodwill after a bad week, a promise made on a support call, a
+ * nudge for a baker who has never tried customer updates.
+ *
+ * ⚠️ UNLIKE THE WELCOME GRANT, THIS IS REPEATABLE AND HAS NO DATABASE GUARD. 099 could make a second
+ * welcome impossible with a partial unique index because "once, ever" is a rule about the bakery;
+ * "twice in March" is a perfectly good outcome here, so there is nothing for an index to refuse and
+ * a double submit really would give twice. What stops that is the caller: the admin form disables
+ * while saving and the new balance comes back in the response, so a duplicate is visible in the
+ * same breath rather than discovered by a baker with a suspicious number.
+ *
+ * ⚠️ AND UNLIKE EVERY OTHER WRITE IN THIS FILE, IT THROWS. `spendMessage` swallows its error because
+ * the message has already gone and failing would retry a send that happened; `grantWelcomeMessages`
+ * swallows its error because a subscription must not fail to activate over a gift. Neither applies
+ * to an admin pressing a button and watching for the answer — a grant that silently did not land,
+ * reported as success, is a promise made to a baker and not kept.
+ *
+ * @returns {Promise<{ messages: number, balance: number }>} balance AFTER the grant.
+ */
+export async function grantComplimentaryMessages({ bakerId, messages, note, grantedBy = null, grantedByEmail = null }) {
+  if (!bakerId) { const e = new Error('bakerId is required'); e.status = 400; throw e; }
+
+  // Whole, positive, and bounded. The ceiling is not arithmetic — it is a typo guard, and the typo
+  // it guards is a trailing zero on a number nobody is invoiced for and therefore nobody checks.
+  const n = Number(messages);
+  if (!Number.isInteger(n) || n < 1 || n > 5000) {
+    const e = new Error('messages must be a whole number between 1 and 5000');
+    e.status = 400;
+    throw e;
+  }
+
+  // ⚠️ REQUIRED, NOT OPTIONAL. A gift is the one row whose reason is not recoverable from the row:
+  // a purchase names its pack and a debit names its recipient, and six weeks later "40 credits,
+  // no reason" is unanswerable for the baker who asks and for us. Enforced here rather than only in
+  // the form, so a second caller cannot skip it.
+  const reason = String(note ?? '').trim();
+  if (reason.length < 3) {
+    const e = new Error('A reason is required — it is the only record of why these were given');
+    e.status = 400;
+    throw e;
+  }
+
+  const { error } = await supabase.from('message_transactions').insert({
+    baker_id: bakerId, kind: 'complimentary', messages: n,
+    note: reason.slice(0, 500), granted_by: grantedBy, granted_by_email: grantedByEmail,
+  });
+  if (error) throw new Error(`complimentary grant: ${error.message}`);
+
+  // Re-read rather than add to a number we were passed: the balance is a SUM (098), and the only
+  // honest way to report it is to ask for it. A concurrent debit between the two is exactly the
+  // kind of thing the sum is for.
+  const balance = await getMessageBalance(bakerId);
+  console.log('[messages] complimentary grant',
+    JSON.stringify({ bakerId, messages: n, balance, by: grantedByEmail }));
+  return { messages: n, balance };
 }

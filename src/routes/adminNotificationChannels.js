@@ -6,7 +6,8 @@ import { requireCapability } from '../middleware/rbac.js';
 import { pushConfigured } from '../services/fcm.js';
 import { templateSmsConfigured } from '../services/msg91.js';
 import { whatsappConfigured } from '../services/aisensy.js';
-import { addedTemplateFields, withTemplateFields, LATE_ADDED_FIELDS } from '../services/notifications.js';
+import { addedTemplateFields, withTemplateFields, LATE_ADDED_FIELDS,
+         NOTIFICATION_PAYLOAD_FIELDS, samplePayload } from '../services/notifications.js';
 import { normalizePhone } from '../lib/phone.js';
 import { config } from '../config.js';
 import {
@@ -61,7 +62,23 @@ async function latestPayload(typeId) {
 
 async function payloadFields(type) {
   const payload = await latestPayload(type.id);
-  if (!payload) return [];
+  // Never sent? Fall back to what the code says this type carries, so the picker still offers a list
+  // instead of asking someone to type field names from memory.
+  if (!payload) {
+    const base = NOTIFICATION_PAYLOAD_FIELDS[type.slug] ?? [];
+    /* ⚠️ addedTemplateFields has to be asked with a payload SHAPED like a real one, not {}.
+     * Every readable builder gates on the raw key being present — readableSubscriptionFields adds
+     * planLabel only `if ('planName' in payload)` — so asking with an empty object answers "this
+     * type has no readable fields at all". For a type that has never been sent that is silently
+     * wrong: payment_failed would offer no planLabel, and mapping the raw planName prints "blaze"
+     * instead of "Blaze". The keys are what the builders test, so null values are enough. */
+    const shaped = Object.fromEntries(base.map(f => [f, null]));
+    return [...new Set([
+      ...base,
+      ...addedTemplateFields(type.slug, shaped),
+      ...(LATE_ADDED_FIELDS[type.slug] ?? []),
+    ])].sort();
+  }
   const stored = Object.entries(payload)
     .filter(([, v]) => v === null || typeof v !== 'object')   // a list cannot fill a line of text
     .map(([k]) => k);
@@ -191,10 +208,13 @@ router.post('/admin/notification-channels/:typeId/:channel/test', requireAuth, r
       return res.status(409).json({ error: `${channel === 'sms' ? 'MSG91' : 'AiSensy'} is not set up on this server.` });
     }
 
-    const sample = await latestPayload(type.id);
+    // Never sent? Test with stand-in details rather than refusing — setting a template up is exactly
+    // when a type has not fired yet. The picture still comes from the real fallback image, so what
+    // arrives is a real message, not a mock.
+    const sample = (await latestPayload(type.id)) ?? samplePayload(type.slug);
     if (!sample) {
       return res.status(409).json({
-        error: `No "${type.label}" notification has been sent yet, so there are no details to fill the template with.`,
+        error: `No "${type.label}" notification has been sent yet, and this type has no sample details to test with.`,
       });
     }
 

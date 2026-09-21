@@ -1,5 +1,6 @@
 import { Router } from 'express';
 import { serverError } from '../lib/httpError.js';
+import { isValidEmail, normalizeEmail } from '../lib/email.js';
 import { supabase } from '../services/supabase.js';
 import { requireAuth } from '../middleware/auth.js';
 import { requireCapability } from '../middleware/rbac.js';
@@ -768,10 +769,43 @@ router.post('/customer/orders', requireAuth, async (req, res) => {
       return res.status(403).json({ error: 'Not a customer of this baker' });
     }
 
+    /* ── The ONE identity field this route will take from the body ──────────────────────────────
+     *
+     * The storefront door asks for a phone and nothing else, because in India that is the contact
+     * people actually use — so a customer arrives here verified, reachable, and with no email on
+     * file. The quote is the right moment to ask for one: they want the quote in writing, which is
+     * the first point at which an email earns its place.
+     *
+     * ⚠️ ONLY WHEN THERE IS NONE, AND IT NEVER OVERWRITES. Everything else about identity on this
+     * route is read from the TOKEN and the body is ignored, for the reason stated above — "a
+     * logged-in customer can only ever place an order as themselves". An email that could overwrite
+     * would break that: it is the field a baker's notifications are sent to, so a writable one is a
+     * way to redirect somebody else's mail. Absent-only is additive and cannot redirect anything.
+     * Same rule the OTP binding follows: "binding never overwrites."
+     *
+     * ⚠️ AND IT IS OPTIONAL. A customer with a working phone must never be stopped at the last step
+     * of a quote by a field they did not want to fill — those are exactly the people the phone-first
+     * door exists for. Bad input is dropped silently rather than 400ing: this is a courtesy field,
+     * and failing somebody's cake over it would be the wrong trade.
+     */
+    const offeredEmail = normalizeEmail(req.body?.email);
+    let contactEmail = customer.email;
+    if (!contactEmail && isValidEmail(offeredEmail)) {
+      const { error: emailErr } = await supabase
+        .from('customers')
+        .update({ email: offeredEmail })
+        .eq('id', customer.id)
+        .is('email', null);          // belt and braces: the DB refuses the overwrite too
+      if (emailErr) logError(emailErr, req);
+      else contactEmail = offeredEmail;
+    }
+
     const order = await insertOrderAndNotify({
       baker,
       customerId:      customer.id,
-      customerContact: { first_name: customer.first_name, last_name: customer.last_name, email: customer.email, phone: customer.phone },
+      // The email just given rides along, so the confirmation for THIS quote reaches them rather
+      // than starting from the next one.
+      customerContact: { first_name: customer.first_name, last_name: customer.last_name, email: contactEmail, phone: customer.phone },
       body:            req.body,
     });
 
@@ -796,6 +830,44 @@ router.post('/customer/orders', requireAuth, async (req, res) => {
     }).catch(err => logError(err, req));
 
     res.status(201).json({ orderId: order.id, createdAt: order.created_at });
+  } catch (err) {
+    serverError(req, res, err);
+  }
+});
+
+// ── GET /api/customer/profile?bakerSlug=… ─────────────────────────────────────
+// What we already hold for the signed-in customer, so the quote form knows whether it has to ask.
+//
+// ⚠️ BOOLEANS, NOT THE CONTACTS. The caller is the person, so returning their own email would leak
+// nothing new to them — but it would put a contact detail into a response for the sake of a question
+// that is answered by "yes" or "no", and a stolen token then reads it. The form only ever needs to
+// know whether to render a field.
+//
+// Scoped to the baker like every other customer route: a customer row belongs to ONE bakery, and
+// "do we have your email" is a different answer at a different shop.
+router.get('/customer/profile', requireAuth, async (req, res) => {
+  try {
+    const { bakerSlug } = req.query;
+    if (!bakerSlug) return res.status(400).json({ error: 'bakerSlug is required' });
+
+    const { data: baker } = await supabase
+      .from('bakers').select('id').eq('slug', bakerSlug).maybeSingle();
+    if (!baker) return res.status(404).json({ error: 'Storefront not found' });
+
+    const { data: customer, error } = await supabase
+      .from('customers')
+      .select('first_name, email, phone')
+      .eq('baker_id', baker.id)
+      .eq('auth_user_id', req.user.id)
+      .maybeSingle();
+    if (error) return serverError(req, res, error);
+    if (!customer) return res.status(403).json({ error: 'Not a customer of this baker' });
+
+    res.json({
+      firstName: customer.first_name ?? null,
+      hasEmail:  !!customer.email,
+      hasPhone:  !!customer.phone,
+    });
   } catch (err) {
     serverError(req, res, err);
   }

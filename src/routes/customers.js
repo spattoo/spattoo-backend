@@ -1,5 +1,6 @@
 import { Router } from 'express';
 import { serverError } from '../lib/httpError.js';
+import { EMAIL_RE } from '../lib/email.js';
 import { supabase } from '../services/supabase.js';
 import { requireAuth } from '../middleware/auth.js';
 import { requireCapability } from '../middleware/rbac.js';
@@ -10,7 +11,8 @@ import { DESIGN_SESSION_STATUS } from '../constants/designSessionStatuses.js';
 
 // Basic email shape check — the authoritative check is the OTP delivery, but reject
 // obvious garbage at the write point so an unreachable address never lands on a customer.
-const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+// Moved to lib/email.js — POST /customer/orders needed the same test and two copies of a shape
+// check standing in front of a database write is how one of them ends up laxer.
 
 const router = Router();
 

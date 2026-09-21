@@ -48,7 +48,10 @@ const STEPS_PROMPT_VERSION = 'xray-decoration-steps-v3';
 async function loadPhotoOrder(req, designedMessage) {
   // SEC-14: the order must belong to the caller's bakery. req.bakerId is server-resolved.
   const order = await assertBakerOwns(req, 'orders', req.params.id, {
-    select: 'id, design_snapshot, xray_spec',
+    // xray_spec_meta carries `coverage.unidentified` — the decorations the model SAW but matched to
+    // nothing in the catalogue. They are buildable now (see findSeen below), so the route needs
+    // them loaded, not just the snapshot.
+    select: 'id, design_snapshot, xray_spec, xray_spec_meta',
   });
   if (!order) return { status: 404, body: { error: 'Order not found' } };
   if (order.design_snapshot) {
@@ -109,7 +112,17 @@ router.post('/orders/:id/design-estimate', requireAuth, requireCapability('order
     // `orders/reference/` is a public R2 folder (routes/storage.js FOLDER_POLICY), so the model
     // fetches the image by URL — no re-upload, no base64 round trip through this process.
     const generate = async () => {
-      const { analysis, usage, model } = await analyzeCake(photoUrl);
+      /* ⚠️ THE MODEL CAN ONLY REPORT A MATERIAL IT WAS OFFERED. This list used to be seven words
+         hardcoded in the prompt, with no wafer paper and no isomalt — so a wafer-paper flower came
+         back as "sugar" and its build guide described rolling gumpaste. Reading it from
+         decoration_mediums means the x-ray, the policy and the catalogue share one vocabulary, and
+         a material added in admin is one the photo reader can name the same day. */
+      const { data: materials } = await supabase
+        .from('decoration_mediums')
+        .select('key, label, build_note')
+        .eq('is_active', true)
+        .order('sort_order');
+      const { analysis, usage, model } = await analyzeCake(photoUrl, { materials: materials ?? null });
 
       // A response with no tiers is not a cake we can build a sheet from. keep:false releases the
       // hold — the baker is not charged for a photo the model could not read, which is the beta
@@ -256,6 +269,29 @@ function findDecorationBbox(spec, key) {
   return findDecoration(spec, key)?.seen?.bbox ?? null;
 }
 
+/* ── The decoration, whether or not the catalogue recognised it ──────────────────────────────────
+ *
+ * ⚠️ TWO HALVES, AND ONLY ONE OF THEM USED TO BE REACHABLE. A decoration that MATCHED a library
+ * element becomes a sticker in `xray_spec`; one that matched nothing is recorded in
+ * `xray_spec_meta.coverage.unidentified` and was pure reporting — the baker's screen already lists
+ * it ("1 thing on the photo could not be identified"), with no way to act on it.
+ *
+ * That is backwards for a build guide. The decoration nobody can match is the one the baker has
+ * never made — a wafer-paper flower scored 0.428 against a 134-element catalogue and was dropped,
+ * while the things we DO stock, and can already describe, were the only ones offered a guide. The
+ * better the reason to want the guide, the less likely it was to exist.
+ *
+ * Nothing about the generation needed to change: `suggestBuildGuide` reads the decoration out of
+ * the whole-cake PHOTO via `focus`, and never wanted an element id. Only the lookup did.
+ *
+ * Shape-compatible on purpose — both halves answer `.material`, so the caller does not branch. */
+function findSeen(order, key) {
+  const matched = findDecoration(order?.xray_spec, key);
+  if (matched) return matched;
+  const un = order?.xray_spec_meta?.coverage?.unidentified;
+  return (Array.isArray(un) ? un.find(u => u?.key === key) : null) ?? null;
+}
+
 // ── POST /api/orders/:id/xray/decoration-steps ────────────────────────────────
 // How do I make THIS decoration — for a decoration that exists only in the customer's photo.
 //
@@ -315,14 +351,20 @@ router.post('/orders/:id/xray/decoration-steps', requireAuth, requireCapability(
     // printed, not modelled, so there were never any steps to teach.
     //
     // 200, not 4xx. Nothing has gone wrong and there is nothing for the client to retry.
-    if (isLikenessRisk(findDecoration(order.xray_spec, key)) || isLikenessRisk({ label })) {
+    // ⚠️ SCREENED THROUGH THE SAME GATE. An unmatched decoration is not a less-checked one — it is
+    // the half we could say least about, so skipping the likeness test here would put the weakest
+    // reading on the loosest path.
+    if (isLikenessRisk(findSeen(order, key)) || isLikenessRisk({ label })) {
       return res.json({ ok: false, key, ...LIKENESS_REFUSAL });
     }
 
     // Where this decoration is in the photo, so the stage grid can be conditioned on the real
     // thing rather than on the whole cake. Absent is fine — the grid falls back to the full photo,
     // which is worse but not wrong, and the model is told what to look for either way.
-    const bbox = findDecorationBbox(order.xray_spec, key);
+    // Unidentified entries carry their own `bbox` at the top level (the model said where it saw
+    // the thing even when it could not name it); matched stickers carry it under `seen`. Both are
+    // frequently null, which the crop path already treats as normal rather than as an error.
+    const bbox = findDecorationBbox(order.xray_spec, key) ?? findSeen(order, key)?.bbox ?? null;
 
     const photo = await primaryReferencePhoto(order.id);
     if (!photo.url) return res.status(NO_PHOTO.status).json(NO_PHOTO.body);
@@ -351,8 +393,31 @@ router.post('/orders/:id/xray/decoration-steps', requireAuth, requireCapability(
         } else {
           // `focus` puts the model in whole-cake mode: read this ONE decoration and ignore the
           // rest. Without it, given a busy cake, it describes whichever object is most prominent.
+          /* The material here is READ FROM THE PHOTO — there is no catalogue element and so no
+             authored medium. It is resolved against `decoration_mediums` so the technique note
+             travels with it, and marked `inferred` so the prompt treats it as a strong reading
+             rather than a fact and lets the picture overrule it.
+
+             ⚠️ I ARGUED AGAINST THIS MAPPING AND WAS WRONG. The first cut passed the label alone,
+             on the reasoning that "mapping a guessed label onto an authored key makes a reading
+             look like a decision". The cost of that purity was the whole technique: with a label
+             and no note the prompt fell back to sugar paste, and a wafer-paper flower came back as
+             six steps of rolling gumpaste and cutting petals. Withholding the note did not make the
+             answer more honest, it made it wrong. `inferred` is how a reading stays a reading. */
+          const seen = findSeen(order, key);
+          let material = null;
+          if (seen?.material) {
+            const { data: m } = await supabase
+              .from('decoration_mediums')
+              .select('key, label, build_note')
+              .eq('key', String(seen.material))
+              .maybeSingle();
+            // Unresolved is still worth passing: the prompt's third branch tells the model to
+            // describe how THAT material is actually worked rather than defaulting to sugar paste.
+            material = { label: m?.label ?? String(seen.material), build_note: m?.build_note ?? null, inferred: true };
+          }
           ({ guide, usage, model } = await suggestBuildGuide({
-            imageUrl: photo.url, name: label, focus: label,
+            imageUrl: photo.url, name: label, focus: label, material,
           }));
         }
         // No steps = "this is piped or printed, not modelled by hand". A real answer — the piping

@@ -327,7 +327,7 @@ router.get('/admin/elements/:id/decoration-guide', requireAuth, requireCapabilit
   try {
     const { data: el } = await supabase
       .from('cake_elements')
-      .select('id, name, medium, placement_config, baker_id, element_types(name)')
+      .select('id, name, medium, placement_config, baker_id, element_types(name), decoration_mediums(key, label, can_model, can_print, guide_format, build_note)')
       .eq('id', req.params.id).maybeSingle();
     if (!el) return res.status(404).json({ error: 'Element not found' });
 
@@ -338,7 +338,7 @@ router.get('/admin/elements/:id/decoration-guide', requireAuth, requireCapabilit
 
     res.json({
       guide: data ? withStageUrl(data) : null,
-      policy: decorationPolicy(el),
+      policy: decorationPolicy(el, el.decoration_mediums),
       medium: el.medium ?? null,
       elementType: el.element_types?.name ?? null,
     });
@@ -360,7 +360,7 @@ router.post('/admin/elements/:id/decoration-guide', requireAuth, requireCapabili
   try {
     const { data: el } = await supabase
       .from('cake_elements')
-      .select('id, name, description, image_url, thumbnail_url, thumb_key, medium, placement_config, baker_id, element_types(name)')
+      .select('id, name, description, image_url, thumbnail_url, thumb_key, medium, placement_config, baker_id, element_types(name), decoration_mediums(key, label, can_model, can_print, guide_format, build_note)')
       .eq('id', req.params.id).maybeSingle();
     if (!el) return res.status(404).json({ error: 'Element not found' });
     // A baker's own decoration is theirs to generate and theirs to pay for. Admin generating it
@@ -470,7 +470,7 @@ router.post('/elements/:id/xray/decoration-steps', requireAuth, requireCapabilit
     // null) they used on a cake. Never for another bakery's private decoration.
     const { data: el } = await supabase
       .from('cake_elements')
-      .select('id, name, description, image_url, thumbnail_url, thumb_key, medium, placement_config, baker_id, element_types(name)')
+      .select('id, name, description, image_url, thumbnail_url, thumb_key, medium, placement_config, baker_id, element_types(name), decoration_mediums(key, label, can_model, can_print, guide_format, build_note)')
       .eq('id', req.params.id).maybeSingle();
     if (!el) return res.status(404).json({ error: 'Element not found' });
     if (el.baker_id && el.baker_id !== req.bakerId) {
@@ -491,7 +491,7 @@ router.post('/elements/:id/xray/decoration-steps', requireAuth, requireCapabilit
     // NOT a restriction on the decoration itself: printing it at actual size stays available
     // either way, and a FONDANT element keeps both paths precisely because bakers substitute one
     // for the other constantly.
-    const policy = decorationPolicy(el);
+    const policy = decorationPolicy(el, el.decoration_mediums);
     if (!policy.modelling) {
       return res.status(409).json({
         error: 'This decoration is not hand-modelled — print it at actual size instead.',
