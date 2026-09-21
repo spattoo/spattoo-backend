@@ -323,9 +323,35 @@ Keep "reason" friendly and specific (e.g. "This photo has a person in it — upl
 // fortunate, because absolute size is the one thing an uncalibrated photo cannot give. Hence
 // height_ratio + width_ratio: proportions are visible, inches are not. Without width_ratio the tin
 // plan falls back to a blind 0.62^i taper, and a wrong tin is a re-bake.
-export async function analyzeCake(imageUrl) {
+// `materials` — the keys and labels from `decoration_mediums` (migration 101), so the model reports
+// a material the rest of the system can act on.
+//
+// ⚠️ THIS LIST WAS HARDCODED AS `<buttercream|fondant|acrylic|sugar|chocolate|fresh|other>` AND IT
+// COULD NOT SAY "WAFER PAPER". Tested on a real cake carrying a wafer-paper flower: the model saw a
+// translucent gold-edged ruffle and returned the nearest word available to it, `sugar`. The build
+// guide then described rolling gumpaste and cutting petals with cutters — a competent sugar flower,
+// and a different craft from the one in the photo. The enum was the binding constraint, not the
+// model's eyesight.
+//
+// Falls back to the old literal list when no vocabulary is passed, so a caller that has not been
+// updated degrades to previous behaviour rather than sending the model an empty set.
+const LEGACY_MATERIALS = 'buttercream|fondant|acrylic|sugar|chocolate|fresh|other';
+const materialEnum = (materials) => {
+  const keys = (materials ?? []).map(m => m?.key).filter(Boolean);
+  return keys.length ? keys.join('|') : LEGACY_MATERIALS;
+};
+// What each key MEANS, so the model picks on the craft rather than on the word. Without this,
+// `wafer_paper` and `edible_print` are two similar-sounding strings and it will guess.
+const materialLegend = (materials) => {
+  const rows = (materials ?? []).filter(m => m?.key && m?.build_note);
+  if (!rows.length) return '';
+  return `\nWHAT EACH MATERIAL MEANS — choose on how the thing was MADE, not on what the word sounds like:\n`
+    + rows.map(m => `  ${m.key}: ${m.build_note}`).join('\n') + '\n';
+};
+
+export async function analyzeCake(imageUrl, { materials = null } = {}) {
   const prompt = `You are a master cake decorator analysing a cake photo so it can be rebuilt from a parts library.
-Describe ONLY what you can actually see. Return ONLY a JSON object, no prose:
+Describe ONLY what you can actually see. Return ONLY a JSON object, no prose:${materialLegend(materials)}
 {
   "cake": {
     "tier_count": <integer 1-5>,
@@ -352,7 +378,7 @@ Describe ONLY what you can actually see. Return ONLY a JSON object, no prose:
           "placement": "<top_surface|side|middle_tier|board|rim>",
           "rim_side": "<top|bottom — ONLY when placement is 'rim' (a border/edge); else null>",
           "color_hex": "<hex>",
-          "material": "<buttercream|fondant|acrylic|sugar|chocolate|fresh|other, or null>",
+          "material": "<${materialEnum(materials)}, or null>",
           "technique": "<short, e.g. 'star tip (1M)', or null>",
           "text": "<for lettering, the exact text, else null>",
           "count": "<a number, or 'continuous', or 'few'>",
@@ -808,11 +834,39 @@ function decodeImages(data) {
 // material added next year arrives with its technique rather than needing this file edited.
 // Absent, the prompt falls back to sugar paste and SAYS SO, rather than silently assuming it.
 export async function suggestBuildGuide({ imageUrl, name, description, focus = null, dimension = null, roles = [], material = null }) {
+  /* ⚠️ THREE STATES, NOT TWO, AND CONFLATING THEM PRODUCED A CONTRADICTORY PROMPT. The first cut
+     branched on `build_note` alone, so a material READ FROM A PHOTO — a label with no note, which
+     is what the reference-photo path has — printed "MATERIAL: sugar" and then, two lines later,
+     "No material was stated for this decoration. Assume fondant / sugar paste." The model resolved
+     that the only way it could: it assumed fondant, and returned a gumpaste guide for a wafer-paper
+     flower. Caught by running it on a real cake photo, not by reading it.
+
+       authored  — the element carries a medium (decoration_mediums). Fact; follow it.
+       inferred  — the vision model named it off a photograph. Probably right, occasionally not,
+                   and the PICTURE outranks it — but it is still far better than defaulting to
+                   sugar paste, which is what "unknown" does.
+       unknown   — nothing at all. Assume sugar paste and SAY SO, so the baker can adapt. */
+  /* ⚠️ THE GUIDE'S OWN `medium` FIELD USED TO CARRY A THIRD HARDCODED LIST —
+     `<fondant|gumpaste|modelling_chocolate|other>` — which could not name wafer paper either. The
+     first correct wafer-paper guide this produced still reported `medium: "other"` beside four
+     perfect wafer-paper steps. It echoes the material it was given now, so the field agrees with
+     the instructions underneath it. */
   const matLabel = material?.label || 'fondant / sugar paste';
-  const matNote  = material?.build_note
-    ? `HOW THIS MATERIAL IS WORKED — this is fact, follow it over any habit:\n${material.build_note}`
-    : `No material was stated for this decoration. Assume fondant / sugar paste, and say so in a tip
-so the baker knows the guide is written for that and can adapt it.`;
+  const matNote  = !material?.label
+    ? `No material was stated for this decoration. Assume fondant / sugar paste, and say so in a tip
+so the baker knows the guide is written for that and can adapt it.`
+    : material.build_note && !material.inferred
+      ? `HOW THIS MATERIAL IS WORKED — this is fact, follow it over any habit:\n${material.build_note}`
+      : material.build_note
+        ? `THE MATERIAL WAS READ FROM THE PHOTOGRAPH, not stated by the baker — so it is a strong
+reading rather than a certainty. Materials of this kind are worked like this:
+${material.build_note}
+Follow that unless the picture plainly contradicts it, in which case follow the picture and say in a
+tip what you think it is made of.`
+        : `THE MATERIAL WAS READ FROM THE PHOTOGRAPH as "${material.label}", and we hold no technique
+note for it. Describe how "${material.label}" is ACTUALLY worked by a decorator — do NOT quietly fall
+back to rolling and cutting sugar paste, which is a different craft and would send the baker to the
+wrong tools. If you cannot tell what it is made of, say so in a tip rather than guessing.`;
   const prompt = `You are a master sugar-artist writing a build guide for ONE decoration, so another baker can make it by hand.
 
 Decoration name: ${name || '(unnamed)'}
@@ -905,7 +959,7 @@ described a photograph, not a method.
 Return ONLY valid JSON, no explanation:
 {
   "title": "<short name of the thing being made>",
-  "medium": "<fondant|gumpaste|modelling_chocolate|other>",
+  "medium": "<the material named above, or 'other' if you genuinely cannot tell>",
   "roles": ["<lowercase_token>", …],
   "colours": [{ "role": "<token>", "hex": "<hex you can SEE on this decoration>", "name": "<colour name>" }],
   "materials": [{ "role": "<token>", "label": "<what to prepare, e.g. 'fondant (head)'>" }],

@@ -109,7 +109,17 @@ router.post('/orders/:id/design-estimate', requireAuth, requireCapability('order
     // `orders/reference/` is a public R2 folder (routes/storage.js FOLDER_POLICY), so the model
     // fetches the image by URL — no re-upload, no base64 round trip through this process.
     const generate = async () => {
-      const { analysis, usage, model } = await analyzeCake(photoUrl);
+      /* ⚠️ THE MODEL CAN ONLY REPORT A MATERIAL IT WAS OFFERED. This list used to be seven words
+         hardcoded in the prompt, with no wafer paper and no isomalt — so a wafer-paper flower came
+         back as "sugar" and its build guide described rolling gumpaste. Reading it from
+         decoration_mediums means the x-ray, the policy and the catalogue share one vocabulary, and
+         a material added in admin is one the photo reader can name the same day. */
+      const { data: materials } = await supabase
+        .from('decoration_mediums')
+        .select('key, label, build_note')
+        .eq('is_active', true)
+        .order('sort_order');
+      const { analysis, usage, model } = await analyzeCake(photoUrl, { materials: materials ?? null });
 
       // A response with no tiers is not a cake we can build a sheet from. keep:false releases the
       // hold — the baker is not charged for a photo the model could not read, which is the beta
@@ -351,19 +361,31 @@ router.post('/orders/:id/xray/decoration-steps', requireAuth, requireCapability(
         } else {
           // `focus` puts the model in whole-cake mode: read this ONE decoration and ignore the
           // rest. Without it, given a busy cake, it describes whichever object is most prominent.
-          /* ⚠️ A GUESS, NOT AN AUTHORED FACT, and passed as one. This decoration exists only in the
-             customer's photo — there is no catalogue element and so no `medium` row. What the
-             x-ray spec carries is the vision model's own reading of the material, which is worth
-             handing on (a guide for a sugar-glass shard should not describe rolling paste) but
-             carries no `build_note`, so the prompt keeps its sugar-paste fallback and says so.
-             ⚠️ The spec's material vocabulary is its OWN list, written into the x-ray prompt, and
-             does NOT match decoration_mediums — see plans/element-help.md. Deliberately not
-             reconciled here: mapping a guessed label onto an authored key would make a reading
-             look like a decision. */
+          /* The material here is READ FROM THE PHOTO — there is no catalogue element and so no
+             authored medium. It is resolved against `decoration_mediums` so the technique note
+             travels with it, and marked `inferred` so the prompt treats it as a strong reading
+             rather than a fact and lets the picture overrule it.
+
+             ⚠️ I ARGUED AGAINST THIS MAPPING AND WAS WRONG. The first cut passed the label alone,
+             on the reasoning that "mapping a guessed label onto an authored key makes a reading
+             look like a decision". The cost of that purity was the whole technique: with a label
+             and no note the prompt fell back to sugar paste, and a wafer-paper flower came back as
+             six steps of rolling gumpaste and cutting petals. Withholding the note did not make the
+             answer more honest, it made it wrong. `inferred` is how a reading stays a reading. */
           const seen = findDecoration(order.xray_spec, key);
+          let material = null;
+          if (seen?.material) {
+            const { data: m } = await supabase
+              .from('decoration_mediums')
+              .select('key, label, build_note')
+              .eq('key', String(seen.material))
+              .maybeSingle();
+            // Unresolved is still worth passing: the prompt's third branch tells the model to
+            // describe how THAT material is actually worked rather than defaulting to sugar paste.
+            material = { label: m?.label ?? String(seen.material), build_note: m?.build_note ?? null, inferred: true };
+          }
           ({ guide, usage, model } = await suggestBuildGuide({
-            imageUrl: photo.url, name: label, focus: label,
-            material: seen?.material ? { label: String(seen.material) } : null,
+            imageUrl: photo.url, name: label, focus: label, material,
           }));
         }
         // No steps = "this is piped or printed, not modelled by hand". A real answer — the piping

@@ -85,6 +85,7 @@ export async function buildElementGuide(el, { ownerBakerId = null, quality = nul
      actively misleading for isomalt, which is poured hot and never rolled. */
   const { guide, usage, model } = await suggestBuildGuide({
     imageUrl: toPublicUrl(imageKey), name: el.name, description: el.description, dimension, roles,
+    // Authored on the element, so `inferred` stays false and the prompt follows it as fact.
     material: el.decoration_mediums ?? null,
   });
   const calls = [{ model, usage }];
