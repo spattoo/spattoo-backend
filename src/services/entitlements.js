@@ -64,6 +64,17 @@ export async function getOrderAcceptance(bakerId) {
   // every request and then needs `premium_themes` to decide which theme to serve — resolving the
   // set twice on the hottest unauthenticated route would be two round trips for an answer that is
   // sitting right here. Callers that only want `accepting` can keep ignoring it.
-  if (!e.active) return { accepting: false, code: 'BAKER_INACTIVE', ent: e };
-  return { accepting: true, code: null, ent: e };
+  /* ⚠️ `e.ent`, NOT `e`. getEntitlements returns { planId, plan, status, active, ent, anchor } — the
+     VALUES are one level down. Returning the wrapper made `ent.premium_themes` undefined at every
+     call site, which is falsy, so `servedThemeKey` fell back for EVERY premium theme on EVERY plan.
+     A Blaze baker chose Patisserie, the 403 gate correctly let them (it reads getEntitlements the
+     right way), and their live shop served Spotlight. Reported from production 2026-09-21.
+
+     ⚠️ THE SECOND TIME THIS EXACT SHAPE HAS COST US. `grantWelcomeMessages` had it in August and
+     refused every paying baker their welcome credits; the note in plans/message-recharge.md ends
+     "Assume the next one is silent too." It was. Nothing throws, nothing logs, and the page renders
+     — the only symptom is a premium theme that quietly is not premium. Guarded now by
+     check:entitlement-shape. */
+  if (!e.active) return { accepting: false, code: 'BAKER_INACTIVE', ent: e.ent };
+  return { accepting: true, code: null, ent: e.ent };
 }
