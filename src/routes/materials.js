@@ -4,6 +4,12 @@ import { supabase } from '../services/supabase.js';
 import { requireAuth } from '../middleware/auth.js';
 import { requireCapability } from '../middleware/rbac.js';
 
+// ⚠️ THIS IS THE CAKE'S COATING, NOT A DECORATION'S MATERIAL. buttercream, whipped, fondant,
+// chocolate glaze, satin — `config.applies_to: ["body"]` and render styles, overlaid onto the
+// in-code seed by applyMaterialConfig (spattoo-core frostings.js). What a DECORATION is made of is
+// `decoration_mediums` (migration 101), which carries can_model / can_print / build_note and drives
+// what X-Ray may offer. `fondant` is in both tables and means a different thing in each.
+
 const router = Router();
 
 const FIELDS = 'id, key, label, config, is_active, sort_order, updated_at';

@@ -33,6 +33,16 @@
 -- a new branch. `element_types` (how it BEHAVES) and `element_categories` (what it IS) are already
 -- tables for this reason; `medium` (what it is MADE OF) is the third axis and was the odd one out.
 
+-- ⚠️ NOT THE SAME THING AS THE `materials` TABLE, and the word makes that easy to get wrong.
+-- `materials` (buttercream, whipped, fondant, chocolate glaze, satin) is what the CAKE IS COATED
+-- IN — `config.applies_to: ["body"]`, render `styles`, consumed by applyMaterialConfig in the
+-- designer's frostings.js. It has never touched cake_elements.
+-- This table is what a DECORATION IS MADE OF. `fondant` appears in both and means different things:
+-- a cake covered in fondant, versus a decoration modelled from it.
+-- They are deliberately separate. Merging them would ask "can you hand-model this?" of satin and
+-- chocolate glaze, where the question has no meaning, and put isomalt and royal icing in the
+-- cake-covering picker.
+
 create table if not exists decoration_mediums (
   key         text    primary key,
   label       text    not null,

@@ -1,4 +1,9 @@
 // ── What a decoration is, and what may be offered for it ─────────────────────────────
+//
+// ⚠️ `medium` here is the DECORATION's material (decoration_mediums, migration 101). It is NOT the
+// `materials` table, which is what the CAKE IS COATED IN — buttercream, whipped, fondant, glaze,
+// satin — and is consumed by the designer's frostings.js for rendering. `fondant` is in both and
+// means a different thing in each.
 // PURE. No imports, so the policy can be exercised without a database, a provider or an env file —
 // the same reason inspirationMaps.js holds the match gates rather than inspirationMatch.js. These
 // are decisions about our own catalogue, and a decision that is expensive to test does not get
