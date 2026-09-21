@@ -220,6 +220,10 @@ export function buildXraySpec(analysis, matched) {
           what:      [d.type, d.subtype].filter(Boolean).join(' ').replace(/_/g, ' ') || 'decoration',
           color:     hex(d.color_hex),
           placement: d.placement ?? null,
+          /* What the PHOTO said it is made of, kept beside what it matched to. The element's own
+             `medium` is authored and outranks this — but most of the catalogue has none set, and a
+             read is better than the sugar-paste default a missing material falls back to. */
+          material:  typeof d.material === 'string' && d.material.trim() ? d.material.trim() : null,
           // Where it is IN THE PHOTO, so the sheet can show a close-up of the real decoration
           // instead of describing it. Null whenever the model would not commit — a wrong crop
           // shows the baker a picture of the wrong thing, which is worse than showing none.
