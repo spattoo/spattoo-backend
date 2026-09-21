@@ -147,10 +147,23 @@ export function buildXraySpec(analysis, matched) {
       // exactly the bow that matched a fondant doll. Both scores travel so the two are separable.
       if (!m?.id) {
         unidentified.push({
+          /* ⚠️ A STABLE KEY, BECAUSE THIS ROW IS NOW SOMETHING A BAKER CAN ACT ON. It used to be
+             pure reporting — "we saw this and could not name it" — so nothing needed to address
+             it. The decoration-steps route takes a `key` and a `label`, never an element id, so a
+             key is the only thing these entries were missing to be buildable. Derived from
+             position rather than content: the same photo read twice must produce the same key or a
+             stored guide is orphaned on every regenerate. */
+          key:        `unmatched-${tierIndex}-${k}`,
           what:       [d.type, d.subtype].filter(Boolean).join(' ').replace(/_/g, ' ') || 'decoration',
           tierIndex,
           placement:  d.placement ?? null,
           color:      hex(d.color_hex),
+          /* ⚠️ THE MATERIAL TRAVELS WITH IT. Every other field here describes WHERE and WHAT; this
+             is the one that decides HOW it is made, and without it a build guide for an unmatched
+             decoration falls back to sugar paste — which is how a wafer-paper flower came back as
+             six steps of rolling gumpaste. The decoration that matched nothing is exactly the one
+             whose material we cannot look up, so the read is all there is. */
+          material:   typeof d.material === 'string' && d.material.trim() ? d.material.trim() : null,
           confidence: item?.confidence ?? 0,
           semantic:   item?.semantic ?? 0,
           bbox:       bbox(d.bbox),
@@ -267,10 +280,12 @@ export function buildXraySpec(analysis, matched) {
 
       // A cake-level type this mapper has no case for. Surfaced, never dropped.
       unidentified.push({
+        key:        `unmatched-cake-${tierIndex}-${i}`,
         what:       String(d.type ?? 'decoration').replace(/_/g, ' '),
         tierIndex,
         placement:  d.placement ?? null,
         color:      hex(d.color_hex),
+        material:   typeof d.material === 'string' && d.material.trim() ? d.material.trim() : null,
         confidence: 0,
       });
     });
