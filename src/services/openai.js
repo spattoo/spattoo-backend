@@ -1,4 +1,5 @@
 import { config } from '../config.js';
+import { ProviderQuotaError, isQuotaExhausted } from '../lib/providerQuota.js';
 
 const sleep = (ms) => new Promise(r => setTimeout(r, ms));
 
@@ -110,7 +111,11 @@ Rules:
     }),
   });
 
-  if (!res.ok) throw new Error(`GPT-4o failed: ${await res.text()}`);
+  if (!res.ok) {
+    const text = await res.text();
+    if (isQuotaExhausted(text)) throw new ProviderQuotaError();
+    throw new Error(`GPT-4o failed: ${text}`);
+  }
   const data = await res.json();
   const raw  = data.choices[0].message.content.trim();
   const json = raw.replace(/^```[a-z]*\n?/i, '').replace(/\n?```$/i, '').trim();
@@ -191,6 +196,10 @@ Return ONLY valid JSON, no explanation:
     });
     if (res.ok) break;
     const text = await res.text();
+    /* ⚠️ AN EMPTY BALANCE ALSO ARRIVES AS 429. Retrying it six times with backoff waits out the
+       whole schedule for something no amount of waiting fixes, then fails anyway — see
+       lib/providerQuota.js. Checked BEFORE the retry, or the caller pays for the delay. */
+    if (isQuotaExhausted(text)) throw new ProviderQuotaError();
     if (res.status === 429 && attempt < 6) {
       const m = text.match(/try again in ([\d.]+)s/);
       const waitMs = m ? Math.ceil(parseFloat(m[1]) * 1000) + 750 : 6000 * (attempt + 1);
@@ -294,6 +303,10 @@ Keep "reason" friendly and specific (e.g. "This photo has a person in it — upl
     });
     if (res.ok) break;
     const text = await res.text();
+    /* ⚠️ AN EMPTY BALANCE ALSO ARRIVES AS 429. Retrying it six times with backoff waits out the
+       whole schedule for something no amount of waiting fixes, then fails anyway — see
+       lib/providerQuota.js. Checked BEFORE the retry, or the caller pays for the delay. */
+    if (isQuotaExhausted(text)) throw new ProviderQuotaError();
     if (res.status === 429 && attempt < 6) {
       const m = text.match(/try again in ([\d.]+)s/);
       const waitMs = m ? Math.ceil(parseFloat(m[1]) * 1000) + 750 : 6000 * (attempt + 1);
@@ -455,6 +468,10 @@ Rules:
     });
     if (res.ok) break;
     const text = await res.text();
+    /* ⚠️ AN EMPTY BALANCE ALSO ARRIVES AS 429. Retrying it six times with backoff waits out the
+       whole schedule for something no amount of waiting fixes, then fails anyway — see
+       lib/providerQuota.js. Checked BEFORE the retry, or the caller pays for the delay. */
+    if (isQuotaExhausted(text)) throw new ProviderQuotaError();
     if (res.status === 429 && attempt < 6) {
       const m = text.match(/try again in ([\d.]+)s/);
       const waitMs = m ? Math.ceil(parseFloat(m[1]) * 1000) + 750 : 6000 * (attempt + 1);
@@ -486,6 +503,10 @@ export async function embedText(input) {
     });
     if (res.ok) break;
     const text = await res.text();
+    /* ⚠️ AN EMPTY BALANCE ALSO ARRIVES AS 429. Retrying it six times with backoff waits out the
+       whole schedule for something no amount of waiting fixes, then fails anyway — see
+       lib/providerQuota.js. Checked BEFORE the retry, or the caller pays for the delay. */
+    if (isQuotaExhausted(text)) throw new ProviderQuotaError();
     if (res.status === 429 && attempt < 6) {
       const m = text.match(/try again in ([\d.]+)s/);
       const waitMs = m ? Math.ceil(parseFloat(m[1]) * 1000) + 750 : 6000 * (attempt + 1);
@@ -532,6 +553,10 @@ Return ONLY JSON: { "description": "<comma-separated keywords>" }`;
     });
     if (res.ok) break;
     const text = await res.text();
+    /* ⚠️ AN EMPTY BALANCE ALSO ARRIVES AS 429. Retrying it six times with backoff waits out the
+       whole schedule for something no amount of waiting fixes, then fails anyway — see
+       lib/providerQuota.js. Checked BEFORE the retry, or the caller pays for the delay. */
+    if (isQuotaExhausted(text)) throw new ProviderQuotaError();
     if (res.status === 429 && attempt < 6) {
       const m = text.match(/try again in ([\d.]+)s/);
       const waitMs = m ? Math.ceil(parseFloat(m[1]) * 1000) + 750 : 6000 * (attempt + 1);
@@ -1022,6 +1047,10 @@ Rules:
     });
     if (res.ok) break;
     const text = await res.text();
+    /* ⚠️ AN EMPTY BALANCE ALSO ARRIVES AS 429. Retrying it six times with backoff waits out the
+       whole schedule for something no amount of waiting fixes, then fails anyway — see
+       lib/providerQuota.js. Checked BEFORE the retry, or the caller pays for the delay. */
+    if (isQuotaExhausted(text)) throw new ProviderQuotaError();
     if (res.status === 429 && attempt < 6) {
       const m = text.match(/try again in ([\d.]+)s/);
       const waitMs = m ? Math.ceil(parseFloat(m[1]) * 1000) + 750 : 6000 * (attempt + 1);
