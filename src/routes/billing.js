@@ -649,13 +649,13 @@ router.get('/billing/payments', requireAuth, requireCapability('billing:manage')
       .from('payments')
       // credit_packs joined rather than a label stored on the payment: a pack's name lives in one
       // place, so renaming it does not leave old rows describing something that no longer exists.
-      .select('id, razorpay_payment_id, amount, currency, status_id, charged_at, credit_packs (credits, label)', { count: 'exact' })
+      .select('id, razorpay_payment_id, amount, currency, status_id, charged_at, credit_packs (credits, label), message_packs (messages, label)', { count: 'exact' })
       .eq('baker_id', baker.id)
       .order('charged_at', { ascending: false })
       .limit(limit);
     if (error) return serverError(req, res, error);
 
-    const payments = (data ?? []).map(({ status_id, credit_packs, ...p }) => ({
+    const payments = (data ?? []).map(({ status_id, credit_packs, message_packs, ...p }) => ({
       ...p,
       status: PAYMENT_STATUS.NAME_BY_ID[status_id] ?? 'unknown',
       // What this payment BOUGHT, when it was a top-up. Absent on a subscription charge, which is
@@ -663,6 +663,10 @@ router.get('/billing/payments', requireAuth, requireCapability('billing:manage')
       // and only a top-up gains a line. Credits rather than the pack's label: "+150 credits" is
       // what the baker recognises, where "Small top-up" is our word for it.
       credits: credit_packs?.credits ?? null,
+      // The OTHER kind of top-up, and its own field rather than a shared count+unit pair: a row
+      // says "+110 messages" or "+150 credits" and never both, and a caller that dropped the unit
+      // would print a count of the wrong thing at the one place a baker checks what they paid for.
+      messages: message_packs?.messages ?? null,
     }));
     res.json({ payments, total: count ?? payments.length });
   } catch (err) {
@@ -748,7 +752,10 @@ router.post('/billing/webhook', async (req, res) => {
         if (!txId) console.warn('[billing] message pack minted nothing', payment?.id, msgPackKey);
 
         try {
-          const pack = await getMessagePack(msgPackKey);
+          // `activeOnly: false`, for the reason the credit-pack branch below spells out: a pack
+          // retired between checkout and this webhook was still legitimately bought, and the
+          // payment row and the invoice must both name it.
+          const pack = await getMessagePack(msgPackKey, { activeOnly: false });
           const { error: payErr } = await supabase.from('payments').upsert({
             razorpay_payment_id: payment.id,
             baker_id:            msgBakerId,
@@ -757,6 +764,10 @@ router.post('/billing/webhook', async (req, res) => {
             amount:              payment.amount ?? withGst(pack?.price_paise ?? 0),
             currency:            payment.currency ?? 'INR',
             status_id:           PAYMENT_STATUS.CAPTURED,
+            // What this payment BOUGHT (migration 103). Without it a message top-up lands in the
+            // baker's payment history as a bare amount beside their plan charge — which is the
+            // charge they squint at, and the one that list exists to explain.
+            message_pack_id:     pack?.id ?? null,
             charged_at:          payment.created_at
               ? new Date(payment.created_at * 1000).toISOString()
               : new Date().toISOString(),
