@@ -98,6 +98,48 @@ no(null,                                                               'null');
 if (LIKENESS_REFUSAL.code && LIKENESS_REFUSAL.message?.length > 40) ok('the refusal carries a code and an explanation');
 else bad('LIKENESS_REFUSAL is too thin to render');
 
+
+// ── 4. The READING rule keeps both halves ───────────────────────────────────────────────────────
+//
+// Everything above guards the image-GENERATION path: a face must never reach /v1/images/edits.
+// This guards the other half — what analyzeCake is told to REPORT — and it is here because the two
+// are easy to conflate, and conflating them cost a real baker the largest piece of sugar on a cake.
+//
+// A cake with a line-drawn lady in a wide fondant hat was read three times and the HAT was never
+// reported. Not misread — absent. The prompt said "if a person appears anywhere in the image other
+// than as a printed photo, ignore them entirely", and the model applied that to the woman the cake
+// DEPICTS, taking her hat with her. Asked the same picture without that sentence it answered
+// "Large white hat, Pink roses" first try; asked WITH it, it went evasive — "I'm unable to see the
+// image and verify its contents directly" — and guessed a generic list.
+//
+// ⚠️ THE SAFETY RULE IS NOT WEAKENED BY THIS AND MUST NOT BE. Nobody is described, named or
+// characterised; a real person standing behind the cake is still ignored entirely; a printed
+// portrait is still `photo_print`, still refused a generated stage sheet by isLikenessRisk above.
+// What changed is that a HAT is not a person. Neither is a dress, a bow, or a wafer-paper wing.
+// They are objects a baker has to make, and a sheet that omits them is wrong about the cake.
+{
+  const prompt = readFileSync(new URL('../src/services/openai.js', import.meta.url), 'utf8');
+
+  console.log('the reading rule separates depicted from present');
+  // A person the cake DEPICTS is decoration.
+  (/DEPICTED as part of the cake/.test(prompt)
+    ? ok('a depicted person is reported as decoration')
+    : bad('a depicted person is reported as decoration — the rule has been collapsed back'));
+  (/sculpted hat|a dress, a bow/.test(prompt)
+    ? ok('and so is anything physical built as part of that depiction')
+    : bad('the pieces of a depiction (a hat, a dress) are named as reportable'));
+
+  // A person actually in the room is still ignored.
+  (/REAL person actually present in the photograph/.test(prompt)
+    ? ok('a real person present in the photograph is still ignored entirely')
+    : bad('the "people in the room" rule is missing — that half is the safety half'));
+
+  // And nobody is ever described.
+  (/Do NOT describe, name, characterise or\s*\n?\s*guess at anyone/.test(prompt)
+    ? ok('nobody appearing in a printed photo is ever described')
+    : bad('the "never describe a person" instruction is missing'));
+}
+
 if (failed) {
   console.error(`\n✗ check:likeness — ${failed} failure(s)`);
   process.exit(1);
