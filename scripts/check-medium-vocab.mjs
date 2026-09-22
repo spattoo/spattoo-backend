@@ -35,14 +35,34 @@ const ok = (cond, label, extra = '') => {
 };
 
 // ── 1. The seeded vocabulary ────────────────────────────────────────────────────────────────────
-const migration = read('migrations/101_decoration_mediums.sql');
-const seedBlock = migration.slice(
-  migration.indexOf('insert into decoration_mediums'),
-  migration.indexOf('on conflict (key)'),
-);
-const seeded = [...seedBlock.matchAll(/^\s*\('([a-z_]+)',/gm)].map(m => m[1]);
-ok(seeded.length >= 8, 'migration 101 seeds the material list', `${seeded.length} found`);
-for (const must of ['fondant', 'edible_print', 'acrylic', 'isomalt', 'wafer_paper']) {
+/* ⚠️ EVERY MIGRATION THAT SEEDS ONE, not just 101. The first version read 101 alone, which was
+   true for about a day: 102 added tempered chocolate and ganache, and a gate that knows only the
+   founding migration starts calling every later material an unknown value. The whole point of
+   making this a table was that materials arrive as rows over time. */
+import { readdirSync } from 'node:fs';
+const seeded = readdirSync(join(ROOT, 'migrations'))
+  .filter(f => /^\d+_.*\.sql$/.test(f))
+  .map(f => read(join('migrations', f)))
+  .filter(sql => sql.includes('insert into decoration_mediums'))
+  .flatMap((sql) => {
+    const out = [];
+    // A file may seed more than once; take every insert's value rows.
+    let from = 0;
+    for (;;) {
+      const start = sql.indexOf('insert into decoration_mediums', from);
+      if (start < 0) break;
+      const end = sql.indexOf('on conflict (key)', start);
+      out.push(...[...sql.slice(start, end < 0 ? undefined : end).matchAll(/^\s*\('([a-z_]+)',/gm)].map(m => m[1]));
+      from = end < 0 ? sql.length : end + 1;
+    }
+    return out;
+  });
+ok(seeded.length >= 8, 'the migrations seed a material list', `${seeded.length} found`);
+/* ⚠️ BOTH CHOCOLATES. They are different crafts — one is tempered, spread and curled, the other is
+   a paste kneaded like fondant — and with only `modelling_chocolate` present the vision model
+   returned it for five cakes of tempered work, because it was the only chocolate on offer. */
+for (const must of ['fondant', 'edible_print', 'acrylic', 'isomalt', 'wafer_paper',
+                    'chocolate', 'modelling_chocolate']) {
   ok(seeded.includes(must), `"${must}" is seeded`, seeded.join(', '));
 }
 
