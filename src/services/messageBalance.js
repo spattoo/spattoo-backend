@@ -173,14 +173,23 @@ export async function purchaseMessages({ bakerId, packKey, paymentId }) {
   return data.id;
 }
 
-/** The pack behind a key, for the payment row and the invoice line. */
-export async function getMessagePack(packKey) {
-  const { data, error } = await supabase
+/**
+ * The pack behind a key, for the payment row and the invoice line.
+ *
+ * ⚠️ `activeOnly` IS THE DIFFERENCE BETWEEN SELLING A PACK AND RECORDING ONE. Deciding what may be
+ * bought must refuse a retired pack, so checkout takes the default. A webhook must NOT: a pack
+ * retired between checkout and capture was still legitimately bought, and filtering it out here
+ * silently drops the label and the message count from exactly the historical rows that most need
+ * explaining — the payment reads as a bare amount and the invoice names nothing. billing.js's
+ * credit-pack branch makes the same argument at length for its own unfiltered lookup.
+ */
+export async function getMessagePack(packKey, { activeOnly = true } = {}) {
+  let q = supabase
     .from('message_packs')
     .select('id, pack_key, messages, price_paise, label')
-    .eq('pack_key', packKey)
-    .eq('is_active', true)
-    .maybeSingle();
+    .eq('pack_key', packKey);
+  if (activeOnly) q = q.eq('is_active', true);
+  const { data, error } = await q.maybeSingle();
   if (error) throw new Error(`message pack: ${error.message}`);
   return data;
 }
