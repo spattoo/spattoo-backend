@@ -109,6 +109,27 @@ export async function elementClosure(ids) {
     assetKeysIn(el.placement_config, keys, config.r2.publicUrl);
   }
 
+  // ── A CRAFT GUIDE'S PICTURES ARE ASSETS TOO, and they are NOT reached by the loop above — that
+  // walks the ELEMENT's columns, and these keys hang off the guide row. Without them the guide
+  // travels and its pictures do not: `element_craft_guide` imports cleanly, `stages_key` points at
+  // an object prod has never had, and the baker gets the words with four broken panels where the
+  // "how to make it by hand" sheet should be. Nothing errors.
+  //
+  // Reported on the fondant heart, 2026-09-22: *"it imported only the text part of the guide, not
+  // images."* The row was right on both sides the whole time; only the bytes were missing.
+  //
+  // `stages_key` is the four-panel sheet (decorationStages.js). `source_image_url` is the picture
+  // the guide was WRITTEN FROM, which is usually the element's own thumbnail — usually, not always,
+  // so it is named here rather than assumed to arrive with the element.
+  for (const g of craftGuides.data ?? []) {
+    for (const k of [g.stages_key, g.source_image_url]) {
+      if (k && !/^https?:\/\//i.test(k)) keys.add(k);
+    }
+    // The same deep walk the elements' placement_config gets, for the same reason: a picture added
+    // INSIDE the guide json by core is picked up here without this file changing.
+    assetKeysIn(g.guide, keys, config.r2.publicUrl);
+  }
+
   // A category's own menu picture is an asset too (migration 068), and it is NOT reached by the loop
   // above — that walks elements, and this key hangs off the category row. Without it the category
   // travels and its picture does not: the row imports cleanly, `thumb_key` points at an object the

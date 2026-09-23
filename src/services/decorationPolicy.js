@@ -77,7 +77,15 @@ export function knownRoles(el) {
 //
 // Type names rather than ids: TYPE_MAP in inspirationMaps.js already keys on them, so this follows
 // existing practice rather than inventing a second convention.
-const CREAM_TYPES   = new Set(['Cream Piping', 'Palette knife art']);
+// ⚠️ PIPED CREAM AND PALETTE-KNIFE CREAM ARE NOT ONE CASE, and treating them as one is what left a
+// buttercream flower with no way to get a guide at all. These two shared a refusal reading "cream —
+// nozzle guide covers this", which is true of piping and false of knife work: a nozzle
+// recommendation answers "which tip pipes this border" and says nothing about pressing and dragging
+// cream with a blade. Reported 2026-09-23 on "Piping flower" (type `palette_knife_art`), and the
+// comment above the refusal had already predicted it — *"palette-knife work needs a guide format of
+// its own"*. A known gap with nothing to make it visible except somebody opening one.
+const PIPED_TYPES   = new Set(['Cream Piping']);
+const KNIFE_TYPES   = new Set(['Palette knife art']);
 const STICKER_TYPES = new Set(['Cake Topper', 'Image topper', 'Top&Side Decors', 'Scattered Decor']);
 
 // FLAT or IN THE ROUND. The two crafts share almost no steps — one is "roll a sheet and cut the
@@ -147,10 +155,22 @@ export function decorationPolicy(el, medium = null) {
     ? { ...r, modelling: false, reason: `ready-made — bought, not made (${r.reason})` }
     : r);
 
-  // Cream, in either technique. The nozzle guide already covers piping; palette-knife work needs a
-  // guide format of its own, and the fondant one is written for sugar paste and would read wrongly.
-  if (CREAM_TYPES.has(type)) {
-    return settle({ modelling: false, print: false, reason: 'cream — nozzle guide covers this' });
+  // Piped cream. The curated nozzle recommendation IS the guidance — which tip, what consistency —
+  // and a written build sheet beside it would be a second, worse answer to the same question.
+  if (PIPED_TYPES.has(type)) {
+    return settle({ modelling: false, print: false, reason: 'piped cream — nozzle guide covers this' });
+  }
+
+  /* Palette-knife cream. Hand-made, one petal at a time, and nothing else in the product describes
+     how. `print: false` because a flat print cannot stand in for it: the whole decoration IS the
+     relief the blade leaves — a raised outer edge and a scraped middle — and that is the one thing
+     a printed sheet cannot carry. Withholding print here is not withholding a real option.
+
+     The TECHNIQUE note comes from the type (migration 104), not from the material: 'Cream Piping'
+     and this are the same buttercream worked two ways, so `cream.build_note` has to describe both
+     at once and therefore picks neither. */
+  if (KNIFE_TYPES.has(type)) {
+    return settle({ modelling: true, print: false, reason: 'palette-knife cream — pressed by hand' });
   }
 
   if (STICKER_TYPES.has(type)) {
