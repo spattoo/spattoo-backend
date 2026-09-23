@@ -150,9 +150,25 @@ export async function elementClosure(ids) {
   // a slug the target has never seen can be created rather than silently dropping the element's
   // category on the floor.
   const bySlug = new Map((categories.data ?? []).map(c => [c.id, c.slug]));
-  const outRows = rows.map(({ category_id, ...el }) => (
-    category_id ? { ...el, category_slug: bySlug.get(category_id) ?? null } : el
-  ));
+  /* ── AND ELEMENT TYPES, FOR THE THIRD TIME ────────────────────────────────────────────────────
+   * Categories went first (they are seeded per environment by 065), tags second (created by hand
+   * and by 108), and this is the same fact about the same kind of row: migration 073 inserts
+   * `fondant_decor` WITHOUT pinning an id, and says in its own comment that it "was deliberately NOT
+   * run in production". So every environment minted its own uuid for it and always will.
+   *
+   * It surfaced the way the other two did — a production import refused outright, this time after
+   * the tag fix had already landed and the same error came back. Each of these was found by someone
+   * trying to move a template and being told to reconcile by hand.
+   *
+   * An element carries `element_type_slug`, resolved on the far side. Unlike a category the column
+   * is not optional in practice — an element with no type is not a thing the designer can place —
+   * so the importer refuses a slug it cannot resolve rather than writing a null. */
+  const typeSlug = new Map((types.data ?? []).map(t => [t.id, t.slug]));
+  const outRows = rows.map(({ category_id, element_type_id, ...el }) => ({
+    ...el,
+    ...(category_id ? { category_slug: bySlug.get(category_id) ?? null } : {}),
+    element_type_slug: typeSlug.get(element_type_id) ?? null,
+  }));
 
   /* ── TAGS TRAVEL BY SLUG, NEVER BY ID ─────────────────────────────────────────────────────────
    * The same reasoning as the categories above, and it took a refused import to notice it applies
@@ -179,7 +195,9 @@ export async function elementClosure(ids) {
        underscore and deleted below rather than left to look like part of the bundle. */
     _tagIds: (tags.data ?? []).map(t => t.id),
     elements: outRows,
-    element_types: types.data ?? [],
+    // Vocabulary for anything the target lacks. `id` is stripped for the same reason it is stripped
+    // from the elements and from tags — it means nothing there.
+    element_types: (types.data ?? []).map(({ id, created_at, ...t }) => t),
     // Vocabulary for anything the target lacks. `id` is stripped for the same reason it is stripped
     // from the elements — it means nothing there.
     element_categories: (categories.data ?? []).map(({ id, created_at, ...c }) => c),
