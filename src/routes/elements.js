@@ -637,19 +637,25 @@ router.post('/admin/elements/import', requireAuth, requireCapability('catalog:ad
     if (!elements.length && !templates.length) return res.status(400).json({ error: 'Bundle contains nothing to import' });
 
     // A row with no id would be minted a new one — see above. Refuse the whole bundle.
+    /* Tags are NOT here: like categories, they arrive without ids and are resolved by slug (see
+       below). An id on a tag is an assertion about a database the bundle is not running in. */
     const idless = [
       ...elements.filter(r => !r.id).map(() => 'element'),
       ...types.filter(r => !r.id).map(() => 'element_type'),
-      ...tags.filter(r => !r.id).map(() => 'tag'),
       ...templates.filter(r => !r.id).map(() => 'template'),
     ];
     if (idless.length) return res.status(400).json({ error: `Bundle has ${idless.length} row(s) with no id — refusing rather than generating one` });
 
     // ── Vocabulary collisions, before anything is written ──────────────────────────────────────
     const collisions = [];
-    // element_categories is NOT here: its rows arrive without ids (see promotionBundle), so there is
-    // no id to collide. It is resolved by slug below instead.
-    for (const [table, rows] of [['element_types', types], ['tags', tags]]) {
+    /* element_categories and TAGS are not here: their rows arrive without ids (see promotionBundle),
+       so there is no id to collide. Both are resolved by slug below instead.
+       ⚠️ TAGS USED TO BE, and refusing was right while nothing could remap them — but it refused a
+       whole template bundle over `valentines`, a tag both environments have had for months under
+       different uuids because each created its own. Every environment always will: some tags were
+       typed into admin, some seeded by 108, and neither route agrees on a uuid with the other side.
+       So the answer is not a better error message, it is to stop carrying the id. */
+    for (const [table, rows] of [['element_types', types]]) {
       const slugs = rows.map(r => r.slug).filter(Boolean);
       if (!slugs.length) continue;
       const { data, error } = await supabase.from(table).select('id, slug').in('slug', slugs);
@@ -678,7 +684,9 @@ router.post('/admin/elements/import', requireAuth, requireCapability('catalog:ad
     };
     const haveElements = await existing('cake_elements', 'id', elements.map(e => e.id));
     const haveTypes    = await existing('element_types', 'id', types.map(t => t.id));
-    const haveTags     = await existing('tags',          'id', tags.map(t => t.id));
+    // By SLUG, not id — tags arrive without ids now (the same reason categories and shapes do), so
+    // counting by id would report every one as new and the dry run would overstate the change.
+    const haveTags     = await existing('tags',          'slug', tags.map(t => t.slug));
     // By SLUG, not id — a bundle's categories arrive without ids, so counting them by id would
     // report every one as new and the dry run would be a lie in the direction of alarm.
     const haveCats     = await existing('element_categories', 'slug', categories.map(c => c.slug));
@@ -703,7 +711,9 @@ router.post('/admin/elements/import', requireAuth, requireCapability('catalog:ad
     const plan = {
       element_types:       { create: types.filter(t => !haveTypes.has(t.id)).length,       update: types.filter(t => haveTypes.has(t.id)).length },
       element_categories:  { create: categories.filter(c => !haveCats.has(c.slug)).length, reused: categories.filter(c => haveCats.has(c.slug)).length },
-      tags:                { create: tags.filter(t => !haveTags.has(t.id)).length,         update: tags.filter(t => haveTags.has(t.id)).length },
+      // `reused`, never `update`: an existing tag is bound to, never rewritten — a label an admin
+      // edited here is theirs, and the bundle has no business restoring the exporter's wording.
+      tags:                { create: tags.filter(t => !haveTags.has(t.slug)).length,       reused: tags.filter(t => haveTags.has(t.slug)).length },
       elements:            { create: elements.filter(e => !haveElements.has(e.id)).length, update: elements.filter(e => haveElements.has(e.id)).length },
       cake_templates:      { create: templates.filter(t => !haveTemplates.has(t.id)).length, update: templates.filter(t => haveTemplates.has(t.id)).length },
       // `reused`, never `update` — an existing shape is left exactly as it is. See below.
@@ -799,16 +809,65 @@ router.post('/admin/elements/import', requireAuth, requireCapability('catalog:ad
       }
     }
 
+    /* ── Tags, by slug, exactly as categories are ────────────────────────────────────────────────
+     * Every environment minted its own tag ids — some typed into admin, some seeded by migration
+     * 108 — so `valentines` has a different uuid on each side and always will. The joins therefore
+     * arrive carrying `tag_slug`, and this binds each one to the row THIS database holds, creating
+     * any it has never seen.
+     *
+     * ⚠️ IT ALSO ACCEPTS AN OLD BUNDLE. One exported before this change carries `tag_id` on the
+     * joins and ids on the tags, and somebody has that file on their desktop right now — the one
+     * that was refused. So a legacy join is translated through the bundle's OWN tag list (id →
+     * slug) and then resolved here like any other. Nothing has to be re-exported.
+     *
+     * ⚠️ A TAG THAT RESOLVES TO NOTHING DROPS ITS JOIN rather than failing the import. The template
+     * arrives untagged instead of not at all, which is a missing filter chip somebody fixes in one
+     * click — the same call `category_slug` makes two blocks up.
+     */
+    const tagJoins = [...elementTags, ...templateTags];
+    if (!dryRun) {
+      const slugById = new Map(tags.filter(t => t.id && t.slug).map(t => [t.id, t.slug]));
+      const slugOf = (j) => j.tag_slug ?? slugById.get(j.tag_id) ?? null;
+
+      const wanted = [...new Set(tagJoins.map(slugOf).filter(Boolean))];
+      const idBySlug = new Map();
+      if (wanted.length) {
+        const { data: here } = await supabase.from('tags').select('id, slug').in('slug', wanted);
+        for (const t of here ?? []) idBySlug.set(t.slug, t.id);
+
+        const missing = tags
+          .filter(t => t.slug && wanted.includes(t.slug) && !idBySlug.has(t.slug))
+          // Never the bundle's id — this database mints its own, which is the whole point.
+          .map(({ id, created_at, ...t }) => t);
+        if (missing.length) {
+          const { data: made, error: tagErr } = await supabase.from('tags').insert(missing).select('id, slug');
+          if (tagErr) return res.status(500).json({ error: `tags: ${tagErr.message}`, plan, assetErrors });
+          for (const t of made ?? []) idBySlug.set(t.slug, t.id);
+        }
+      }
+      for (const j of tagJoins) {
+        const slug = slugOf(j);
+        j.tag_id = slug ? idBySlug.get(slug) ?? null : null;
+        delete j.tag_slug;
+      }
+    }
+    // Written above, by slug — never upserted as rows, which is what carried the foreign id.
+    const unresolvedJoins = tagJoins.filter(j => !j.tag_id).length;
+    const elementTagRows  = elementTags.filter(j => j.tag_id);
+    const templateTagRows = templateTags.filter(j => j.tag_id);
+
     const steps = [
       ['element_types',       types],
-      ['tags',                tags],
+      /* No ['tags', …] step: a tag is resolved by slug above and either bound to the row this
+         database already has or inserted there. Upserting the bundle's rows is what carried the
+         foreign id in, and is the bug this whole block replaces. */
       ['cake_elements',       parents],
       ['cake_elements',       children],
-      ['element_tags',        elementTags],
+      ['element_tags',        elementTagRows],
       ['element_craft_guide', craftGuides],
       ['cake_templates',      tplParents],
       ['cake_templates',      tplChildren],
-      ['template_tags',       templateTags],
+      ['template_tags',       templateTagRows],
       ['cake_template_attrs', templateAttrs],
     ];
     // Absolute URLs → THIS environment's host. cake_templates.design stores fully-qualified URLs
@@ -823,7 +882,11 @@ router.post('/admin/elements/import', requireAuth, requireCapability('catalog:ad
       if (error) return res.status(500).json({ error: `${table}: ${error.message}`, plan, assetErrors });
     }
 
-    res.json({ ok: true, plan, assetErrors });
+    /* A join whose tag could not be resolved is reported rather than swallowed: the template arrived,
+       one of its filter chips did not, and that is a one-click fix for whoever imported it — but
+       only if they are told. Not in `plan`, which is built before the tags are resolved and so
+       cannot know. */
+    res.json({ ok: true, plan, assetErrors, tagJoinsDropped: unresolvedJoins });
   } catch (err) {
     serverError(req, res, err);
   }

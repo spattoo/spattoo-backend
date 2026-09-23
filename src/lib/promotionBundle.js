@@ -154,14 +154,37 @@ export async function elementClosure(ids) {
     category_id ? { ...el, category_slug: bySlug.get(category_id) ?? null } : el
   ));
 
+  /* ── TAGS TRAVEL BY SLUG, NEVER BY ID ─────────────────────────────────────────────────────────
+   * The same reasoning as the categories above, and it took a refused import to notice it applies
+   * here too: every environment created its tags independently — some by hand in admin, some by
+   * migration 108 — so `valentines` has a different uuid on every side and always will. An id in a
+   * bundle is an assertion about a database the bundle is not running in.
+   *
+   * The importer used to detect that and REFUSE the whole bundle ("Same slug, different id"), which
+   * was the honest thing to do while nothing could remap it. Reported from production on an
+   * engagement template carrying `valentines` and `engagement`.
+   *
+   * So the rows go out without ids, and the JOIN rows carry `tag_slug` in place of `tag_id`. The
+   * importer resolves the slug against whatever this environment holds, creating the tag if it has
+   * never seen it — the same shape as category_slug, and for exactly the same reason. */
+  const tagSlug = new Map((tags.data ?? []).map(t => [t.id, t.slug]));
+  const outTags = (tags.data ?? []).map(({ id, ...t }) => t);
+  const outElementTags = (elementTags.data ?? []).map(({ tag_id, ...j }) => ({
+    ...j, tag_slug: tagSlug.get(tag_id) ?? null,
+  }));
+
   return {
+    /* ⚠️ INTERNAL, and stripped before anything is serialised — templateClosure needs the tag IDS to
+       union its own tag list with these, and the exported rows no longer carry one. Named with an
+       underscore and deleted below rather than left to look like part of the bundle. */
+    _tagIds: (tags.data ?? []).map(t => t.id),
     elements: outRows,
     element_types: types.data ?? [],
     // Vocabulary for anything the target lacks. `id` is stripped for the same reason it is stripped
     // from the elements — it means nothing there.
     element_categories: (categories.data ?? []).map(({ id, created_at, ...c }) => c),
-    tags: tags.data ?? [],
-    element_tags: elementTags.data ?? [],
+    tags: outTags,
+    element_tags: outElementTags,
     element_craft_guide: craftGuides.data ?? [],
     keys,
   };
@@ -206,7 +229,9 @@ export async function templateClosure(ids) {
   // element_tags. One set, or the same tag row would be exported twice and upserted twice.
   const tagIds = [...new Set([
     ...(templateTags.data ?? []).map(t => t.tag_id),
-    ...elements.tags.map(t => t.id),
+    // `_tagIds`, not `tags.map(t => t.id)` — the exported tag rows have no id any more (see below).
+    // Reading the stripped rows here would quietly union nothing and drop every element's tags.
+    ...(elements._tagIds ?? []),
   ].filter(Boolean))];
   const tags = tagIds.length ? await supabase.from('tags').select('*').in('id', tagIds) : { data: [] };
   if (tags.error) throw tags.error;
@@ -254,12 +279,19 @@ export async function templateClosure(ids) {
     assetKeysIn(t.design, keys, config.r2.publicUrl);
   }
 
+  /* Same as elementClosure: out without ids, and the joins carry the slug. This list is the UNION
+     of the templates' own tags and their elements' (see above), so it is resolved here rather than
+     reusing the element closure's map — that one knows only half of them. */
+  const tplTagSlug = new Map((tags.data ?? []).map(t => [t.id, t.slug]));
+  const { _tagIds, ...elementBundle } = elements;
   return {
-    ...elements,
-    tags: tags.data ?? [],
+    ...elementBundle,
+    tags: (tags.data ?? []).map(({ id, ...t }) => t),
     cake_shapes,
     cake_templates: rows,
-    template_tags: templateTags.data ?? [],
+    template_tags: (templateTags.data ?? []).map(({ tag_id, ...j }) => ({
+      ...j, tag_slug: tplTagSlug.get(tag_id) ?? null,
+    })),
     cake_template_attrs: attrs.data ?? [],
     keys,
   };
