@@ -76,7 +76,25 @@ ok(/inferred/.test(ai), 'the guide prompt knows a material can be INFERRED rathe
 ok(/READ FROM THE PHOTOGRAPH/.test(read('src/services/openai.js')),
    'and says so to the model, rather than presenting a reading as fact');
 
+// ── 4. The TECHNIQUE travels too, and outranks the material ────────────────────────────────────
+// One material, several crafts: buttercream is piped through a nozzle AND pressed with a palette
+// knife, so `cream.build_note` names both and settles neither. The technique lives on the element
+// TYPE (migration 104) and has to reach the prompt, or a knife guide comes back describing nozzles.
+// Each hop is asserted separately because the chain broke silently once already — the matcher
+// dropped `material` and a wafer-paper flower got a gumpaste guide.
+const guideSvc = read('src/services/decorationGuide.js');
+ok(/technique\s*:/.test(guideSvc), 'the guide service passes a technique to the prompt');
+ok(/element_types\?\.build_note|element_types\.build_note/.test(guideSvc),
+   'and takes it from the element TYPE, where technique lives (migration 104)');
+for (const f of ['src/routes/craftGuide.js', 'src/routes/elements.js']) {
+  ok(/element_types\(name,\s*build_note\)/.test(read(f)),
+     `${f} selects the type's build_note`, 'a column not selected is a column the prompt never sees');
+}
+ok(/technique\s*=\s*null/.test(ai), 'the prompt accepts a technique');
+ok(/OUTRANKS/.test(read('src/services/openai.js')),
+   'and tells the model the technique beats the material, not the other way round');
+
 console.log(failures
   ? `\n✗ check:decoration-material — ${failures} failure(s).`
-  : '\n✓ check:decoration-material — the material survives the matcher, the spec and the prompt');
+  : '\n✓ check:decoration-material — material and technique both survive the matcher, the spec and the prompt');
 process.exit(failures ? 1 : 0);

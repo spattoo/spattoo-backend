@@ -866,7 +866,7 @@ function decodeImages(data) {
 // The material's own `build_note` says how it is worked, and it is authored in admin — so a
 // material added next year arrives with its technique rather than needing this file edited.
 // Absent, the prompt falls back to sugar paste and SAYS SO, rather than silently assuming it.
-export async function suggestBuildGuide({ imageUrl, name, description, focus = null, dimension = null, roles = [], material = null }) {
+export async function suggestBuildGuide({ imageUrl, name, description, focus = null, dimension = null, roles = [], material = null, technique = null }) {
   /* ⚠️ THREE STATES, NOT TWO, AND CONFLATING THEM PRODUCED A CONTRADICTORY PROMPT. The first cut
      branched on `build_note` alone, so a material READ FROM A PHOTO — a label with no note, which
      is what the reference-photo path has — printed "MATERIAL: sugar" and then, two lines later,
@@ -884,10 +884,31 @@ export async function suggestBuildGuide({ imageUrl, name, description, focus = n
      first correct wafer-paper guide this produced still reported `medium: "other"` beside four
      perfect wafer-paper steps. It echoes the material it was given now, so the field agrees with
      the instructions underneath it. */
+  /* ⚠️ THE TECHNIQUE OUTRANKS THE MATERIAL, and it has to, because one material is worked several
+     ways. Buttercream piped through a nozzle and buttercream pressed with a palette knife are the
+     same stuff and different crafts, so `cream.build_note` describes both and settles nothing — it
+     literally reads "piped through a nozzle or spread and shaped with a palette knife". A prompt
+     given that sentence alone picks whichever it has seen more of, which is piping, and writes a
+     baker instructions for the wrong tool.
+     Authored on the element TYPE in admin (migration 104), so a technique we describe badly is
+     corrected by the person who noticed, not by a deploy. */
+  const techNote = technique
+    ? `HOW THIS DECORATION IS WORKED — this is the TECHNIQUE, and it OUTRANKS every general
+instruction below, including anything about the material. Follow it exactly:
+${technique}`
+    : '';
   const matLabel = material?.label || 'fondant / sugar paste';
   const matNote  = !material?.label
-    ? `No material was stated for this decoration. Assume fondant / sugar paste, and say so in a tip
-so the baker knows the guide is written for that and can adapt it.`
+    /* ⚠️ NOT over a stated technique. This fallback exists for a decoration we know nothing about,
+       and "assume sugar paste" is the safest guess THERE. Printed above a palette-knife note it
+       becomes a contradiction — the same shape of bug as the wafer-paper flower that was told
+       "MATERIAL: sugar" and "assume fondant" in one prompt and returned a gumpaste guide. The
+       technique names its own material when it has one. */
+    ? (techNote
+      ? `No material was recorded on this element. The technique above names what it is made of —
+follow that, and do not fall back to sugar paste.`
+      : `No material was stated for this decoration. Assume fondant / sugar paste, and say so in a tip
+so the baker knows the guide is written for that and can adapt it.`)
     : material.build_note && !material.inferred
       ? `HOW THIS MATERIAL IS WORKED — this is fact, follow it over any habit:\n${material.build_note}`
       : material.build_note
@@ -905,6 +926,8 @@ wrong tools. If you cannot tell what it is made of, say so in a tip rather than 
 Decoration name: ${name || '(unnamed)'}
 Keywords: ${description || '(none)'}
 MATERIAL: ${matLabel}
+
+${techNote}
 
 ${matNote}
 

@@ -83,10 +83,16 @@ export async function buildElementGuide(el, { ownerBakerId = null, quality = nul
      it rather than inferring from a picture. Without it every guide was written in the vocabulary
      of sugar paste — "roll a sheet", "firm up flat" — which is wrong for most of the catalogue and
      actively misleading for isomalt, which is poured hot and never rolled. */
+  /* The TECHNIQUE is the other half, and it lives on the element TYPE (migration 104). The material
+     says how the stuff behaves; the type says how it is WORKED, and for cream those are two
+     different crafts sharing one material — piped through a nozzle, or pressed and dragged with a
+     palette knife. `cream.build_note` names both and so picks neither, which is no use to a prompt.
+     Null for every type that has nothing to add, and then the material note stands alone. */
   const { guide, usage, model } = await suggestBuildGuide({
     imageUrl: toPublicUrl(imageKey), name: el.name, description: el.description, dimension, roles,
     // Authored on the element, so `inferred` stays false and the prompt follows it as fact.
     material: el.decoration_mediums ?? null,
+    technique: el.element_types?.build_note ?? null,
   });
   const calls = [{ model, usage }];
 

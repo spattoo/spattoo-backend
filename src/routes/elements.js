@@ -945,7 +945,7 @@ async function ensureDecorationGuide(elementId) {
   try {
     const { data: el } = await supabase
       .from('cake_elements')
-      .select('id, name, description, image_url, thumbnail_url, thumb_key, medium, placement_config, element_types(name), decoration_mediums(key, label, can_model, can_print, guide_format, build_note)')
+      .select('id, name, description, image_url, thumbnail_url, thumb_key, medium, placement_config, element_types(name, build_note), decoration_mediums(key, label, can_model, can_print, guide_format, build_note)')
       .eq('id', elementId).maybeSingle();
     if (!el) return;
 

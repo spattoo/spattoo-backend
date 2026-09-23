@@ -21,6 +21,7 @@ const ok = (cond, label, extra = '') => {
 // reason.
 const STICKER = 'Cake Topper';
 const CREAM   = 'Cream Piping';
+const KNIFE   = 'Palette knife art';
 
 /* ⚠️ THE FIXTURES USED TO INVENT THEIR OWN MEDIUM STRINGS, AND THAT IS HOW THE BUG SURVIVED.
    This file asserted behaviour for `medium: 'edible_paper'` and `'chocolate'` — values the database
@@ -90,7 +91,15 @@ ok(p({ medium: 'fondant', placement_config: { ready_made: false } }).modelling =
 }
 
 // ── the rules that were already here, so the new branch cannot quietly move them ──
-ok(p({ element_types: { name: CREAM } }).modelling === false, 'cream is covered by the nozzle guide');
+ok(p({ element_types: { name: CREAM } }).modelling === false, 'piped cream is covered by the nozzle guide');
+
+/* ⚠️ THE TWO CREAM TECHNIQUES MUST NOT SHARE AN ANSWER. They did, and a buttercream flower pressed
+   with a palette knife was refused a guide with the reason "nozzle guide covers this" — which
+   covers nothing about pressing cream with a blade. Both directions are asserted, because the bug
+   was one set holding two types and either half could be lost again. */
+ok(p({ element_types: { name: KNIFE } }).modelling === true,  'palette-knife cream is hand-made and gets a guide');
+ok(p({ element_types: { name: KNIFE } }).print === false,     'a flat print cannot stand in for the relief a blade leaves');
+ok(/palette|knife/i.test(p({ element_types: { name: KNIFE } }).reason), 'and the reason says which craft it is');
 ok(p({ medium: 'fondant' }).print === true,       'fondant offers both paths — bakers substitute constantly');
 /* ⚠️ THESE TWO ASSERTED THE OPPOSITE OF WHAT NOW HOLDS, against values the database never accepted.
    'chocolate' claimed modelling:false "no guide format yet" — but modelling chocolate IS modelled,
