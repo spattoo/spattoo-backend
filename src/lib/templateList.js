@@ -26,7 +26,21 @@
 import { supabase } from '../services/supabase.js';
 import { config } from '../config.js';
 
-const FIELDS = 'id, name, shape, tier_count, type, offering, baker_id, parent_template_id, design, thumbnail_url, sort_order, is_active';
+// ⚠️ NO `design`, DELIBERATELY. A list row is what BROWSING needs: a name, a picture, and the
+// fields the filters read (tag_slugs and attrs, added by `shape` below). The design is the full
+// snapshot — every tier, decoration and texture — so carrying it here grew the response with the
+// catalogue AND with how elaborate each cake is, handing over N designs so that ONE could be
+// opened.
+//
+// Whoever actually starts from a template fetches it by id (GET /templates/:id, which keeps its own
+// field list). Every caller already handles its absence: the designer's card reads `t.design ??
+// null` and fetches by id when it is missing, which is the path a storefront customer has always
+// taken. The cost is one small request on the template someone chose, instead of a large one on
+// every template they did not.
+//
+// See plans/template-browsing-at-scale.md — this is Layer 1, and it is what keeps the filters
+// client-side and correct.
+const FIELDS = 'id, name, shape, tier_count, type, offering, baker_id, parent_template_id, thumbnail_url, sort_order, is_active';
 const FILTER_JOIN = 'template_tags(tags(slug)), cake_template_attrs(min_weight_kg, min_age, max_age)';
 
 const toPublicUrl = (key) => (key ? `${config.r2.publicUrl}/${key}` : null);
@@ -95,12 +109,16 @@ export async function allTemplates({ type = null, bakerId = null } = {}) {
 /**
  * The list as a CUSTOMER may see it, on a public storefront with no session.
  *
- * `design` is dropped. It is the full snapshot — every tier, decoration and texture — and it is
- * what a browsing customer least needs and a competitor most wants. The storefront shows a
- * thumbnail and a name; whoever actually STARTS from a template fetches it by id, at which point
- * they have asked for one rather than been handed all of them.
+ * ⚠️ THIS NO LONGER STRIPS ANYTHING, AND IT STAYS ANYWAY. `design` was dropped here and nowhere
+ * else — it is what a browsing customer least needs and a competitor most wants — until the baker's
+ * own browse turned out to have the same problem for a different reason (size), and FIELDS stopped
+ * selecting it at all. The customer protection is now structural rather than a map over the result.
+ *
+ * Kept as the named seam for "the customer's view": the storefront asks a different question from
+ * the baker's browse even while the answer is the same, and the next thing that must not reach an
+ * anonymous visitor then has one obvious place to be removed. Deleting it would put that decision
+ * back in a route.
  */
 export async function templatesForStorefront(bakerId) {
-  const list = await templatesForBaker(bakerId);
-  return list.map(({ design, ...t }) => t);
+  return templatesForBaker(bakerId);
 }
