@@ -639,41 +639,32 @@ router.post('/admin/elements/import', requireAuth, requireCapability('catalog:ad
     // A row with no id would be minted a new one — see above. Refuse the whole bundle.
     /* Tags are NOT here: like categories, they arrive without ids and are resolved by slug (see
        below). An id on a tag is an assertion about a database the bundle is not running in. */
+    /* Tags and ELEMENT TYPES are not here: like categories, they arrive without ids and are resolved
+       by slug (see below). An id on shared vocabulary is an assertion about a database the bundle is
+       not running in. */
     const idless = [
       ...elements.filter(r => !r.id).map(() => 'element'),
-      ...types.filter(r => !r.id).map(() => 'element_type'),
       ...templates.filter(r => !r.id).map(() => 'template'),
     ];
     if (idless.length) return res.status(400).json({ error: `Bundle has ${idless.length} row(s) with no id — refusing rather than generating one` });
 
     // ── Vocabulary collisions, before anything is written ──────────────────────────────────────
     const collisions = [];
-    /* element_categories and TAGS are not here: their rows arrive without ids (see promotionBundle),
-       so there is no id to collide. Both are resolved by slug below instead.
-       ⚠️ TAGS USED TO BE, and refusing was right while nothing could remap them — but it refused a
-       whole template bundle over `valentines`, a tag both environments have had for months under
-       different uuids because each created its own. Every environment always will: some tags were
-       typed into admin, some seeded by 108, and neither route agrees on a uuid with the other side.
-       So the answer is not a better error message, it is to stop carrying the id. */
-    for (const [table, rows] of [['element_types', types]]) {
-      const slugs = rows.map(r => r.slug).filter(Boolean);
-      if (!slugs.length) continue;
-      const { data, error } = await supabase.from(table).select('id, slug').in('slug', slugs);
-      if (error) return serverError(req, res, error);
-      for (const here of data ?? []) {
-        const incoming = rows.find(r => r.slug === here.slug);
-        if (incoming && incoming.id !== here.id) {
-          collisions.push({ table, slug: here.slug, here: here.id, incoming: incoming.id });
-        }
-      }
-    }
-    if (collisions.length) {
-      return res.status(409).json({
-        error: 'Same slug, different id — this environment already has that vocabulary under another id. ' +
-               'Reconcile by hand: matching on slug would silently rebind, matching on id would duplicate.',
-        collisions,
-      });
-    }
+    /* ── No vocabulary collides any more ──────────────────────────────────────────────────────────
+     * This loop compared every id-bearing vocabulary against what is here and refused the bundle on
+     * a mismatch. It was right to: matching on slug would silently rebind, matching on id would
+     * duplicate, and neither is a guess worth making on somebody's catalogue.
+     *
+     * But the mismatch is not an accident to be caught, it is the NORMAL STATE. Categories are
+     * seeded per environment (065), tags are typed into admin and seeded by 108, element types are
+     * inserted by 073 with no id pinned — so the same slug has a different uuid on every side and
+     * always will. Three separate production imports were refused, one per vocabulary, each found
+     * by somebody trying to move a template.
+     *
+     * So none of them carries an id now, and each is resolved by slug below. The check is kept as a
+     * comment rather than deleted because the reasoning in it is still correct — it is the premise
+     * that changed, not the logic.
+     */
 
     // ── What already exists here (create vs update) ────────────────────────────────────────────
     const existing = async (table, col, values) => {
@@ -683,7 +674,8 @@ router.post('/admin/elements/import', requireAuth, requireCapability('catalog:ad
       return new Set((data ?? []).map(r => r[col]));
     };
     const haveElements = await existing('cake_elements', 'id', elements.map(e => e.id));
-    const haveTypes    = await existing('element_types', 'id', types.map(t => t.id));
+    // By SLUG, not id — types arrive without ids now, like categories, tags and shapes.
+    const haveTypes    = await existing('element_types', 'slug', types.map(t => t.slug));
     // By SLUG, not id — tags arrive without ids now (the same reason categories and shapes do), so
     // counting by id would report every one as new and the dry run would overstate the change.
     const haveTags     = await existing('tags',          'slug', tags.map(t => t.slug));
@@ -709,7 +701,9 @@ router.post('/admin/elements/import', requireAuth, requireCapability('catalog:ad
     const toCopy = assets.filter(a => !presentKeys.has(a.key));
 
     const plan = {
-      element_types:       { create: types.filter(t => !haveTypes.has(t.id)).length,       update: types.filter(t => haveTypes.has(t.id)).length },
+      // `reused`, never `update`: an existing type is bound to, never rewritten — its placement
+      // rules are this environment's and the bundle has no business restoring the exporter's.
+      element_types:       { create: types.filter(t => !haveTypes.has(t.slug)).length,      reused: types.filter(t => haveTypes.has(t.slug)).length },
       element_categories:  { create: categories.filter(c => !haveCats.has(c.slug)).length, reused: categories.filter(c => haveCats.has(c.slug)).length },
       // `reused`, never `update`: an existing tag is bound to, never rewritten — a label an admin
       // edited here is theirs, and the bundle has no business restoring the exporter's wording.
@@ -809,6 +803,55 @@ router.post('/admin/elements/import', requireAuth, requireCapability('catalog:ad
       }
     }
 
+    /* ── Element types, by slug ───────────────────────────────────────────────────────────────────
+     * Migration 073 inserts `fondant_decor` with no id pinned and notes it "was deliberately NOT run
+     * in production", so every environment minted its own. Elements arrive carrying
+     * `element_type_slug`; this binds each to the row here, creating any type this environment has
+     * never seen.
+     *
+     * ⚠️ AN UNRESOLVED TYPE FAILS THE IMPORT, where an unresolved category only left the element
+     * uncategorised. The difference is what the column means: a decoration with no category is
+     * missing from a menu, a decoration with no TYPE is not something the designer can place at all.
+     * Writing null would import a catalogue that looks complete and is quietly broken.
+     *
+     * ⚠️ AN OLD BUNDLE STILL WORKS: one exported before this carries `element_type_id` on the
+     * elements and ids on the types, so the id is translated through the bundle's own type list.
+     */
+    if (!dryRun) {
+      const typeSlugById = new Map(types.filter(t => t.id && t.slug).map(t => [t.id, t.slug]));
+      const slugOfEl = (el) => el.element_type_slug ?? typeSlugById.get(el.element_type_id) ?? null;
+      const wantedTypes = [...new Set(elements.map(slugOfEl).filter(Boolean))];
+      if (wantedTypes.length) {
+        const { data: here } = await supabase.from('element_types').select('id, slug').in('slug', wantedTypes);
+        const typeIdBySlug = new Map((here ?? []).map(t => [t.slug, t.id]));
+
+        const missingTypes = types
+          .filter(t => t.slug && wantedTypes.includes(t.slug) && !typeIdBySlug.has(t.slug))
+          .map(({ id, created_at, ...t }) => t);
+        if (missingTypes.length) {
+          const { data: made, error: typeErr } = await supabase.from('element_types').insert(missingTypes).select('id, slug');
+          if (typeErr) return res.status(500).json({ error: `element_types: ${typeErr.message}`, plan, assetErrors });
+          for (const t of made ?? []) typeIdBySlug.set(t.slug, t.id);
+        }
+
+        const unresolved = [...new Set(elements.map(slugOfEl).filter(sl => sl && !typeIdBySlug.has(sl)))];
+        if (unresolved.length) {
+          return res.status(409).json({
+            error: `Element type not found and not in the bundle: ${unresolved.join(', ')}. ` +
+                   'An element with no type cannot be placed, so nothing was written.',
+            plan, assetErrors,
+          });
+        }
+        for (const el of elements) {
+          const sl = slugOfEl(el);
+          if (sl) el.element_type_id = typeIdBySlug.get(sl);
+          delete el.element_type_slug;
+        }
+      } else {
+        for (const el of elements) delete el.element_type_slug;
+      }
+    }
+
     /* ── Tags, by slug, exactly as categories are ────────────────────────────────────────────────
      * Every environment minted its own tag ids — some typed into admin, some seeded by migration
      * 108 — so `valentines` has a different uuid on each side and always will. The joins therefore
@@ -857,7 +900,9 @@ router.post('/admin/elements/import', requireAuth, requireCapability('catalog:ad
     const templateTagRows = templateTags.filter(j => j.tag_id);
 
     const steps = [
-      ['element_types',       types],
+      /* No ['element_types', …] step, for the same reason there is no ['tags', …] one: a type is
+         resolved by slug above and either bound to or created. Upserting the bundle's rows is what
+         carried the foreign id in. */
       /* No ['tags', …] step: a tag is resolved by slug above and either bound to the row this
          database already has or inserted there. Upserting the bundle's rows is what carried the
          foreign id in, and is the bug this whole block replaces. */
