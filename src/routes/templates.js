@@ -10,6 +10,7 @@ import { templatesForBaker, allTemplates } from '../lib/templateList.js';
 // toPublicUrl is declared locally further down — not imported, or the two collide and the API
 // fails to boot (check:boot catches it, which is how this was found).
 import { templateClosure, elementIdsReferencedBy } from '../lib/promotionBundle.js';
+import { syncTemplateElements } from '../lib/templateElements.js';
 
 const router = Router();
 
@@ -316,6 +317,11 @@ router.post('/baker/templates', requireAuth, requireCapability('template:manage'
       if (tagErr) return serverError(req, res, tagErr);
     }
 
+    // Which decorations this design uses — derived, and deliberately not awaited for its result:
+    // it never throws, and a baker's save must not fail because a derived index could not be
+    // written. See lib/templateElements.js and migration 110.
+    await syncTemplateElements(data.id, design);
+
     if (thumbnail_url) {
       jobQueue.add('auto_tag', { entityType: 'template', entityId: data.id, thumbnailKey: thumbnail_url, name }).catch(() => {});
     }
@@ -353,6 +359,8 @@ router.post('/admin/templates', requireAuth, requireCapability('catalog:admin'),
 
     if (error) return serverError(req, res, error);
 
+    await syncTemplateElements(data.id, design);
+
     if (thumbnail_url) {
       jobQueue.add('auto_tag', { entityType: 'template', entityId: data.id, thumbnailKey: thumbnail_url, name }).catch(() => {});
     }
@@ -374,6 +382,17 @@ router.patch('/admin/templates/:id', requireAuth, requireCapability('catalog:adm
       .eq('id', req.params.id);
 
     if (error) return serverError(req, res, error);
+
+    /* ⚠️ ONLY WHEN THE DESIGN CHANGED, AND IT CAN — `design` is in `allowed` above, so this route
+       can replace the cake under an existing template. Skipping the sync here would leave
+       template_elements describing the PREVIOUS design: an element removed from the cake keeps its
+       row, and "which templates use this element" answers with a template that no longer does.
+       That is the silent-staleness this table exists to end, so it must not be reintroduced by the
+       one route that can cause it. Every other field is metadata and leaves the design alone. */
+    if (Object.prototype.hasOwnProperty.call(updates, 'design')) {
+      await syncTemplateElements(req.params.id, updates.design);
+    }
+
     res.json({ ok: true });
   } catch (err) {
     serverError(req, res, err);
