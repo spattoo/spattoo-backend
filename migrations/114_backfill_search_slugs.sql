@@ -102,7 +102,12 @@ begin
   end if;
 end $$;
 
--- What it looked like before, so the tail can report a real delta rather than just a total.
+-- What it looked like before, so the delta can be reported rather than just a total.
+--
+-- ⚠️ READ BACK BEFORE `commit`, NOT IN THE TAIL. `on commit drop` means this table does not survive
+-- the transaction, so a tail query after `commit` cannot reference it — the first cut created this,
+-- claimed the tail would use it, and the tail could not. The delta select sits above `commit` for
+-- that reason. It matters most on prod, the one environment where these numbers actually change.
 create temporary table _before on commit drop as
 select
   (select count(*) from public.template_elements)                                as element_rows,
@@ -214,6 +219,18 @@ from public.cake_templates base
 left join _agg a on a.template_id = base.id
 where t.id = base.id
   and t.search_slugs is distinct from coalesce(a.terms, '{}');
+
+-- ── The delta, while _before still exists ───────────────────────────────────────────────────────
+-- On dev this is the rehearsal's whole point: every `_after` must equal its `_before`, because the
+-- script already wrote these values and this file is proven to reproduce them exactly. Any movement
+-- here on dev means the two implementations have diverged.
+-- On prod expect templates_with_terms to go from 0 to the full catalogue.
+select
+  (select element_rows from _before)                                as element_rows_before,
+  (select count(*) from public.template_elements)                   as element_rows_after,
+  (select templates_with_terms from _before)                        as templates_with_terms_before,
+  (select count(*) from public.cake_templates
+    where search_slugs is not null)                                 as templates_with_terms_after;
 
 commit;
 
