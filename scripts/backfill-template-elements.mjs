@@ -26,14 +26,22 @@ import { uuidsIn } from '../src/lib/assetKeys.js';
    'Your Text' skipped, {name}/{number} slots stripped, deduped, sorted, lowercased. */
 const stripSlots = (s) => s.replace(/\{[^}]*\}/g, ' ').replace(/\s+/g, ' ').trim();
 
+/* ⚠️ `writings` FIRST, because that is where a message on a cake actually lives — a `writings[]`
+   entry with a `text` field. Reading only `texts[].content` produced zero text terms across the
+   whole catalogue on the first dry run: every template's `texts` is empty. `texts` is still read
+   for older saved designs. `nameBlocks` is skipped on purpose — it spells a person's name.
+   Mirrors lib/templateElements.js exactly; the two disagreeing is what would make this table look
+   right and be wrong. */
 function textTermsIn(design) {
   const out = [];
-  for (const t of design?.texts ?? []) {
-    const raw = typeof t?.content === 'string' ? t.content.trim() : '';
-    if (!raw || raw === 'Your Text') continue;
-    const bare = stripSlots(raw);
+  const add = (raw) => {
+    const s = typeof raw === 'string' ? raw.trim() : '';
+    if (!s || s === 'Your Text') return;
+    const bare = stripSlots(s);
     if (bare) out.push(bare.toLowerCase());
-  }
+  };
+  for (const w of design?.writings ?? []) add(w?.text);
+  for (const t of design?.texts ?? []) add(t?.content);
   return out;
 }
 

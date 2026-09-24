@@ -17,21 +17,35 @@ import { elementIdsReferencedBy } from './promotionBundle.js';
 /**
  * The words piped on the cake.
  *
- * ⚠️ SKIPS `'Your Text'`, the content a freshly added text carries — every design that ever had a
- * text block touched would otherwise be findable by "your text", which is noise in every row.
+ * ⚠️ TWO KEYS, AND `writings` IS THE ONE THAT CARRIES THEM. A first cut read only `texts[].content`
+ * and produced ZERO terms across the whole catalogue — every template's `texts` is empty, because a
+ * message on a cake is a `writings[]` entry with a `text` field (useCakeDesign DEFAULT_WRITING).
+ * The dry run looked healthy and was silently missing half of what this exists to index; it was
+ * caught only because the term count came back exactly equal to the element count.
+ * `texts` is still read: it is a real design key, and an older saved design may carry one.
  *
- * ⚠️ AND STRIPS `{name}` / `{number}`. Those are text SLOTS a customer fills in
- * (see spattoo-core text-placeholders), not words the template says. "Happy {name}" contributes
- * "happy". A slot left whole would make every personalised template match a search for "name".
+ * ⚠️ SKIPS `'Your Text'` — the content a freshly added TEXT carries. Without it every design whose
+ * text block was ever touched answers to "your text". `writings` needs no such guard: its default
+ * is an empty string, which is falsy and drops out on its own.
+ *
+ * ⚠️ AND STRIPS `{name}` / `{number}`. Those are SLOTS a customer fills in (see spattoo-core
+ * text-placeholders), not words the template says. "Happy {name}" contributes "happy"; a slot left
+ * whole would make every personalised template match a search for "name".
+ *
+ * ⚠️ `nameBlocks` IS DELIBERATELY NOT READ. Fondant letter blocks spell a PERSON'S NAME, which is
+ * the least useful thing to find a catalogue template by and the closest this design comes to
+ * personal data. It is geometry here anyway — `{ zone, blocks: [{u, v}] }`, not a string.
  */
 function textTermsIn(design) {
   const out = [];
-  for (const t of design?.texts ?? []) {
-    const raw = typeof t?.content === 'string' ? t.content.trim() : '';
-    if (!raw || raw === 'Your Text') continue;
-    const bare = raw.replace(/\{[^}]*\}/g, ' ').replace(/\s+/g, ' ').trim();
+  const add = (raw) => {
+    const s = typeof raw === 'string' ? raw.trim() : '';
+    if (!s || s === 'Your Text') return;
+    const bare = s.replace(/\{[^}]*\}/g, ' ').replace(/\s+/g, ' ').trim();
     if (bare) out.push(bare.toLowerCase());
-  }
+  };
+  for (const w of design?.writings ?? []) add(w?.text);
+  for (const t of design?.texts ?? []) add(t?.content);
   return out;
 }
 
