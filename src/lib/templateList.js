@@ -40,7 +40,12 @@ import { config } from '../config.js';
 //
 // See plans/template-browsing-at-scale.md — this is Layer 1, and it is what keeps the filters
 // client-side and correct.
-const FIELDS = 'id, name, shape, tier_count, type, offering, baker_id, parent_template_id, thumbnail_url, sort_order, is_active';
+// ⚠️ `search_slugs` IS HERE AND `design` IS NOT, and that pairing is the whole design of this row.
+// The list carries what BROWSING needs; the design is fetched by id for the one template somebody
+// opens. `search_slugs` is the cheap half of what the design knows — element names, element tags,
+// and the words piped on the cake — derived once on save so the browser can search them without
+// the megabytes. Measured on dev: 53 bytes a row on average, 133 at worst.
+const FIELDS = 'id, name, shape, tier_count, type, offering, baker_id, parent_template_id, thumbnail_url, sort_order, is_active, search_slugs';
 const FILTER_JOIN = 'template_tags(tags(slug)), cake_template_attrs(min_weight_kg, min_age, max_age)';
 
 const toPublicUrl = (key) => (key ? `${config.r2.publicUrl}/${key}` : null);

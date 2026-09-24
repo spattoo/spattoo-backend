@@ -19,6 +19,24 @@
 import { createClient } from '@supabase/supabase-js';
 import { uuidsIn } from '../src/lib/assetKeys.js';
 
+/* ⚠️ THE SAME TWO OUTPUTS THE RUNTIME WRITES. syncTemplateDerived maintains template_elements AND
+   cake_templates.search_slugs from one walk of the design; a backfill that filled only the first
+   would leave every existing template with null terms — searchable by nothing it contains, which
+   is the gap this whole plan exists to close. The rules below mirror lib/templateElements.js:
+   'Your Text' skipped, {name}/{number} slots stripped, deduped, sorted, lowercased. */
+const stripSlots = (s) => s.replace(/\{[^}]*\}/g, ' ').replace(/\s+/g, ' ').trim();
+
+function textTermsIn(design) {
+  const out = [];
+  for (const t of design?.texts ?? []) {
+    const raw = typeof t?.content === 'string' ? t.content.trim() : '';
+    if (!raw || raw === 'Your Text') continue;
+    const bare = stripSlots(raw);
+    if (bare) out.push(bare.toLowerCase());
+  }
+  return out;
+}
+
 const SUPABASE_URL = process.env.SUPABASE_URL;
 const SERVICE_KEY  = process.env.SUPABASE_SERVICE_KEY;
 const DRY_RUN      = process.env.DRY_RUN === '1';
@@ -35,6 +53,33 @@ for (const v of ['SUPABASE_URL', 'SUPABASE_SERVICE_KEY']) {
    script; the supabase CLIENT is this script's own, because the service module reads config the
    server's way. */
 const supabase = createClient(SUPABASE_URL, SERVICE_KEY);
+
+/** id → name, and id → [tag slugs and display names]. Read once; the catalogue is small. */
+async function elementTermIndex() {
+  const names = new Map();
+  const tags  = new Map();
+  const PAGE = 1000;
+  for (let from = 0; ; from += PAGE) {
+    const { data, error } = await supabase
+      .from('cake_elements').select('id, name').range(from, from + PAGE - 1);
+    if (error) throw error;
+    for (const r of data ?? []) names.set(r.id, r.name ?? null);
+    if (!data || data.length < PAGE) break;
+  }
+  for (let from = 0; ; from += PAGE) {
+    const { data, error } = await supabase
+      .from('element_tags').select('element_id, tags(slug, name)').range(from, from + PAGE - 1);
+    if (error) throw error;
+    for (const r of data ?? []) {
+      const list = tags.get(r.element_id) ?? [];
+      if (r.tags?.slug) list.push(String(r.tags.slug).toLowerCase());
+      if (r.tags?.name) list.push(String(r.tags.name).toLowerCase());
+      tags.set(r.element_id, list);
+    }
+    if (!data || data.length < PAGE) break;
+  }
+  return { names, tags };
+}
 
 async function allElementIds() {
   // One read, then set-membership in memory: the alternative is a query per template, and the
@@ -66,18 +111,27 @@ async function allTemplates() {
 }
 
 const elementIds = await allElementIds();
+const { names, tags } = await elementTermIndex();
 const templates  = await allTemplates();
 console.log(`${templates.length} template(s), ${elementIds.size} element(s) in the catalogue`);
 if (DRY_RUN) console.log('DRY_RUN — nothing will be written\n');
 
-let written = 0, empty = 0, failed = 0;
+let written = 0, empty = 0, failed = 0, terms = 0, noTerms = 0;
 for (const t of templates) {
   // Every uuid in the design, kept only if it is an element id. Same rule as the runtime walk: a
   // uuid that is not an element simply does not come back, so a false positive is impossible.
   const referenced = [...uuidsIn(t.design ?? {})].filter(id => elementIds.has(id));
 
+  const termList = [...new Set([
+    ...referenced.flatMap(id => [names.get(id)?.toLowerCase(), ...(tags.get(id) ?? [])]).filter(Boolean),
+    ...textTermsIn(t.design),
+  ])].sort();
+  terms += termList.length;
+  if (!termList.length) noTerms++;
+
   if (DRY_RUN) {
-    console.log(`  ${referenced.length.toString().padStart(3)}  ${t.name}`);
+    console.log(`  ${referenced.length.toString().padStart(3)} el  ${termList.length.toString().padStart(3)} terms  ${t.name}`
+      + (termList.length ? `  [${termList.slice(0, 6).join(', ')}${termList.length > 6 ? ', …' : ''}]` : ''));
     if (!referenced.length) empty++;
     continue;
   }
@@ -96,12 +150,20 @@ for (const t of templates) {
     } else {
       empty++;
     }
+
+    // ⚠️ WRITTEN EVEN WHEN EMPTY. A template with no terms must end up with `[]`, not null —
+    // otherwise a re-run cannot tell "nothing to record" from "never processed", which is the same
+    // distinction migration 112's tail query exists to make.
+    const { error: updErr } = await supabase
+      .from('cake_templates').update({ search_slugs: termList }).eq('id', t.id);
+    if (updErr) throw updErr;
   } catch (err) {
     failed++;
     console.error(`  ✗ ${t.name}: ${err?.message ?? err}`);
   }
 }
 
-console.log(`\n${DRY_RUN ? 'would write' : 'wrote'} ${written} row(s)`);
-console.log(`${empty} template(s) reference no catalogue element`);
+console.log(`\n${DRY_RUN ? 'would write' : 'wrote'} ${written} element row(s)`);
+console.log(`${DRY_RUN ? 'would write' : 'wrote'} ${terms} search term(s) across ${templates.length} template(s)`);
+console.log(`${empty} template(s) reference no catalogue element; ${noTerms} have no search terms at all`);
 if (failed) console.log(`⚠️  ${failed} template(s) failed — re-run to retry, it is idempotent`);
