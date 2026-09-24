@@ -332,6 +332,79 @@ router.post('/baker/templates', requireAuth, requireCapability('template:manage'
   }
 });
 
+// ── GET /api/baker/templates/mine ─────────────────────────────────────────────
+// The baker's OWN templates — the ones "Save as Template" made. A separate route from
+// GET /api/baker/templates, which lists the GLOBAL library flagged with this baker's on/off state,
+// because the two answer different questions and are managed differently: a global you switch off,
+// your own you delete.
+//
+// ⚠️ ADDITIVE, NOT A CHANGE TO THE EXISTING ROUTE, and that is deliberate. Core is vendored and a
+// baker's browser may be running a build older than this deploy. Folding the baker's own rows into
+// GET /api/baker/templates would put them in front of an older Settings panel as on/off switches —
+// and the exclusions PUT only ever writes ids that are real active GLOBAL templates, so that toggle
+// would save nothing and silently revert. A picker that visibly does nothing is the failure this
+// codebase names most often; a new path cannot cause it.
+router.get('/baker/templates/mine', requireAuth, attachBakerContext, async (req, res) => {
+  try {
+    if (!req.bakerId) return res.status(404).json({ error: 'No baker account found' });
+    const { data, error } = await supabase
+      .from('cake_templates')
+      .select('id, name, thumbnail_url, tier_count, offering, created_at')
+      .eq('baker_id', req.bakerId)
+      .eq('is_active', true)
+      .order('created_at', { ascending: false });   // newest first: the one just saved is the one being looked for
+    if (error) return serverError(req, res, error);
+    res.json((data ?? []).map(t => ({ ...t, thumbnail_url: toPublicUrl(t.thumbnail_url) })));
+  } catch (err) {
+    serverError(req, res, err);
+  }
+});
+
+// ── DELETE /api/baker/templates/:id ───────────────────────────────────────────
+// A baker removes one of their OWN templates — the sibling of the POST above, and it never existed.
+// "Save as Template" has been a one-way door for as long as it has been there. Sandeep: *"when a
+// baker creates a template, he cannot delete his own template."*
+//
+// ⚠️ TWO COMMENTS IN THIS CODEBASE ALREADY CLAIMED THIS ROUTE. GET /api/baker/templates says "a
+// baker's OWN templates aren't managed here (they delete those)" and core's settings/TemplatesPanel
+// says "those they create and delete in the designer". Both were describing an intention as though
+// it had been built, which is why nobody went looking: the docs said it was somewhere else.
+//
+// ⚠️ `.eq('baker_id', req.bakerId)` IS THE WHOLE SECURITY MODEL, not a convenience filter. It is
+// what stops one tenant deleting another's template, and what stops anyone deleting a GLOBAL one —
+// `baker_id IS NULL` never matches an integer, so the Spattoo library is out of reach by the same
+// clause. A template that has been PUBLISHED is also out of reach, correctly: publishing sets
+// baker_id to null, so it has become Spattoo's and is no longer the baker's to remove.
+//
+// The design's satellites go with it: template_tags, cake_template_attrs and template_elements all
+// declare ON DELETE CASCADE. Nothing else references a template — an order carries its own design
+// snapshot rather than pointing at one — so deleting cannot orphan a placed order.
+router.delete('/baker/templates/:id', requireAuth, requireCapability('template:manage'), attachBakerContext, async (req, res) => {
+  try {
+    if (!req.bakerId) return res.status(404).json({ error: 'No baker account found' });
+    const { data, error } = await supabase
+      .from('cake_templates')
+      .delete()
+      .eq('id', req.params.id)
+      .eq('baker_id', req.bakerId)
+      .select('id');
+
+    /* A template used as another row's `parent_template_id` cannot be removed — that FK has no
+       cascade, on purpose. Say so rather than serving a 500 that reads as a broken button. */
+    if (error?.code === '23503') {
+      return res.status(409).json({ error: 'That template is the basis of another one, so it cannot be removed.' });
+    }
+    if (error) return serverError(req, res, error);
+
+    /* ⚠️ ONE ANSWER FOR "not yours" AND "not there". Distinguishing them would confirm that another
+       tenant's template id exists, which is the whole point of scoping the delete. */
+    if (!data?.length) return res.status(404).json({ error: 'Template not found' });
+    res.json({ ok: true });
+  } catch (err) {
+    serverError(req, res, err);
+  }
+});
+
 router.post('/admin/templates', requireAuth, requireCapability('catalog:admin'), async (req, res) => {
   try {
     const { name, shape, tier_count, type, offering, baker_id, parent_template_id, design, thumbnail_url, sort_order } = req.body;
