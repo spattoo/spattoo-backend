@@ -268,7 +268,14 @@ router.post('/baker/templates', requireAuth, requireCapability('template:manage'
     if (!req.bakerId) return res.status(404).json({ error: 'No baker account found' });
 
     const { name, shape, tier_count, offering, design, thumbnail_url,
-            min_weight_kg, min_age, max_age, occasion_tag_ids } = req.body ?? {};
+            min_weight_kg, min_age, max_age, occasion_tag_ids, tag_ids } = req.body ?? {};
+    /* ⚠️ EITHER NAME, because core is vendored and a baker's browser may be running a build older
+       than this deploy. `occasion_tag_ids` was always a misnomer — nothing here validates a
+       category, it inserts whatever ids it is given — and the save modal now offers every category,
+       so `tag_ids` is what it means. Both accepted; neither required. */
+    const templateTagIds = Array.isArray(tag_ids) ? tag_ids
+                         : Array.isArray(occasion_tag_ids) ? occasion_tag_ids
+                         : [];
     if (!name || typeof name !== 'string') return res.status(400).json({ error: 'name is required' });
     if (!design || typeof design !== 'object') return res.status(400).json({ error: 'design is required' });
 
@@ -302,10 +309,10 @@ router.post('/baker/templates', requireAuth, requireCapability('template:manage'
       if (attrsErr) return serverError(req, res, attrsErr);
     }
 
-    if (Array.isArray(occasion_tag_ids) && occasion_tag_ids.length) {
+    if (templateTagIds.length) {
       const { error: tagErr } = await supabase
         .from('template_tags')
-        .insert(occasion_tag_ids.map(tag_id => ({ template_id: data.id, tag_id })));
+        .insert(templateTagIds.map(tag_id => ({ template_id: data.id, tag_id })));
       if (tagErr) return serverError(req, res, tagErr);
     }
 
