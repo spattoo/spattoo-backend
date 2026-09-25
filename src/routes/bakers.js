@@ -1360,8 +1360,16 @@ router.put('/baker/catalogue', requireAuth, requireCapability('store:manage'), a
 
     /* Everything they were offering and did not ask for this time comes out. Scoped to
        `offered = true` so rows already false are left alone and keep their original updated_at.
-       ⚠️ The empty case is its own statement: PostgREST cannot express `not.in.()`, so with nothing
-       requested the filter has to be dropped rather than built with an empty list. */
+
+       ⚠️ THE EMPTY CASE IS SPELLED OUT, AND NOT FOR THE REASON THIS COMMENT FIRST GAVE. It claimed
+       PostgREST "cannot express `not.in.()`" and that building the filter would fail. That is wrong:
+       measured against dev, `.not('template_id','in','()')` raises no error and matches EVERY row —
+       which happens to be the behaviour wanted here, so the branch is redundant rather than
+       load-bearing.
+
+       It stays because the correct outcome then rests on an undocumented edge of PostgREST's filter
+       parsing, and "clear everything when nothing was asked for" is worth saying in code rather than
+       inheriting from a quirk that could be tightened in any release. */
     let clear = supabase
       .from('baker_template_settings')
       .update({ offered: false, updated_at: now })
