@@ -269,7 +269,8 @@ router.post('/baker/templates', requireAuth, requireCapability('template:manage'
     if (!req.bakerId) return res.status(404).json({ error: 'No baker account found' });
 
     const { name, shape, tier_count, offering, design, thumbnail_url,
-            min_weight_kg, min_age, max_age, occasion_tag_ids, tag_ids } = req.body ?? {};
+            min_weight_kg, min_age, max_age, occasion_tag_ids, tag_ids,
+            add_to_catalogue } = req.body ?? {};
     /* ⚠️ EITHER NAME, because core is vendored and a baker's browser may be running a build older
        than this deploy. `occasion_tag_ids` was always a misnomer — nothing here validates a
        category, it inserts whatever ids it is given — and the save modal now offers every category,
@@ -315,6 +316,34 @@ router.post('/baker/templates', requireAuth, requireCapability('template:manage'
         .from('template_tags')
         .insert(templateTagIds.map(tag_id => ({ template_id: data.id, tag_id })));
       if (tagErr) return serverError(req, res, tagErr);
+    }
+
+    /* ── Saving is not selling, unless the baker says so ──────────────────────────────────────────
+     * ⚠️ OPTIONAL, AND ABSENT MEANS STAGED. A design saved here does NOT reach the baker's
+     * storefront: it lands in My templates, and only a deliberate act puts it in the catalogue.
+     * Until now the opposite was true and nobody chose it — `templatesForBaker` returned every
+     * template with `baker_id = <them>` unconditionally, so a half-finished experiment was public
+     * the moment it was saved.
+     *
+     * ⚠️ AN OLDER CLIENT OMITS THIS AND GETS THE RIGHT ANSWER. Core is vendored and the baker app
+     * maps this payload FIELD BY FIELD (`apps/app/app/BakerApp.tsx`), so a host that has not been
+     * rebuilt simply never sends it — and not sending it means staged, which is the safe default.
+     * Unlike `tag_ids`/`occasion_tag_ids` there is no older field carrying the same meaning to dual
+     * send, so this feature does not exist until the baker app maps it. That is the honest state,
+     * not a bug.
+     *
+     * ⚠️ AND IT IS INERT UNTIL CUTOVER. `templatesForBaker` still resolves through
+     * `excludedTemplateIds`, so this row changes nothing a baker or customer sees yet. See
+     * migration 115 and spattoo-docs/plans/baker-catalogue.md. */
+    if (add_to_catalogue === true) {
+      const { error: catErr } = await supabase
+        .from('baker_template_settings')
+        .upsert({ baker_id: req.bakerId, template_id: data.id, offered: true,
+                  updated_at: new Date().toISOString() },
+                { onConflict: 'baker_id,template_id' });
+      // Not fatal: the template IS saved, and failing the whole request would lose the design over
+      // a catalogue row the baker can add again from My templates. Loud in the log, quiet to them.
+      if (catErr) console.error(`[baker template] catalogue row failed for ${data.id}:`, catErr.message);
     }
 
     // What this design implies — which decorations it uses, and the words it can be found by.
