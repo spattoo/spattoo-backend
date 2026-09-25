@@ -70,6 +70,33 @@ export async function excludedTemplateIds(bakerId) {
 }
 
 /**
+ * The template ids this baker has CHOSEN to offer — their catalogue.
+ *
+ * ⚠️ NOT YET READ BY `templatesForBaker`, AND THAT IS THE WHOLE SEQUENCING. This is the opt-IN half
+ * (migration 115); `excludedTemplateIds` above is the opt-OUT half still in service. They coexist on
+ * purpose until the new endpoints and a release have shipped — Sandeep: *"new endpoints. once they
+ * are working we wil drop the old."*
+ *
+ * Switching the read path before then would empty every storefront, because 115 seeds nothing. And
+ * a browser running the released bundle still POSTs its EXCLUSION set, which under the new meaning
+ * would offer exactly the templates the baker had switched off.
+ *
+ * ⚠️ THE POLARITY IS THE REVERSE OF THE FUNCTION ABOVE. Absence means not offered: nothing is in a
+ * catalogue until it is chosen, a baker's own saved designs included — saving is a working action,
+ * selling is a decision. `offered = false` is a DELIBERATE removal, filtered out here exactly like a
+ * template never chosen; the distinction is kept in the table for a future auto-add, not for this
+ * query.
+ */
+export async function offeredTemplateIds(bakerId) {
+  const { data } = await supabase
+    .from('baker_template_settings')
+    .select('template_id')
+    .eq('baker_id', bakerId)
+    .eq('offered', true);
+  return (data ?? []).map(e => e.template_id);
+}
+
+/**
  * Every template this baker offers.
  *
  * `bakerId` must already be resolved and trusted — this interpolates it into a PostgREST filter, so
@@ -86,6 +113,12 @@ export async function templatesForBaker(bakerId, { type = null } = {}) {
   if (type) query = query.eq('type', type);
   query = query.or(`baker_id.is.null,baker_id.eq.${bakerId}`);
 
+  /* ⚠️ STILL THE OPT-OUT PATH, DELIBERATELY. The opt-IN catalogue (migration 115,
+     `offeredTemplateIds` above) is built but not wired here: cutting over before the new endpoints
+     and a release would empty every storefront, since 115 seeds nothing, and a released client would
+     still be POSTing exclusions to a route that had started recording inclusions.
+     The cutover replaces these three lines with `offeredTemplateIds`. See
+     spattoo-docs/plans/baker-catalogue.md. */
   const excluded = await excludedTemplateIds(bakerId);
   if (excluded.length) query = query.not('id', 'in', `(${excluded.join(',')})`);
 
