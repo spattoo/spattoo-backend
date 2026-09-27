@@ -43,6 +43,16 @@ router.get('/templates', requireAuth, requireCapability('design:create'), attach
       return res.json(await templatesForBaker(req.bakerId, { type }));
     }
 
+    /* ⚠️ THE UNSCOPED LIST IS ADMIN-ONLY. It used to be the fallback for ANY caller the request
+       could not tie to a bakery — so a principal with `design:create` and no baker received every
+       active template of every baker. Capabilities happened to keep that narrow, which is not the
+       same as it being correct: "we could not work out who you are" must never resolve to "here is
+       everyone's". A baker or customer now always carries a baker (see attachBakerContext), so the
+       only caller that legitimately reaches here is an admin. */
+    if (!req.isAdmin) {
+      return res.status(403).json({ error: 'No bakery context for this request', code: 'NO_BAKER_CONTEXT' });
+    }
+
     // Admin: optionally scope to a baker's view via ?baker_id=X.
     // SEC-10: coerce to an integer before it reaches a PostgREST filter — a raw string param would
     // inject `.or()` syntax. Invalid or absent → unfiltered, and admin sees everything.
