@@ -50,13 +50,25 @@ const FILTER_JOIN = 'template_tags(tags(slug)), cake_template_attrs(min_weight_k
 
 const toPublicUrl = (key) => (key ? `${config.r2.publicUrl}/${key}` : null);
 
-function shape({ template_tags, cake_template_attrs, ...t }) {
+/* `offeredIds` is a Set the CALLER resolved once — never a lookup per row. Absent (admin's
+   `allTemplates`, which has no baker to ask about) means "no catalogue is known", and then `offered`
+   is omitted rather than guessed: a row saying `offered: false` to a caller that cannot know would be
+   a lie a client could act on.
+
+   ⚠️ `source` IS DERIVED, NOT STORED. `baker_id IS NULL` is Spattoo's shared library and anything
+   else is this baker's own work — the one fact that decides what a baker may DELETE (their own only;
+   `DELETE /baker/templates/:id` is scoped `.eq('baker_id', req.bakerId)` and 404s on a global). It is
+   sent as a word because every client was otherwise re-deriving it from `baker_id`, and two of them
+   had already done it differently. */
+function shape({ template_tags, cake_template_attrs, ...t }, offeredIds = null) {
   const rawAttrs = cake_template_attrs;
   return {
     ...t,
     thumbnail_url: toPublicUrl(t.thumbnail_url),
     tag_slugs: (template_tags ?? []).map(r => r.tags?.slug).filter(Boolean),
     attrs: Array.isArray(rawAttrs) ? (rawAttrs[0] ?? null) : (rawAttrs ?? null),
+    source: t.baker_id ? 'mine' : 'spattoo',
+    ...(offeredIds ? { offered: offeredIds.has(t.id) } : null),
   };
 }
 
@@ -124,7 +136,20 @@ export async function templatesForBaker(bakerId, { type = null } = {}) {
 
   const { data, error } = await query;
   if (error) throw error;
-  return (data ?? []).map(shape);
+
+  /* ── LABELLING IS NOT FILTERING, AND THAT IS WHY THIS IS SAFE BEFORE CUTOVER ──────────────────
+   * Every row now says whether it is in the baker's catalogue, but WHICH ROWS COME BACK is still
+   * decided by the exclusion filter above. So nothing a baker or customer currently sees changes,
+   * and migration 115 seeding nothing cannot empty a storefront. The cutover is a separate act: it
+   * replaces the exclusion lines above with this same set.
+   *
+   * Asked for by Sandeep — *"add them to response"* — so the Catalogue screen can offer "move back
+   * to library", which needs to know which of these two places a template belongs to. His rule:
+   * *"a template should appear either in library or in catalogue at a given time."*
+   *
+   * One query for the whole list, not one per row. */
+  const offeredIds = new Set(await offeredTemplateIds(bakerId));
+  return (data ?? []).map(t => shape(t, offeredIds));
 }
 
 /** Every template, unscoped. Admin only — no baker filter, no exclusions. */
@@ -158,5 +183,14 @@ export async function allTemplates({ type = null, bakerId = null } = {}) {
  * back in a route.
  */
 export async function templatesForStorefront(bakerId) {
-  return templatesForBaker(bakerId);
+  /* ⚠️ `offered` IS STRIPPED HERE, AND THIS IS THE SEAM THAT EXISTS FOR EXACTLY THIS. A flag saying
+     which of a baker's designs are NOT in their catalogue is competitor-facing information about what
+     they chose not to sell — the same reasoning that took `design` off this route. `source` stays: a
+     customer seeing that a cake is the baker's own work rather than Spattoo's is a point in the
+     baker's favour, and the storefront already says whose designs these are.
+
+     After cutover this route returns only offered templates, so the flag becomes redundant rather
+     than sensitive — remove the strip then, not the seam. */
+  const rows = await templatesForBaker(bakerId);
+  return rows.map(({ offered, ...t }) => t);
 }
