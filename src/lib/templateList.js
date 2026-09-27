@@ -61,6 +61,11 @@ const toPublicUrl = (key) => (key ? `${config.r2.publicUrl}/${key}` : null);
    sent as a word because every client was otherwise re-deriving it from `baker_id`, and two of them
    had already done it differently. */
 function shape({ template_tags, cake_template_attrs, ...t }, offeredIds = null) {
+  /* ⚠️ A SET OR NOTHING. The caller is meant to pass a Set it resolved once, but anything else has
+     to mean "no catalogue is known" rather than throw — a number arrived here from `.map(shape)`
+     and took the whole route down with a 500. Checking the type is cheaper than trusting every
+     future call site to remember what `.map` does with its second argument. */
+  const offered = offeredIds instanceof Set ? offeredIds : null;
   const rawAttrs = cake_template_attrs;
   return {
     ...t,
@@ -68,7 +73,7 @@ function shape({ template_tags, cake_template_attrs, ...t }, offeredIds = null) 
     tag_slugs: (template_tags ?? []).map(r => r.tags?.slug).filter(Boolean),
     attrs: Array.isArray(rawAttrs) ? (rawAttrs[0] ?? null) : (rawAttrs ?? null),
     source: t.baker_id ? 'mine' : 'spattoo',
-    ...(offeredIds ? { offered: offeredIds.has(t.id) } : null),
+    ...(offered ? { offered: offered.has(t.id) } : null),
   };
 }
 
@@ -166,7 +171,15 @@ export async function allTemplates({ type = null, bakerId = null } = {}) {
 
   const { data, error } = await query;
   if (error) throw error;
-  return (data ?? []).map(shape);
+  /* ⚠️ NOT `.map(shape)`. `Array.map` passes (element, INDEX, array), so a bare reference feeds the
+     index into `shape`'s second parameter — which became `offeredIds` when this row learned about
+     catalogues. Row 0 got `0` (falsy, harmless) and row 1 got `1`, so `offeredIds.has(...)` threw
+     `TypeError: offeredIds.has is not a function` on every list of two or more. It 500'd ONLY here:
+     `templatesForBaker` already passes its own lambda, which is why the baker app and the public
+     storefront route kept working while a customer's `/api/templates` failed. Sentry caught it;
+     the customer saw "No templates yet", because the client turns a failed fetch into an empty
+     list. See the guard in `shape` for the other half of this. */
+  return (data ?? []).map(t => shape(t));
 }
 
 /**
