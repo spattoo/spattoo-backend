@@ -19,6 +19,11 @@ function toPublicUrl(key) {
   return `${config.r2.publicUrl}/${key}`;
 }
 
+/* What a catalogue row can BE. `basic` is a 3D design; `photo` is an uploaded picture of finished
+   work. NOT the premium flag — that is `offering`. See migration 116, which carries the matching
+   check constraint so the database refuses a pairing this route would. */
+const TEMPLATE_KINDS = ['basic', 'photo'];
+
 const TEMPLATE_FIELDS = 'id, name, shape, tier_count, type, offering, baker_id, parent_template_id, design, thumbnail_url, sort_order, is_active';
 const TEMPLATE_FILTER_JOIN = 'template_tags(tags(slug)), cake_template_attrs(min_weight_kg, min_age, max_age)';
 
@@ -280,7 +285,7 @@ router.post('/baker/templates', requireAuth, requireCapability('template:manage'
 
     const { name, shape, tier_count, offering, design, thumbnail_url,
             min_weight_kg, min_age, max_age, occasion_tag_ids, tag_ids,
-            add_to_catalogue } = req.body ?? {};
+            add_to_catalogue, type } = req.body ?? {};
     /* ⚠️ EITHER NAME, because core is vendored and a baker's browser may be running a build older
        than this deploy. `occasion_tag_ids` was always a misnomer — nothing here validates a
        category, it inserts whatever ids it is given — and the save modal now offers every category,
@@ -289,18 +294,51 @@ router.post('/baker/templates', requireAuth, requireCapability('template:manage'
                          : Array.isArray(occasion_tag_ids) ? occasion_tag_ids
                          : [];
     if (!name || typeof name !== 'string') return res.status(400).json({ error: 'name is required' });
-    if (!design || typeof design !== 'object') return res.status(400).json({ error: 'design is required' });
+
+    /* ── A catalogue entry is a DESIGN or a PHOTOGRAPH ──────────────────────────────────────────
+     * Sandeep: "a baker can also upload an existing cake image he made to catalogue… he does it
+     * only when he is sure to show him prev work."
+     *
+     *   basic  a 3D design. Opens on the canvas. `design` required.
+     *   photo  a picture of finished work. Cannot be opened. `design` must be ABSENT, and the
+     *          picture is the whole content, so `thumbnail_url` is required instead.
+     *
+     * ⚠️ AN ALLOW-LIST, NOT A PASS-THROUGH. `type` now arrives from the client and is written to the
+     * row, so without this any string would be stored — and migration 116's check constraint only
+     * notices when the bogus value happens to pair with a null design. A column whose meaning is
+     * enforced in one place is a column that keeps its meaning. Same reasoning as the SEC-10 note
+     * below on coercing a param before it reaches a filter.
+     *
+     * ⚠️ AND AN OLDER CLIENT NEVER SENDS IT. Core is vendored, so a browser running a build older
+     * than this deploy omits `type` entirely — which defaults to 'basic' and keeps the design
+     * requirement exactly as it was. The new shape is additive. */
+    const kind = type ?? 'basic';
+    if (!TEMPLATE_KINDS.includes(kind)) {
+      return res.status(400).json({ error: `type must be one of: ${TEMPLATE_KINDS.join(', ')}` });
+    }
+    const isPhoto = kind === 'photo';
+    if (isPhoto) {
+      if (design)        return res.status(400).json({ error: 'a photo template cannot carry a design' });
+      if (!thumbnail_url) return res.status(400).json({ error: 'thumbnail_url is required for a photo' });
+    } else if (!design || typeof design !== 'object') {
+      return res.status(400).json({ error: 'design is required' });
+    }
 
     const { data, error } = await supabase
       .from('cake_templates')
       .insert({
         name:          name.trim(),
         shape:         shape ?? 'round',
-        tier_count:    tier_count ?? 1,
-        type:          'basic',
+        /* ⚠️ NOT DEFAULTED TO 1 FOR A PHOTO. `tier_count` is a cached copy of `design.tiers.length`
+           (the designer sends it on save), and a photo has no design to project from. A guessed 1 is
+           not harmless: the browse filters narrow on it, so a three-tier photograph would be shown
+           to somebody who asked for one tier. Null means "not stated", which is the truth. The
+           upload asks for it, and the baker may skip. */
+        tier_count:    tier_count ?? (isPhoto ? null : 1),
+        type:          kind,
         offering:      offering ?? 'standard',
         baker_id:      req.bakerId,          // server-resolved — never from the client
-        design,
+        design:        design ?? null,
         thumbnail_url: thumbnail_url ?? null,
         sort_order:    0,
         is_active:     true,
@@ -457,7 +495,13 @@ router.post('/admin/templates', requireAuth, requireCapability('catalog:admin'),
         name,
         shape:              shape ?? 'round',
         tier_count:         tier_count ?? 1,
-        type:               type ?? 'basic',
+        /* ⚠️ THE SAME ALLOW-LIST AS THE BAKER ROUTE. A bundle carries whatever the exporting
+           environment had, and an unknown value here would be stored verbatim — migration 116's
+           check constraint only catches the case that pairs with a null design, so 'xyz' with a
+           design would sail through and quietly erode what `type` means. Unknown falls back to
+           'basic' rather than 400ing: an import is a bulk operation and refusing the whole bundle
+           over one odd field would be the wrong trade. */
+        type:               TEMPLATE_KINDS.includes(type) ? type : 'basic',
         offering:           offering ?? 'standard',
         baker_id:           baker_id ?? null,
         parent_template_id: parent_template_id ?? null,
