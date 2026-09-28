@@ -120,7 +120,52 @@ export async function offeredTemplateIds(bakerId) {
  * a raw request parameter reaching here would inject `.or()` syntax (SEC-10). Callers resolve it
  * from a session or from a slug lookup, never from the query string.
  */
-export async function templatesForBaker(bakerId, { type = null } = {}) {
+export async function templatesForBaker(bakerId, { type = null, offeredOnly = false } = {}) {
+  /* ── `offeredOnly` IS THE CUTOVER, AND IT IS SCOPED TO ONE CALLER ON PURPOSE ──────────────────
+   * Sandeep, 2026-09-28: *"on the storefront we have an option 'show me some cakes you can make' —
+   * there we need to show the catalogue (baker created catalogue) now. I think previously we were
+   * showing cakes that baker selected from the storefront settings screen. but thats obsolete now."*
+   *
+   * That screen is `PUT /api/baker/templates/exclusions`, and its set is what the opt-OUT branch
+   * below reads. The opt-IN catalogue (migration 115) replaces it — but ONLY for the customer's
+   * view, which is why this is a flag rather than a rewrite of the default.
+   *
+   * ⚠️ FLIPPING THE DEFAULT WOULD BE A DIFFERENT AND LARGER CHANGE. `GET /api/templates` shares this
+   * resolver and feeds the designer's Catalogue flyout for BOTH a baker and a signed-in customer;
+   * turning it catalogue-only there is defensible but is not what was asked for, and it is the kind
+   * of change that empties a surface nobody was looking at. The Library screen is unaffected either
+   * way — it reads `GET /baker/catalogue`, not this route, which is the fact that made a
+   * storefront-only cutover safe to do on its own.
+   */
+  if (offeredOnly) {
+    const offered = await offeredTemplateIds(bakerId);
+    /* ⚠️ EMPTY MEANS EMPTY, AND IT MUST RETURN BEFORE THE QUERY IS BUILT. Absence is the whole
+       polarity of this table: a baker who has curated nothing offers nothing. Handing an empty list
+       to a PostgREST `in` filter is the classic way that becomes "no filter at all" and serves the
+       entire library as though it were their catalogue — the exact inversion this table exists to
+       prevent. A new baker legitimately lands here, so this is the common path, not the edge. */
+    if (!offered.length) return [];
+
+    let q = supabase
+      .from('cake_templates')
+      .select(`${FIELDS}, ${FILTER_JOIN}`)
+      .eq('is_active', true)
+      .order('sort_order')
+      .in('id', offered);
+
+    if (type) q = q.eq('type', type);
+    /* Still tenant-scoped. `baker_template_settings` is keyed by baker, so a foreign id cannot
+       realistically appear — but the scope is what MAKES that true rather than something this
+       query is entitled to assume. */
+    q = q.or(`baker_id.is.null,baker_id.eq.${bakerId}`);
+
+    const { data, error } = await q;
+    if (error) throw error;
+    /* Every row here is offered by construction, so the label is a constant. It is still emitted,
+       because the shape of a list row must not depend on which branch produced it. */
+    return (data ?? []).map(t => shape(t, new Set(offered)));
+  }
+
   let query = supabase
     .from('cake_templates')
     .select(`${FIELDS}, ${FILTER_JOIN}`)
@@ -130,12 +175,10 @@ export async function templatesForBaker(bakerId, { type = null } = {}) {
   if (type) query = query.eq('type', type);
   query = query.or(`baker_id.is.null,baker_id.eq.${bakerId}`);
 
-  /* ⚠️ STILL THE OPT-OUT PATH, DELIBERATELY. The opt-IN catalogue (migration 115,
-     `offeredTemplateIds` above) is built but not wired here: cutting over before the new endpoints
-     and a release would empty every storefront, since 115 seeds nothing, and a released client would
-     still be POSTing exclusions to a route that had started recording inclusions.
-     The cutover replaces these three lines with `offeredTemplateIds`. See
-     spattoo-docs/plans/baker-catalogue.md. */
+  /* ⚠️ STILL THE OPT-OUT PATH FOR THE BAKER'S OWN BROWSE, DELIBERATELY. The storefront cut over
+     above; this did not. A released client still POSTs its EXCLUSION set, and under the new meaning
+     that would offer exactly the templates the baker had switched off — so the two halves are
+     retired in order, not together. See spattoo-docs/plans/baker-catalogue.md. */
   const excluded = await excludedTemplateIds(bakerId);
   if (excluded.length) query = query.not('id', 'in', `(${excluded.join(',')})`);
 
@@ -202,8 +245,27 @@ export async function templatesForStorefront(bakerId) {
      customer seeing that a cake is the baker's own work rather than Spattoo's is a point in the
      baker's favour, and the storefront already says whose designs these are.
 
-     After cutover this route returns only offered templates, so the flag becomes redundant rather
-     than sensitive — remove the strip then, not the seam. */
-  const rows = await templatesForBaker(bakerId);
-  return rows.map(({ offered, ...t }) => t);
+     CUT OVER 2026-09-28: this now returns only offered templates, so the flag is redundant rather
+     than sensitive. The strip stays anyway — it costs nothing, and it keeps the guarantee true by
+     construction if a future branch ever returns a mixed list again. */
+  const rows = await templatesForBaker(bakerId, { offeredOnly: true });
+
+  /* ── ⚠️ PHOTOS ARE HELD BACK FROM THE CUSTOMER, AND THIS LINE IS MEANT TO BE DELETED ───────────
+   * A catalogue photo (migration 116, `type = 'photo'`) is a picture of finished work with no
+   * design. The baker's Catalogue shows them correctly; the CUSTOMER's gallery cannot yet, and the
+   * failure is silent rather than visual: `DesignFacet`'s tile writes `design.kind = 'template'`,
+   * but `toOrderPayload` sends no `templateId` and `buildInstructions` never names the template, so
+   * the identity of the pick reaches the baker through nothing at all. With no `designSnapshot` the
+   * flavour guard in `validateOrderBody` is skipped too — so the order is ACCEPTED, 201, reading
+   * `shape: 'round'` (the insert's default) and nothing else. An unfulfillable order that looks
+   * successful to the customer is worse than a cake they could not find.
+   *
+   * The fix is already designed and cheap: `thumbnailUrl = designThumbnailKey ?? refKeys[0]` in
+   * routes/orders.js means sending the photo's R2 key as `referenceKeys` makes the photo the
+   * order's own thumbnail — the existing reference-image enquiry path, which is exactly what
+   * Sandeep specified ("it should take the same existing path (reference image) order path").
+   * Delete this filter the day that view lands; nothing else here needs to change. */
+  return rows
+    .filter(t => t.type !== 'photo')
+    .map(({ offered, ...t }) => t);
 }
