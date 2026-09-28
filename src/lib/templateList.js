@@ -78,6 +78,10 @@ function shape({ template_tags, cake_template_attrs, ...t }, offeredIds = null) 
     tag_slugs: (template_tags ?? []).map(r => r.tags?.slug).filter(Boolean),
     attrs: Array.isArray(rawAttrs) ? (rawAttrs[0] ?? null) : (rawAttrs ?? null),
     source: t.baker_id ? 'mine' : 'spattoo',
+    /* The RAW key beside the public URL. A catalogue photo becomes a quote request by travelling as
+       a `referenceKey` on POST /orders, and that field takes keys, not URLs. No new exposure: it
+       addresses the same object `thumbnail_url` already points at, in a public bucket. */
+    thumbnail_key: t.thumbnail_url ?? null,
     ...(offered ? { offered: offered.has(t.id) } : null),
   };
 }
@@ -225,22 +229,15 @@ export async function templatesForStorefront(bakerId) {
      construction if a future branch ever returns a mixed list again. */
   const rows = await templatesForBaker(bakerId);
 
-  /* ── ⚠️ PHOTOS ARE HELD BACK FROM THE CUSTOMER, AND THIS LINE IS MEANT TO BE DELETED ───────────
-   * A catalogue photo (migration 116, `type = 'photo'`) is a picture of finished work with no
-   * design. The baker's Catalogue shows them correctly; the CUSTOMER's gallery cannot yet, and the
-   * failure is silent rather than visual: `DesignFacet`'s tile writes `design.kind = 'template'`,
-   * but `toOrderPayload` sends no `templateId` and `buildInstructions` never names the template, so
-   * the identity of the pick reaches the baker through nothing at all. With no `designSnapshot` the
-   * flavour guard in `validateOrderBody` is skipped too — so the order is ACCEPTED, 201, reading
-   * `shape: 'round'` (the insert's default) and nothing else. An unfulfillable order that looks
-   * successful to the customer is worse than a cake they could not find.
-   *
-   * The fix is already designed and cheap: `thumbnailUrl = designThumbnailKey ?? refKeys[0]` in
-   * routes/orders.js means sending the photo's R2 key as `referenceKeys` makes the photo the
-   * order's own thumbnail — the existing reference-image enquiry path, which is exactly what
-   * Sandeep specified ("it should take the same existing path (reference image) order path").
-   * Delete this filter the day that view lands; nothing else here needs to change. */
-  return rows
-    .filter(t => t.type !== 'photo')
-    .map(({ offered, ...t }) => t);
+  /* ⚠️ PHOTOS REACH THE CUSTOMER AGAIN (2026-09-28), because the view that makes them safe now
+     exists. They were held back for three days: a photo tile wrote `design.kind = 'template'` while
+     `toOrderPayload` sent no `templateId` and `buildInstructions` never named it, so with no
+     `designSnapshot` the flavour guard was skipped too and the order was ACCEPTED — 201, reading
+     `shape: 'round'` and nothing else. Unfulfillable, and silent.
+     What changed: tapping a photo now opens it large and sends its `thumbnail_key` as a
+     `referenceKey`, so the order carries the actual picture. `insertOrderAndNotify` mirrors
+     `refKeys[0]` into `design_thumbnail_url`, which is what makes it visible everywhere a baker
+     looks. The public POST /orders applies no folder restriction (only /orders/manual does), so
+     this needed no route change. */
+  return rows.map(({ offered, ...t }) => t);
 }

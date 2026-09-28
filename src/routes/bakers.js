@@ -1234,6 +1234,11 @@ router.get('/baker/catalogue', requireAuth, async (req, res) => {
          difference is legible before the tap. Without this the Library screen, which reads this
          route rather than GET /api/templates, could not tell the two apart. */
       type: t.type ?? 'basic',
+      /* The raw key beside the public URL, for the same reason lib/templateList.js carries it: a
+         catalogue PHOTO becomes an order by travelling as a `referenceKey`, and that field takes
+         keys, not URLs. Library reads THIS route rather than GET /api/templates, so without this a
+         photo opened from the Library shelf had a picture and no way to order from it. */
+      thumbnail_key: t.thumbnail_url ?? null,
       offered: offered.has(t.id),
     })));
   } catch (err) {
