@@ -45,6 +45,14 @@ export const FOLDER_KIND = {
   'orders/thumbnails':    'image',
   'orders/photos':        'image',   // baker-uploaded finished-cake photos (public → inline in order-ready email)
   'orders/reference':     'image',   // customer reference photos — a manual order's picture, and the storefront photo door
+  // A photograph of a cake the baker has ALREADY MADE, uploaded straight into their catalogue
+  // (migration 116, type='photo'). ⚠️ THIS LINE WAS MISSING AND THE FEATURE WAS DEAD. The upload
+  // control shipped in 0.1.610 signing into 'catalogue/photos', and signUpload 400s any folder that
+  // is not in this map — so every upload failed at the signing step. `uploadThumbnail` catches and
+  // returns null, and the route then answered "thumbnail_url is required for a photo": two failures,
+  // neither visible, and zero photo rows ever created. The registry is the ONE place a folder is
+  // declared, and not declaring it here is indistinguishable from not building the feature.
+  'catalogue/photos':     'image',
   'customer/photos':      'image',   // customer-uploaded photo for a photo-cake frame (public → designer textures it)
   'meshy/source':         'image',   // uploaded 2D image for the image→3D wizard (public so Meshy can fetch it)
   'meshy/outputs':        'model',   // our copy of the Meshy-generated GLB (written server-side via putObject)

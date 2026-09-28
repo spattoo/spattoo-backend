@@ -2,15 +2,20 @@
 // "What designs can I order from this bakery?" — resolved once, here, so the baker's own browse and
 // their customers' storefront cannot disagree about the answer.
 //
-// Three sources, in one rule:
+// Two sources, then one filter:
 //
 //   global templates      baker_id IS NULL — Spattoo's shared library
 //   + the baker's own     baker_id = this baker
-//   − their exclusions    baker_template_exclusions, which only ever holds GLOBAL ids, so
-//                         filtering by id can never drop a baker's own template
+//   ∩ their catalogue     baker_template_settings.offered — what they have CHOSEN to offer
 //
-// Hidden tenant-wide by design: a global template a baker has switched off is gone from their own
-// browse AND from their storefront, because "I don't make that" is one fact, not two settings.
+// ⚠️ AN INTERSECTION, NOT A SUBTRACTION, SINCE 2026-09-28. This used to subtract
+// `baker_template_exclusions` (absence meant offered); it now intersects the catalogue (absence
+// means NOT offered). The polarity is inverted, so an empty result is the correct answer for a
+// baker who has curated nothing, rather than a bug — see `offeredTemplateIds`.
+//
+// Tenant-wide by design: the catalogue is one fact, not two settings, so it governs the baker's own
+// browse AND their storefront. What it does NOT govern is Library (GET /api/baker/catalogue), which
+// must keep listing everything a baker COULD offer or there would be nothing to curate from.
 //
 // ── WHY THIS IS A MODULE AND NOT A SECOND COPY ──────────────────────────────────────────────────
 // The storefront's facet chooser needs this list for an ANONYMOUS visitor, and GET /api/templates
@@ -50,22 +55,68 @@ const FILTER_JOIN = 'template_tags(tags(slug)), cake_template_attrs(min_weight_k
 
 const toPublicUrl = (key) => (key ? `${config.r2.publicUrl}/${key}` : null);
 
-function shape({ template_tags, cake_template_attrs, ...t }) {
+/* `offeredIds` is a Set the CALLER resolved once — never a lookup per row. Absent (admin's
+   `allTemplates`, which has no baker to ask about) means "no catalogue is known", and then `offered`
+   is omitted rather than guessed: a row saying `offered: false` to a caller that cannot know would be
+   a lie a client could act on.
+
+   ⚠️ `source` IS DERIVED, NOT STORED. `baker_id IS NULL` is Spattoo's shared library and anything
+   else is this baker's own work — the one fact that decides what a baker may DELETE (their own only;
+   `DELETE /baker/templates/:id` is scoped `.eq('baker_id', req.bakerId)` and 404s on a global). It is
+   sent as a word because every client was otherwise re-deriving it from `baker_id`, and two of them
+   had already done it differently. */
+function shape({ template_tags, cake_template_attrs, ...t }, offeredIds = null) {
+  /* ⚠️ A SET OR NOTHING. The caller is meant to pass a Set it resolved once, but anything else has
+     to mean "no catalogue is known" rather than throw — a number arrived here from `.map(shape)`
+     and took the whole route down with a 500. Checking the type is cheaper than trusting every
+     future call site to remember what `.map` does with its second argument. */
+  const offered = offeredIds instanceof Set ? offeredIds : null;
   const rawAttrs = cake_template_attrs;
   return {
     ...t,
     thumbnail_url: toPublicUrl(t.thumbnail_url),
     tag_slugs: (template_tags ?? []).map(r => r.tags?.slug).filter(Boolean),
     attrs: Array.isArray(rawAttrs) ? (rawAttrs[0] ?? null) : (rawAttrs ?? null),
+    source: t.baker_id ? 'mine' : 'spattoo',
+    /* The RAW key beside the public URL. A catalogue photo becomes a quote request by travelling as
+       a `referenceKey` on POST /orders, and that field takes keys, not URLs. No new exposure: it
+       addresses the same object `thumbnail_url` already points at, in a public bucket. */
+    thumbnail_key: t.thumbnail_url ?? null,
+    ...(offered ? { offered: offered.has(t.id) } : null),
   };
 }
 
-/** The global ids this baker has switched off. Never contains one of their own. */
-export async function excludedTemplateIds(bakerId) {
+/* ⚠️ `excludedTemplateIds` IS GONE (2026-09-28), along with `baker_template_exclusions`.
+   Sandeep: *"there are no bakers existing in prod. so prev logic of exclusions is not valid. its
+   only the catalogue that needs to be showed now."* The opt-OUT half was kept alive only because a
+   released bundle might still POST an exclusion set — with no production bakers there is no such
+   bundle to protect, so the two halves stopped needing to retire in order. Migration 117 drops the
+   table; the routes that wrote it went with it. See spattoo-docs/plans/baker-catalogue.md. */
+
+/**
+ * The template ids this baker has CHOSEN to offer — their catalogue.
+ *
+ * ⚠️ THIS IS NOW THE ONLY THING `templatesForBaker` READS (2026-09-28). It was the opt-IN half of a
+ * pair, held back until the new endpoints shipped — Sandeep: *"new endpoints. once they are working
+ * we wil drop the old."* The opt-OUT half (`excludedTemplateIds`, `baker_template_exclusions`) is
+ * deleted, because with no production bakers there was no released bundle left to protect.
+ *
+ * ⚠️ IT SEEDS NOTHING, SO AN EMPTY ANSWER IS THE NORMAL ANSWER. Migration 115 created no rows.
+ * Every baker offers nothing until they curate, and both the storefront gallery and the designer's
+ * Catalogue flyout are empty until then. Measured on dev the day this landed: 23 of 24 bakers.
+ *
+ * ⚠️ THE POLARITY IS THE REVERSE OF THE FUNCTION ABOVE. Absence means not offered: nothing is in a
+ * catalogue until it is chosen, a baker's own saved designs included — saving is a working action,
+ * selling is a decision. `offered = false` is a DELIBERATE removal, filtered out here exactly like a
+ * template never chosen; the distinction is kept in the table for a future auto-add, not for this
+ * query.
+ */
+export async function offeredTemplateIds(bakerId) {
   const { data } = await supabase
-    .from('baker_template_exclusions')
+    .from('baker_template_settings')
     .select('template_id')
-    .eq('baker_id', bakerId);
+    .eq('baker_id', bakerId)
+    .eq('offered', true);
   return (data ?? []).map(e => e.template_id);
 }
 
@@ -77,21 +128,55 @@ export async function excludedTemplateIds(bakerId) {
  * from a session or from a slug lookup, never from the query string.
  */
 export async function templatesForBaker(bakerId, { type = null } = {}) {
+  /* ── THE CATALOGUE IS THE ONLY ANSWER NOW (cutover completed 2026-09-28) ──────────────────────
+   * Sandeep: *"there are no bakers existing in prod. so prev logic of exclusions is not valid. its
+   * only the catalogue that needs to be showed now."*
+   *
+   * This used to resolve "global library + their own, MINUS what they switched off", and the
+   * opt-OUT half survived the storefront cutover for one reason only: a released bundle could still
+   * POST an exclusion set, which under the new meaning would have offered exactly the templates the
+   * baker had switched off. With no production bakers there is no such bundle and no such risk, so
+   * the sequencing that kept both halves alive no longer applies.
+   *
+   * ⚠️ THIS NOW GOVERNS THE BAKER'S BROWSE TOO, NOT ONLY THE STOREFRONT. `GET /api/templates` shares
+   * this resolver, so the designer's Catalogue flyout shows the catalogue for a baker and for a
+   * signed-in customer alike — which is what the flyout is called and what it should always have
+   * been. Two surfaces are deliberately NOT affected:
+   *   · Library (`GET /baker/catalogue`) resolves elsewhere and still lists everything a baker
+   *     COULD offer, which is what makes curation possible at all.
+   *   · The start chooser is customers-only (CakeDesigner.jsx), so a baker whose catalogue is empty
+   *     is never blocked from starting a cake — they begin from Library or from scratch.
+   */
+  const offered = await offeredTemplateIds(bakerId);
+
+  /* ⚠️ EMPTY MEANS EMPTY, AND IT MUST RETURN BEFORE THE QUERY IS BUILT. Absence is the whole
+     polarity of this table: a baker who has curated nothing offers nothing. Handing an empty list
+     to a PostgREST `in` filter is the classic way that becomes "no filter at all" and serves the
+     entire library as though it were their catalogue — the exact inversion this table exists to
+     prevent. Migration 115 seeded nothing, so a new baker legitimately lands here: this is the
+     common path, not the edge. */
+  if (!offered.length) return [];
+
   let query = supabase
     .from('cake_templates')
     .select(`${FIELDS}, ${FILTER_JOIN}`)
     .eq('is_active', true)
-    .order('sort_order');
+    .order('sort_order')
+    .in('id', offered);
 
   if (type) query = query.eq('type', type);
+  /* Still tenant-scoped. `baker_template_settings` is keyed by baker, so a foreign id cannot
+     realistically appear — but the scope is what MAKES that true rather than something this query
+     is entitled to assume. */
   query = query.or(`baker_id.is.null,baker_id.eq.${bakerId}`);
-
-  const excluded = await excludedTemplateIds(bakerId);
-  if (excluded.length) query = query.not('id', 'in', `(${excluded.join(',')})`);
 
   const { data, error } = await query;
   if (error) throw error;
-  return (data ?? []).map(shape);
+
+  /* Every row here is offered by construction, so the label is a constant. It is still emitted,
+     because the shape of a list row must not depend on how it was resolved — and because the
+     Catalogue flyout reads `offered` off the row to drive "move back to library". */
+  return (data ?? []).map(t => shape(t, new Set(offered)));
 }
 
 /** Every template, unscoped. Admin only — no baker filter, no exclusions. */
@@ -108,7 +193,15 @@ export async function allTemplates({ type = null, bakerId = null } = {}) {
 
   const { data, error } = await query;
   if (error) throw error;
-  return (data ?? []).map(shape);
+  /* ⚠️ NOT `.map(shape)`. `Array.map` passes (element, INDEX, array), so a bare reference feeds the
+     index into `shape`'s second parameter — which became `offeredIds` when this row learned about
+     catalogues. Row 0 got `0` (falsy, harmless) and row 1 got `1`, so `offeredIds.has(...)` threw
+     `TypeError: offeredIds.has is not a function` on every list of two or more. It 500'd ONLY here:
+     `templatesForBaker` already passes its own lambda, which is why the baker app and the public
+     storefront route kept working while a customer's `/api/templates` failed. Sentry caught it;
+     the customer saw "No templates yet", because the client turns a failed fetch into an empty
+     list. See the guard in `shape` for the other half of this. */
+  return (data ?? []).map(t => shape(t));
 }
 
 /**
@@ -125,5 +218,26 @@ export async function allTemplates({ type = null, bakerId = null } = {}) {
  * back in a route.
  */
 export async function templatesForStorefront(bakerId) {
-  return templatesForBaker(bakerId);
+  /* ⚠️ `offered` IS STRIPPED HERE, AND THIS IS THE SEAM THAT EXISTS FOR EXACTLY THIS. A flag saying
+     which of a baker's designs are NOT in their catalogue is competitor-facing information about what
+     they chose not to sell — the same reasoning that took `design` off this route. `source` stays: a
+     customer seeing that a cake is the baker's own work rather than Spattoo's is a point in the
+     baker's favour, and the storefront already says whose designs these are.
+
+     CUT OVER 2026-09-28: this now returns only offered templates, so the flag is redundant rather
+     than sensitive. The strip stays anyway — it costs nothing, and it keeps the guarantee true by
+     construction if a future branch ever returns a mixed list again. */
+  const rows = await templatesForBaker(bakerId);
+
+  /* ⚠️ PHOTOS REACH THE CUSTOMER AGAIN (2026-09-28), because the view that makes them safe now
+     exists. They were held back for three days: a photo tile wrote `design.kind = 'template'` while
+     `toOrderPayload` sent no `templateId` and `buildInstructions` never named it, so with no
+     `designSnapshot` the flavour guard was skipped too and the order was ACCEPTED — 201, reading
+     `shape: 'round'` and nothing else. Unfulfillable, and silent.
+     What changed: tapping a photo now opens it large and sends its `thumbnail_key` as a
+     `referenceKey`, so the order carries the actual picture. `insertOrderAndNotify` mirrors
+     `refKeys[0]` into `design_thumbnail_url`, which is what makes it visible everywhere a baker
+     looks. The public POST /orders applies no folder restriction (only /orders/manual does), so
+     this needed no route change. */
+  return rows.map(({ offered, ...t }) => t);
 }

@@ -19,6 +19,11 @@ function toPublicUrl(key) {
   return `${config.r2.publicUrl}/${key}`;
 }
 
+/* What a catalogue row can BE. `basic` is a 3D design; `photo` is an uploaded picture of finished
+   work. NOT the premium flag — that is `offering`. See migration 116, which carries the matching
+   check constraint so the database refuses a pairing this route would. */
+const TEMPLATE_KINDS = ['basic', 'photo'];
+
 const TEMPLATE_FIELDS = 'id, name, shape, tier_count, type, offering, baker_id, parent_template_id, design, thumbnail_url, sort_order, is_active';
 const TEMPLATE_FILTER_JOIN = 'template_tags(tags(slug)), cake_template_attrs(min_weight_kg, min_age, max_age)';
 
@@ -41,6 +46,16 @@ router.get('/templates', requireAuth, requireCapability('design:create'), attach
       // lib/templateList.js because the public storefront needs the same answer for an anonymous
       // visitor, and a second copy of it would drift the first time either learned something.
       return res.json(await templatesForBaker(req.bakerId, { type }));
+    }
+
+    /* ⚠️ THE UNSCOPED LIST IS ADMIN-ONLY. It used to be the fallback for ANY caller the request
+       could not tie to a bakery — so a principal with `design:create` and no baker received every
+       active template of every baker. Capabilities happened to keep that narrow, which is not the
+       same as it being correct: "we could not work out who you are" must never resolve to "here is
+       everyone's". A baker or customer now always carries a baker (see attachBakerContext), so the
+       only caller that legitimately reaches here is an admin. */
+    if (!req.isAdmin) {
+      return res.status(403).json({ error: 'No bakery context for this request', code: 'NO_BAKER_CONTEXT' });
     }
 
     // Admin: optionally scope to a baker's view via ?baker_id=X.
@@ -213,10 +228,14 @@ router.get('/admin/templates', requireAuth, requireCapability('catalog:admin'), 
     // change. `id` breaks ties so rows created in the same instant keep a stable order.
     const { data, error } = await supabase
       .from('cake_templates')
-      // The FK is NAMED because cake_templates reaches bakers two ways — the owner
-      // (cake_templates.baker_id) and, many-to-many, the bakers who have HIDDEN this template
-      // (baker_template_exclusions). PostgREST will not guess between them: a bare `bakers(...)`
-      // is PGRST201 and a 500 on the whole screen. Wanted here is the owner.
+      // ⚠️ THE FK IS NAMED, AND IT MUST STAY NAMED. cake_templates reaches bakers two ways: the
+      // owner (cake_templates.baker_id) and, many-to-many, the bakers who have this template in
+      // their CATALOGUE (baker_template_settings). PostgREST will not guess between them — a bare
+      // `bakers(...)` is PGRST201 and a 500 on the whole screen. Wanted here is the owner.
+      //
+      // The second path used to be `baker_template_exclusions`, dropped 2026-09-28. Deleting that
+      // table did NOT remove the ambiguity, it replaced it: baker_template_settings joins the same
+      // two tables the same way. So this is not leftover caution from a table that no longer exists.
       .select(`${TEMPLATE_FIELDS}, ${TEMPLATE_FILTER_JOIN}, bakers!cake_templates_baker_id_fkey(name, is_catalog_author)`)
       .order('created_at', { ascending: false, nullsFirst: false })
       .order('id');
@@ -269,7 +288,8 @@ router.post('/baker/templates', requireAuth, requireCapability('template:manage'
     if (!req.bakerId) return res.status(404).json({ error: 'No baker account found' });
 
     const { name, shape, tier_count, offering, design, thumbnail_url,
-            min_weight_kg, min_age, max_age, occasion_tag_ids, tag_ids } = req.body ?? {};
+            min_weight_kg, min_age, max_age, occasion_tag_ids, tag_ids,
+            add_to_catalogue, type } = req.body ?? {};
     /* ⚠️ EITHER NAME, because core is vendored and a baker's browser may be running a build older
        than this deploy. `occasion_tag_ids` was always a misnomer — nothing here validates a
        category, it inserts whatever ids it is given — and the save modal now offers every category,
@@ -278,18 +298,51 @@ router.post('/baker/templates', requireAuth, requireCapability('template:manage'
                          : Array.isArray(occasion_tag_ids) ? occasion_tag_ids
                          : [];
     if (!name || typeof name !== 'string') return res.status(400).json({ error: 'name is required' });
-    if (!design || typeof design !== 'object') return res.status(400).json({ error: 'design is required' });
+
+    /* ── A catalogue entry is a DESIGN or a PHOTOGRAPH ──────────────────────────────────────────
+     * Sandeep: "a baker can also upload an existing cake image he made to catalogue… he does it
+     * only when he is sure to show him prev work."
+     *
+     *   basic  a 3D design. Opens on the canvas. `design` required.
+     *   photo  a picture of finished work. Cannot be opened. `design` must be ABSENT, and the
+     *          picture is the whole content, so `thumbnail_url` is required instead.
+     *
+     * ⚠️ AN ALLOW-LIST, NOT A PASS-THROUGH. `type` now arrives from the client and is written to the
+     * row, so without this any string would be stored — and migration 116's check constraint only
+     * notices when the bogus value happens to pair with a null design. A column whose meaning is
+     * enforced in one place is a column that keeps its meaning. Same reasoning as the SEC-10 note
+     * below on coercing a param before it reaches a filter.
+     *
+     * ⚠️ AND AN OLDER CLIENT NEVER SENDS IT. Core is vendored, so a browser running a build older
+     * than this deploy omits `type` entirely — which defaults to 'basic' and keeps the design
+     * requirement exactly as it was. The new shape is additive. */
+    const kind = type ?? 'basic';
+    if (!TEMPLATE_KINDS.includes(kind)) {
+      return res.status(400).json({ error: `type must be one of: ${TEMPLATE_KINDS.join(', ')}` });
+    }
+    const isPhoto = kind === 'photo';
+    if (isPhoto) {
+      if (design)        return res.status(400).json({ error: 'a photo template cannot carry a design' });
+      if (!thumbnail_url) return res.status(400).json({ error: 'thumbnail_url is required for a photo' });
+    } else if (!design || typeof design !== 'object') {
+      return res.status(400).json({ error: 'design is required' });
+    }
 
     const { data, error } = await supabase
       .from('cake_templates')
       .insert({
         name:          name.trim(),
         shape:         shape ?? 'round',
-        tier_count:    tier_count ?? 1,
-        type:          'basic',
+        /* ⚠️ NOT DEFAULTED TO 1 FOR A PHOTO. `tier_count` is a cached copy of `design.tiers.length`
+           (the designer sends it on save), and a photo has no design to project from. A guessed 1 is
+           not harmless: the browse filters narrow on it, so a three-tier photograph would be shown
+           to somebody who asked for one tier. Null means "not stated", which is the truth. The
+           upload asks for it, and the baker may skip. */
+        tier_count:    tier_count ?? (isPhoto ? null : 1),
+        type:          kind,
         offering:      offering ?? 'standard',
         baker_id:      req.bakerId,          // server-resolved — never from the client
-        design,
+        design:        design ?? null,
         thumbnail_url: thumbnail_url ?? null,
         sort_order:    0,
         is_active:     true,
@@ -315,6 +368,35 @@ router.post('/baker/templates', requireAuth, requireCapability('template:manage'
         .from('template_tags')
         .insert(templateTagIds.map(tag_id => ({ template_id: data.id, tag_id })));
       if (tagErr) return serverError(req, res, tagErr);
+    }
+
+    /* ── Saving is not selling, unless the baker says so ──────────────────────────────────────────
+     * ⚠️ OPTIONAL, AND ABSENT MEANS STAGED. A design saved here does NOT reach the baker's
+     * storefront: it lands in My templates, and only a deliberate act puts it in the catalogue.
+     * Until now the opposite was true and nobody chose it — `templatesForBaker` returned every
+     * template with `baker_id = <them>` unconditionally, so a half-finished experiment was public
+     * the moment it was saved.
+     *
+     * ⚠️ AN OLDER CLIENT OMITS THIS AND GETS THE RIGHT ANSWER. Core is vendored and the baker app
+     * maps this payload FIELD BY FIELD (`apps/app/app/BakerApp.tsx`), so a host that has not been
+     * rebuilt simply never sends it — and not sending it means staged, which is the safe default.
+     * Unlike `tag_ids`/`occasion_tag_ids` there is no older field carrying the same meaning to dual
+     * send, so this feature does not exist until the baker app maps it. That is the honest state,
+     * not a bug.
+     *
+     * ⚠️ NO LONGER INERT — THE CUTOVER LANDED 2026-09-28. `templatesForBaker` now resolves through
+     * `offeredTemplateIds` alone, so this row is the ONLY thing that puts a saved design in front of
+     * anyone: omit it and the design stays in Library, seen by nobody but its author. See migration
+     * 115 and spattoo-docs/plans/baker-catalogue.md. */
+    if (add_to_catalogue === true) {
+      const { error: catErr } = await supabase
+        .from('baker_template_settings')
+        .upsert({ baker_id: req.bakerId, template_id: data.id, offered: true,
+                  updated_at: new Date().toISOString() },
+                { onConflict: 'baker_id,template_id' });
+      // Not fatal: the template IS saved, and failing the whole request would lose the design over
+      // a catalogue row the baker can add again from My templates. Loud in the log, quiet to them.
+      if (catErr) console.error(`[baker template] catalogue row failed for ${data.id}:`, catErr.message);
     }
 
     // What this design implies — which decorations it uses, and the words it can be found by.
@@ -418,7 +500,13 @@ router.post('/admin/templates', requireAuth, requireCapability('catalog:admin'),
         name,
         shape:              shape ?? 'round',
         tier_count:         tier_count ?? 1,
-        type:               type ?? 'basic',
+        /* ⚠️ THE SAME ALLOW-LIST AS THE BAKER ROUTE. A bundle carries whatever the exporting
+           environment had, and an unknown value here would be stored verbatim — migration 116's
+           check constraint only catches the case that pairs with a null design, so 'xyz' with a
+           design would sail through and quietly erode what `type` means. Unknown falls back to
+           'basic' rather than 400ing: an import is a bulk operation and refusing the whole bundle
+           over one odd field would be the wrong trade. */
+        type:               TEMPLATE_KINDS.includes(type) ? type : 'basic',
         offering:           offering ?? 'standard',
         baker_id:           baker_id ?? null,
         parent_template_id: parent_template_id ?? null,

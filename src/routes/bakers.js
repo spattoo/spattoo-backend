@@ -1181,13 +1181,28 @@ router.put('/baker/flavours/dietary-conflicts', requireAuth, requireCapability('
   }
 });
 
-// ── GET /api/baker/templates ──────────────────────────────────────────────────
-// Auth. The GLOBAL (Spattoo-authored) template master list, flagged with this baker's on/off state:
-//   [{ id, name, thumbnail_url, tier_count, offering, excluded }]
-// `excluded: true` means the baker has switched it off → it's hidden from their whole tenant (see the
-// filter in GET /api/templates). Only globals are listed — a baker's OWN templates aren't managed
-// here (they delete those). Direct sibling of GET /api/baker/flavours.
-router.get('/baker/templates', requireAuth, async (req, res) => {
+// ── GET /api/baker/catalogue ──────────────────────────────────────────────────
+// Auth. Every template this baker COULD offer — Spattoo's library and their own saved designs —
+// each flagged with whether it is in their catalogue:
+//   [{ id, name, thumbnail_url, tier_count, offering, source: 'spattoo' | 'mine', offered }]
+//
+// ⚠️ THE ONLY ROUTE THAT LISTS WHAT A BAKER *COULD* OFFER, AND THAT IS NOW LOAD-BEARING. It used to
+// have an opt-OUT twin (GET /api/baker/templates, globals only, flagged `excluded`) which was
+// deleted on 2026-09-28 along with `baker_template_exclusions` — Sandeep: *"there are no bakers
+// existing in prod. so prev logic of exclusions is not valid."*
+//
+// Since the cutover, `GET /api/templates` returns ONLY the catalogue. So this is the one route that
+// can still see a template a baker has NOT chosen, which is what makes Library — and therefore
+// curation itself — possible. It must never be narrowed to the catalogue to match its sibling.
+//
+// ⚠️ `source` IS HERE BECAUSE THE TWO KINDS ARE NOT INTERCHANGEABLE. A baker may add or drop either
+// from their catalogue, but only their OWN can be deleted outright, and the screen has to be able to
+// say which is which without a second request. Derived from `baker_id`, never stored.
+//
+// ⚠️ ABSENCE MEANS NOT OFFERED. A template with no settings row is `offered: false` here — it has
+// never been considered, which reads the same to a baker as one they took out. The difference is
+// kept in the table for a future auto-add, not surfaced.
+router.get('/baker/catalogue', requireAuth, async (req, res) => {
   try {
     const { data: contact } = await supabase
       .from('baker_appusers')
@@ -1196,34 +1211,79 @@ router.get('/baker/templates', requireAuth, async (req, res) => {
       .maybeSingle();
     if (!contact) return res.status(404).json({ error: 'No baker account found' });
 
-    const [{ data: globals }, { data: exclusions }] = await Promise.all([
+    const [{ data: templates }, { data: settings }] = await Promise.all([
       supabase.from('cake_templates')
-        .select('id, name, thumbnail_url, tier_count, offering, sort_order')
-        .is('baker_id', null)
+        /* ⚠️ THE SEARCHABLE FIELDS TRAVEL, or Library's search box is a name-only search — which
+           `LibraryPanel` itself argues against: 22 globals carry 16 distinct names, so a box over
+           those names "would concentrate the problem rather than solve it". Measured on dev today:
+           34 rows, 23 distinct names, `football` x6, `dino` x3, `love` x3.
+           `search_slugs` is the cheap half of what the design knows — element names, their tags and
+           the words piped on the cake — which is what makes "rainbow" find a cake called "kids
+           birthday cake". `cake_template_attrs` carries the age range, so an age phrase ("4 years")
+           NARROWS here instead of matching everything: matchesAge null-guards, so without it every
+           row answers every age and the query looks like it filtered when it did not.
+           Same shape as lib/templateList.js FIELDS + FILTER_JOIN, so the two lists cannot drift.
+           Cost measured before adding: ~119 bytes a row, ~4KB for the whole shelf. */
+        .select('id, name, thumbnail_url, tier_count, offering, sort_order, baker_id, type, search_slugs, template_tags(tags(slug)), cake_template_attrs(min_weight_kg, min_age, max_age)')
+        .or(`baker_id.is.null,baker_id.eq.${contact.baker_id}`)
         .eq('is_active', true)
         .order('sort_order').order('name'),
-      supabase.from('baker_template_exclusions')
-        .select('template_id')
+      supabase.from('baker_template_settings')
+        .select('template_id, offered')
         .eq('baker_id', contact.baker_id),
     ]);
 
-    const excluded = new Set((exclusions ?? []).map(e => e.template_id));
-    res.json((globals ?? []).map(t => ({
+    // Only `offered = true` counts as in the catalogue; a false row is a deliberate removal and
+    // reads here exactly like a template never chosen.
+    const offered = new Set((settings ?? []).filter(s => s.offered).map(s => s.template_id));
+    res.json((templates ?? []).map(t => ({
       id: t.id, name: t.name, thumbnail_url: toPublicUrl(t.thumbnail_url),
-      tier_count: t.tier_count, offering: t.offering, excluded: excluded.has(t.id),
+      tier_count: t.tier_count, offering: t.offering,
+      source: t.baker_id ? 'mine' : 'spattoo',
+      /* ⚠️ WHAT THE ROW IS, not just whose it is. 'photo' is an uploaded picture of finished work —
+         it has no design, so it cannot be opened on the canvas, and the grid marks it so the
+         difference is legible before the tap. Without this the Library screen, which reads this
+         route rather than GET /api/templates, could not tell the two apart. */
+      type: t.type ?? 'basic',
+      /* The raw key beside the public URL, for the same reason lib/templateList.js carries it: a
+         catalogue PHOTO becomes an order by travelling as a `referenceKey`, and that field takes
+         keys, not URLs. Library reads THIS route rather than GET /api/templates, so without this a
+         photo opened from the Library shelf had a picture and no way to order from it. */
+      thumbnail_key: t.thumbnail_url ?? null,
+      /* ⚠️ SHAPED EXACTLY LIKE lib/templateList.js's row, so the Library screen and the Catalogue
+         flyout can share ONE matcher (core designer/templateFilter.js) instead of growing two that
+         drift. `tag_slugs` flattens the join; `attrs` takes the first row because PostgREST returns
+         a to-one embed as an array. */
+      tag_slugs: (t.template_tags ?? []).map(r => r.tags?.slug).filter(Boolean),
+      search_slugs: t.search_slugs ?? [],
+      attrs: Array.isArray(t.cake_template_attrs)
+        ? (t.cake_template_attrs[0] ?? null)
+        : (t.cake_template_attrs ?? null),
+      offered: offered.has(t.id),
     })));
   } catch (err) {
     serverError(req, res, err);
   }
 });
 
-// ── PUT /api/baker/templates/exclusions ───────────────────────────────────────
-// Auth + store:manage. Body: { excluded_template_ids: [uuid, ...] }
-// Replaces this baker's exclusion set (clear, then insert the new set). Only ids that are real active
-// GLOBAL templates are written, so a baker can never hide another tenant's private template and the
-// table can't accumulate junk. Same shape the flavour exclusions had before migration 037
-// widened those rows into priced settings and made replace unsafe for them.
-router.put('/baker/templates/exclusions', requireAuth, requireCapability('store:manage'), async (req, res) => {
+// ── PUT /api/baker/catalogue ──────────────────────────────────────────────────
+// Auth + store:manage. Body: { offered_template_ids: [uuid, ...] } — the WHOLE catalogue, not a
+// delta. Anything in the list is offered; anything currently offered and absent from it is removed.
+//
+// ⚠️ A REMOVAL SETS `offered = false`; IT DOES NOT DELETE THE ROW. Absence means "never considered",
+// a false row means "deliberately taken out", and only the second must survive a future auto-add —
+// otherwise a template a baker removed would come back on its own. This is the one piece of state
+// the boolean exists for, so deleting here would quietly throw away the reason for the column.
+//
+// ⚠️ IT DELIBERATELY DOES NOT ACCEPT `excluded_template_ids`. Dual-accepting the old field is how
+// `tag_ids`/`occasion_tag_ids` stayed compatible, and it is exactly wrong here: the two carry
+// OPPOSITE meanings, so a released client's exclusion set arriving on this route would offer
+// precisely the templates the baker had switched off. A released bundle keeps its own endpoint
+// instead; that is why both pairs are live.
+//
+// Only ids this baker may actually offer are written — Spattoo's globals and their own — so no
+// request can put another tenant's private template into a catalogue.
+router.put('/baker/catalogue', requireAuth, requireCapability('store:manage'), async (req, res) => {
   try {
     const { data: contact } = await supabase
       .from('baker_appusers')
@@ -1232,27 +1292,50 @@ router.put('/baker/templates/exclusions', requireAuth, requireCapability('store:
       .maybeSingle();
     if (!contact) return res.status(404).json({ error: 'No baker account found' });
 
-    const requested = Array.isArray(req.body?.excluded_template_ids) ? req.body.excluded_template_ids : null;
-    if (!requested) return res.status(400).json({ error: 'excluded_template_ids must be an array' });
+    const requested = Array.isArray(req.body?.offered_template_ids) ? req.body.offered_template_ids : null;
+    if (!requested) return res.status(400).json({ error: 'offered_template_ids must be an array' });
 
-    // Keep only ids that are real active GLOBAL templates (baker_id IS NULL).
-    const { data: globals } = await supabase
-      .from('cake_templates').select('id').is('baker_id', null).eq('is_active', true);
-    const valid = new Set((globals ?? []).map(t => t.id));
+    const { data: allowed } = await supabase
+      .from('cake_templates').select('id')
+      .or(`baker_id.is.null,baker_id.eq.${contact.baker_id}`)
+      .eq('is_active', true);
+    const valid = new Set((allowed ?? []).map(t => t.id));
     const ids = [...new Set(requested)].filter(id => valid.has(id));
 
-    // Replace the set: clear this baker's exclusions, then insert the new ones.
-    const { error: delErr } = await supabase
-      .from('baker_template_exclusions').delete().eq('baker_id', contact.baker_id);
-    if (delErr) return serverError(req, res, delErr);
+    const now = new Date().toISOString();
 
     if (ids.length) {
-      const rows = ids.map(template_id => ({ baker_id: contact.baker_id, template_id }));
-      const { error: insErr } = await supabase.from('baker_template_exclusions').insert(rows);
-      if (insErr) return serverError(req, res, insErr);
+      const rows = ids.map(template_id => ({
+        baker_id: contact.baker_id, template_id, offered: true, updated_at: now,
+      }));
+      const { error: upErr } = await supabase
+        .from('baker_template_settings')
+        .upsert(rows, { onConflict: 'baker_id,template_id' });
+      if (upErr) return serverError(req, res, upErr);
     }
 
-    res.json({ ok: true, excluded_count: ids.length });
+    /* Everything they were offering and did not ask for this time comes out. Scoped to
+       `offered = true` so rows already false are left alone and keep their original updated_at.
+
+       ⚠️ THE EMPTY CASE IS SPELLED OUT, AND NOT FOR THE REASON THIS COMMENT FIRST GAVE. It claimed
+       PostgREST "cannot express `not.in.()`" and that building the filter would fail. That is wrong:
+       measured against dev, `.not('template_id','in','()')` raises no error and matches EVERY row —
+       which happens to be the behaviour wanted here, so the branch is redundant rather than
+       load-bearing.
+
+       It stays because the correct outcome then rests on an undocumented edge of PostgREST's filter
+       parsing, and "clear everything when nothing was asked for" is worth saying in code rather than
+       inheriting from a quirk that could be tightened in any release. */
+    let clear = supabase
+      .from('baker_template_settings')
+      .update({ offered: false, updated_at: now })
+      .eq('baker_id', contact.baker_id)
+      .eq('offered', true);
+    if (ids.length) clear = clear.not('template_id', 'in', `(${ids.join(',')})`);
+    const { error: clearErr } = await clear;
+    if (clearErr) return serverError(req, res, clearErr);
+
+    res.json({ ok: true, offered_count: ids.length });
   } catch (err) {
     serverError(req, res, err);
   }

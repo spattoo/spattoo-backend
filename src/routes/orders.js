@@ -694,8 +694,14 @@ router.post('/orders/manual', requireAuth, requireCapability('order:manage'), as
     // signed-uploaded there). An order with zero reference photos is allowed.
     const keys = Array.isArray(referenceKeys) ? referenceKeys.map(k => String(k).replace(/^\/+/, '')) : [];
     if (keys.length > MAX_ORDER_PHOTOS) return res.status(400).json({ error: `At most ${MAX_ORDER_PHOTOS} reference photos` });
-    if (keys.some(k => !k.startsWith('orders/reference/'))) {
-      return res.status(400).json({ error: 'reference keys must be under orders/reference/' });
+    /* ⚠️ TWO FOLDERS, AND THE SECOND ONE IS NOT AN UPLOAD. `orders/reference/` is where a photo the
+       baker just took is signed to. `catalogue/photos/` is a picture that is ALREADY ours — a cake
+       this baker photographed into their own catalogue — and the baker-side "create order for a
+       customer" starts from exactly that object rather than re-uploading a copy of it.
+       Still a closed allow-list: both are managed folders from lib/folders.js, so this cannot be
+       pointed at an arbitrary bucket key. */
+    if (keys.some(k => !k.startsWith('orders/reference/') && !k.startsWith('catalogue/photos/'))) {
+      return res.status(400).json({ error: 'reference keys must be under orders/reference/ or catalogue/photos/' });
     }
 
     const { data: baker } = await supabase
