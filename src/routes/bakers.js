@@ -1287,7 +1287,7 @@ router.get('/baker/catalogue', requireAuth, async (req, res) => {
 
     const [{ data: templates }, { data: settings }] = await Promise.all([
       supabase.from('cake_templates')
-        .select('id, name, thumbnail_url, tier_count, offering, sort_order, baker_id')
+        .select('id, name, thumbnail_url, tier_count, offering, sort_order, baker_id, type')
         .or(`baker_id.is.null,baker_id.eq.${contact.baker_id}`)
         .eq('is_active', true)
         .order('sort_order').order('name'),
@@ -1303,6 +1303,11 @@ router.get('/baker/catalogue', requireAuth, async (req, res) => {
       id: t.id, name: t.name, thumbnail_url: toPublicUrl(t.thumbnail_url),
       tier_count: t.tier_count, offering: t.offering,
       source: t.baker_id ? 'mine' : 'spattoo',
+      /* ⚠️ WHAT THE ROW IS, not just whose it is. 'photo' is an uploaded picture of finished work —
+         it has no design, so it cannot be opened on the canvas, and the grid marks it so the
+         difference is legible before the tap. Without this the Library screen, which reads this
+         route rather than GET /api/templates, could not tell the two apart. */
+      type: t.type ?? 'basic',
       offered: offered.has(t.id),
     })));
   } catch (err) {
