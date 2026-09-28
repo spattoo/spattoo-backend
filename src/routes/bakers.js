@@ -1213,7 +1213,18 @@ router.get('/baker/catalogue', requireAuth, async (req, res) => {
 
     const [{ data: templates }, { data: settings }] = await Promise.all([
       supabase.from('cake_templates')
-        .select('id, name, thumbnail_url, tier_count, offering, sort_order, baker_id, type')
+        /* ⚠️ THE SEARCHABLE FIELDS TRAVEL, or Library's search box is a name-only search — which
+           `LibraryPanel` itself argues against: 22 globals carry 16 distinct names, so a box over
+           those names "would concentrate the problem rather than solve it". Measured on dev today:
+           34 rows, 23 distinct names, `football` x6, `dino` x3, `love` x3.
+           `search_slugs` is the cheap half of what the design knows — element names, their tags and
+           the words piped on the cake — which is what makes "rainbow" find a cake called "kids
+           birthday cake". `cake_template_attrs` carries the age range, so an age phrase ("4 years")
+           NARROWS here instead of matching everything: matchesAge null-guards, so without it every
+           row answers every age and the query looks like it filtered when it did not.
+           Same shape as lib/templateList.js FIELDS + FILTER_JOIN, so the two lists cannot drift.
+           Cost measured before adding: ~119 bytes a row, ~4KB for the whole shelf. */
+        .select('id, name, thumbnail_url, tier_count, offering, sort_order, baker_id, type, search_slugs, template_tags(tags(slug)), cake_template_attrs(min_weight_kg, min_age, max_age)')
         .or(`baker_id.is.null,baker_id.eq.${contact.baker_id}`)
         .eq('is_active', true)
         .order('sort_order').order('name'),
@@ -1239,6 +1250,15 @@ router.get('/baker/catalogue', requireAuth, async (req, res) => {
          keys, not URLs. Library reads THIS route rather than GET /api/templates, so without this a
          photo opened from the Library shelf had a picture and no way to order from it. */
       thumbnail_key: t.thumbnail_url ?? null,
+      /* ⚠️ SHAPED EXACTLY LIKE lib/templateList.js's row, so the Library screen and the Catalogue
+         flyout can share ONE matcher (core designer/templateFilter.js) instead of growing two that
+         drift. `tag_slugs` flattens the join; `attrs` takes the first row because PostgREST returns
+         a to-one embed as an array. */
+      tag_slugs: (t.template_tags ?? []).map(r => r.tags?.slug).filter(Boolean),
+      search_slugs: t.search_slugs ?? [],
+      attrs: Array.isArray(t.cake_template_attrs)
+        ? (t.cake_template_attrs[0] ?? null)
+        : (t.cake_template_attrs ?? null),
       offered: offered.has(t.id),
     })));
   } catch (err) {
