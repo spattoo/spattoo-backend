@@ -228,10 +228,14 @@ router.get('/admin/templates', requireAuth, requireCapability('catalog:admin'), 
     // change. `id` breaks ties so rows created in the same instant keep a stable order.
     const { data, error } = await supabase
       .from('cake_templates')
-      // The FK is NAMED because cake_templates reaches bakers two ways — the owner
-      // (cake_templates.baker_id) and, many-to-many, the bakers who have HIDDEN this template
-      // (baker_template_exclusions). PostgREST will not guess between them: a bare `bakers(...)`
-      // is PGRST201 and a 500 on the whole screen. Wanted here is the owner.
+      // ⚠️ THE FK IS NAMED, AND IT MUST STAY NAMED. cake_templates reaches bakers two ways: the
+      // owner (cake_templates.baker_id) and, many-to-many, the bakers who have this template in
+      // their CATALOGUE (baker_template_settings). PostgREST will not guess between them — a bare
+      // `bakers(...)` is PGRST201 and a 500 on the whole screen. Wanted here is the owner.
+      //
+      // The second path used to be `baker_template_exclusions`, dropped 2026-09-28. Deleting that
+      // table did NOT remove the ambiguity, it replaced it: baker_template_settings joins the same
+      // two tables the same way. So this is not leftover caution from a table that no longer exists.
       .select(`${TEMPLATE_FIELDS}, ${TEMPLATE_FILTER_JOIN}, bakers!cake_templates_baker_id_fkey(name, is_catalog_author)`)
       .order('created_at', { ascending: false, nullsFirst: false })
       .order('id');
@@ -380,9 +384,10 @@ router.post('/baker/templates', requireAuth, requireCapability('template:manage'
      * send, so this feature does not exist until the baker app maps it. That is the honest state,
      * not a bug.
      *
-     * ⚠️ AND IT IS INERT UNTIL CUTOVER. `templatesForBaker` still resolves through
-     * `excludedTemplateIds`, so this row changes nothing a baker or customer sees yet. See
-     * migration 115 and spattoo-docs/plans/baker-catalogue.md. */
+     * ⚠️ NO LONGER INERT — THE CUTOVER LANDED 2026-09-28. `templatesForBaker` now resolves through
+     * `offeredTemplateIds` alone, so this row is the ONLY thing that puts a saved design in front of
+     * anyone: omit it and the design stays in Library, seen by nobody but its author. See migration
+     * 115 and spattoo-docs/plans/baker-catalogue.md. */
     if (add_to_catalogue === true) {
       const { error: catErr } = await supabase
         .from('baker_template_settings')

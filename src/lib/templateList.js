@@ -2,15 +2,20 @@
 // "What designs can I order from this bakery?" — resolved once, here, so the baker's own browse and
 // their customers' storefront cannot disagree about the answer.
 //
-// Three sources, in one rule:
+// Two sources, then one filter:
 //
 //   global templates      baker_id IS NULL — Spattoo's shared library
 //   + the baker's own     baker_id = this baker
-//   − their exclusions    baker_template_exclusions, which only ever holds GLOBAL ids, so
-//                         filtering by id can never drop a baker's own template
+//   ∩ their catalogue     baker_template_settings.offered — what they have CHOSEN to offer
 //
-// Hidden tenant-wide by design: a global template a baker has switched off is gone from their own
-// browse AND from their storefront, because "I don't make that" is one fact, not two settings.
+// ⚠️ AN INTERSECTION, NOT A SUBTRACTION, SINCE 2026-09-28. This used to subtract
+// `baker_template_exclusions` (absence meant offered); it now intersects the catalogue (absence
+// means NOT offered). The polarity is inverted, so an empty result is the correct answer for a
+// baker who has curated nothing, rather than a bug — see `offeredTemplateIds`.
+//
+// Tenant-wide by design: the catalogue is one fact, not two settings, so it governs the baker's own
+// browse AND their storefront. What it does NOT govern is Library (GET /api/baker/catalogue), which
+// must keep listing everything a baker COULD offer or there would be nothing to curate from.
 //
 // ── WHY THIS IS A MODULE AND NOT A SECOND COPY ──────────────────────────────────────────────────
 // The storefront's facet chooser needs this list for an ANONYMOUS visitor, and GET /api/templates
@@ -77,26 +82,24 @@ function shape({ template_tags, cake_template_attrs, ...t }, offeredIds = null) 
   };
 }
 
-/** The global ids this baker has switched off. Never contains one of their own. */
-export async function excludedTemplateIds(bakerId) {
-  const { data } = await supabase
-    .from('baker_template_exclusions')
-    .select('template_id')
-    .eq('baker_id', bakerId);
-  return (data ?? []).map(e => e.template_id);
-}
+/* ⚠️ `excludedTemplateIds` IS GONE (2026-09-28), along with `baker_template_exclusions`.
+   Sandeep: *"there are no bakers existing in prod. so prev logic of exclusions is not valid. its
+   only the catalogue that needs to be showed now."* The opt-OUT half was kept alive only because a
+   released bundle might still POST an exclusion set — with no production bakers there is no such
+   bundle to protect, so the two halves stopped needing to retire in order. Migration 117 drops the
+   table; the routes that wrote it went with it. See spattoo-docs/plans/baker-catalogue.md. */
 
 /**
  * The template ids this baker has CHOSEN to offer — their catalogue.
  *
- * ⚠️ NOT YET READ BY `templatesForBaker`, AND THAT IS THE WHOLE SEQUENCING. This is the opt-IN half
- * (migration 115); `excludedTemplateIds` above is the opt-OUT half still in service. They coexist on
- * purpose until the new endpoints and a release have shipped — Sandeep: *"new endpoints. once they
- * are working we wil drop the old."*
+ * ⚠️ THIS IS NOW THE ONLY THING `templatesForBaker` READS (2026-09-28). It was the opt-IN half of a
+ * pair, held back until the new endpoints shipped — Sandeep: *"new endpoints. once they are working
+ * we wil drop the old."* The opt-OUT half (`excludedTemplateIds`, `baker_template_exclusions`) is
+ * deleted, because with no production bakers there was no released bundle left to protect.
  *
- * Switching the read path before then would empty every storefront, because 115 seeds nothing. And
- * a browser running the released bundle still POSTs its EXCLUSION set, which under the new meaning
- * would offer exactly the templates the baker had switched off.
+ * ⚠️ IT SEEDS NOTHING, SO AN EMPTY ANSWER IS THE NORMAL ANSWER. Migration 115 created no rows.
+ * Every baker offers nothing until they curate, and both the storefront gallery and the designer's
+ * Catalogue flyout are empty until then. Measured on dev the day this landed: 23 of 24 bakers.
  *
  * ⚠️ THE POLARITY IS THE REVERSE OF THE FUNCTION ABOVE. Absence means not offered: nothing is in a
  * catalogue until it is chosen, a baker's own saved designs included — saving is a working action,
@@ -120,84 +123,56 @@ export async function offeredTemplateIds(bakerId) {
  * a raw request parameter reaching here would inject `.or()` syntax (SEC-10). Callers resolve it
  * from a session or from a slug lookup, never from the query string.
  */
-export async function templatesForBaker(bakerId, { type = null, offeredOnly = false } = {}) {
-  /* ── `offeredOnly` IS THE CUTOVER, AND IT IS SCOPED TO ONE CALLER ON PURPOSE ──────────────────
-   * Sandeep, 2026-09-28: *"on the storefront we have an option 'show me some cakes you can make' —
-   * there we need to show the catalogue (baker created catalogue) now. I think previously we were
-   * showing cakes that baker selected from the storefront settings screen. but thats obsolete now."*
+export async function templatesForBaker(bakerId, { type = null } = {}) {
+  /* ── THE CATALOGUE IS THE ONLY ANSWER NOW (cutover completed 2026-09-28) ──────────────────────
+   * Sandeep: *"there are no bakers existing in prod. so prev logic of exclusions is not valid. its
+   * only the catalogue that needs to be showed now."*
    *
-   * That screen is `PUT /api/baker/templates/exclusions`, and its set is what the opt-OUT branch
-   * below reads. The opt-IN catalogue (migration 115) replaces it — but ONLY for the customer's
-   * view, which is why this is a flag rather than a rewrite of the default.
+   * This used to resolve "global library + their own, MINUS what they switched off", and the
+   * opt-OUT half survived the storefront cutover for one reason only: a released bundle could still
+   * POST an exclusion set, which under the new meaning would have offered exactly the templates the
+   * baker had switched off. With no production bakers there is no such bundle and no such risk, so
+   * the sequencing that kept both halves alive no longer applies.
    *
-   * ⚠️ FLIPPING THE DEFAULT WOULD BE A DIFFERENT AND LARGER CHANGE. `GET /api/templates` shares this
-   * resolver and feeds the designer's Catalogue flyout for BOTH a baker and a signed-in customer;
-   * turning it catalogue-only there is defensible but is not what was asked for, and it is the kind
-   * of change that empties a surface nobody was looking at. The Library screen is unaffected either
-   * way — it reads `GET /baker/catalogue`, not this route, which is the fact that made a
-   * storefront-only cutover safe to do on its own.
+   * ⚠️ THIS NOW GOVERNS THE BAKER'S BROWSE TOO, NOT ONLY THE STOREFRONT. `GET /api/templates` shares
+   * this resolver, so the designer's Catalogue flyout shows the catalogue for a baker and for a
+   * signed-in customer alike — which is what the flyout is called and what it should always have
+   * been. Two surfaces are deliberately NOT affected:
+   *   · Library (`GET /baker/catalogue`) resolves elsewhere and still lists everything a baker
+   *     COULD offer, which is what makes curation possible at all.
+   *   · The start chooser is customers-only (CakeDesigner.jsx), so a baker whose catalogue is empty
+   *     is never blocked from starting a cake — they begin from Library or from scratch.
    */
-  if (offeredOnly) {
-    const offered = await offeredTemplateIds(bakerId);
-    /* ⚠️ EMPTY MEANS EMPTY, AND IT MUST RETURN BEFORE THE QUERY IS BUILT. Absence is the whole
-       polarity of this table: a baker who has curated nothing offers nothing. Handing an empty list
-       to a PostgREST `in` filter is the classic way that becomes "no filter at all" and serves the
-       entire library as though it were their catalogue — the exact inversion this table exists to
-       prevent. A new baker legitimately lands here, so this is the common path, not the edge. */
-    if (!offered.length) return [];
+  const offered = await offeredTemplateIds(bakerId);
 
-    let q = supabase
-      .from('cake_templates')
-      .select(`${FIELDS}, ${FILTER_JOIN}`)
-      .eq('is_active', true)
-      .order('sort_order')
-      .in('id', offered);
-
-    if (type) q = q.eq('type', type);
-    /* Still tenant-scoped. `baker_template_settings` is keyed by baker, so a foreign id cannot
-       realistically appear — but the scope is what MAKES that true rather than something this
-       query is entitled to assume. */
-    q = q.or(`baker_id.is.null,baker_id.eq.${bakerId}`);
-
-    const { data, error } = await q;
-    if (error) throw error;
-    /* Every row here is offered by construction, so the label is a constant. It is still emitted,
-       because the shape of a list row must not depend on which branch produced it. */
-    return (data ?? []).map(t => shape(t, new Set(offered)));
-  }
+  /* ⚠️ EMPTY MEANS EMPTY, AND IT MUST RETURN BEFORE THE QUERY IS BUILT. Absence is the whole
+     polarity of this table: a baker who has curated nothing offers nothing. Handing an empty list
+     to a PostgREST `in` filter is the classic way that becomes "no filter at all" and serves the
+     entire library as though it were their catalogue — the exact inversion this table exists to
+     prevent. Migration 115 seeded nothing, so a new baker legitimately lands here: this is the
+     common path, not the edge. */
+  if (!offered.length) return [];
 
   let query = supabase
     .from('cake_templates')
     .select(`${FIELDS}, ${FILTER_JOIN}`)
     .eq('is_active', true)
-    .order('sort_order');
+    .order('sort_order')
+    .in('id', offered);
 
   if (type) query = query.eq('type', type);
+  /* Still tenant-scoped. `baker_template_settings` is keyed by baker, so a foreign id cannot
+     realistically appear — but the scope is what MAKES that true rather than something this query
+     is entitled to assume. */
   query = query.or(`baker_id.is.null,baker_id.eq.${bakerId}`);
-
-  /* ⚠️ STILL THE OPT-OUT PATH FOR THE BAKER'S OWN BROWSE, DELIBERATELY. The storefront cut over
-     above; this did not. A released client still POSTs its EXCLUSION set, and under the new meaning
-     that would offer exactly the templates the baker had switched off — so the two halves are
-     retired in order, not together. See spattoo-docs/plans/baker-catalogue.md. */
-  const excluded = await excludedTemplateIds(bakerId);
-  if (excluded.length) query = query.not('id', 'in', `(${excluded.join(',')})`);
 
   const { data, error } = await query;
   if (error) throw error;
 
-  /* ── LABELLING IS NOT FILTERING, AND THAT IS WHY THIS IS SAFE BEFORE CUTOVER ──────────────────
-   * Every row now says whether it is in the baker's catalogue, but WHICH ROWS COME BACK is still
-   * decided by the exclusion filter above. So nothing a baker or customer currently sees changes,
-   * and migration 115 seeding nothing cannot empty a storefront. The cutover is a separate act: it
-   * replaces the exclusion lines above with this same set.
-   *
-   * Asked for by Sandeep — *"add them to response"* — so the Catalogue screen can offer "move back
-   * to library", which needs to know which of these two places a template belongs to. His rule:
-   * *"a template should appear either in library or in catalogue at a given time."*
-   *
-   * One query for the whole list, not one per row. */
-  const offeredIds = new Set(await offeredTemplateIds(bakerId));
-  return (data ?? []).map(t => shape(t, offeredIds));
+  /* Every row here is offered by construction, so the label is a constant. It is still emitted,
+     because the shape of a list row must not depend on how it was resolved — and because the
+     Catalogue flyout reads `offered` off the row to drive "move back to library". */
+  return (data ?? []).map(t => shape(t, new Set(offered)));
 }
 
 /** Every template, unscoped. Admin only — no baker filter, no exclusions. */
@@ -248,7 +223,7 @@ export async function templatesForStorefront(bakerId) {
      CUT OVER 2026-09-28: this now returns only offered templates, so the flag is redundant rather
      than sensitive. The strip stays anyway — it costs nothing, and it keeps the guarantee true by
      construction if a future branch ever returns a mixed list again. */
-  const rows = await templatesForBaker(bakerId, { offeredOnly: true });
+  const rows = await templatesForBaker(bakerId);
 
   /* ── ⚠️ PHOTOS ARE HELD BACK FROM THE CUSTOMER, AND THIS LINE IS MEANT TO BE DELETED ───────────
    * A catalogue photo (migration 116, `type = 'photo'`) is a picture of finished work with no

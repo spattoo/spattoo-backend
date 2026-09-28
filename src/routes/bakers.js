@@ -1181,93 +1181,19 @@ router.put('/baker/flavours/dietary-conflicts', requireAuth, requireCapability('
   }
 });
 
-// ── GET /api/baker/templates ──────────────────────────────────────────────────
-// Auth. The GLOBAL (Spattoo-authored) template master list, flagged with this baker's on/off state:
-//   [{ id, name, thumbnail_url, tier_count, offering, excluded }]
-// `excluded: true` means the baker has switched it off → it's hidden from their whole tenant (see the
-// filter in GET /api/templates). Only globals are listed — a baker's OWN templates aren't managed
-// here (they delete those). Direct sibling of GET /api/baker/flavours.
-router.get('/baker/templates', requireAuth, async (req, res) => {
-  try {
-    const { data: contact } = await supabase
-      .from('baker_appusers')
-      .select('baker_id')
-      .eq('auth_user_id', req.user.id)
-      .maybeSingle();
-    if (!contact) return res.status(404).json({ error: 'No baker account found' });
-
-    const [{ data: globals }, { data: exclusions }] = await Promise.all([
-      supabase.from('cake_templates')
-        .select('id, name, thumbnail_url, tier_count, offering, sort_order')
-        .is('baker_id', null)
-        .eq('is_active', true)
-        .order('sort_order').order('name'),
-      supabase.from('baker_template_exclusions')
-        .select('template_id')
-        .eq('baker_id', contact.baker_id),
-    ]);
-
-    const excluded = new Set((exclusions ?? []).map(e => e.template_id));
-    res.json((globals ?? []).map(t => ({
-      id: t.id, name: t.name, thumbnail_url: toPublicUrl(t.thumbnail_url),
-      tier_count: t.tier_count, offering: t.offering, excluded: excluded.has(t.id),
-    })));
-  } catch (err) {
-    serverError(req, res, err);
-  }
-});
-
-// ── PUT /api/baker/templates/exclusions ───────────────────────────────────────
-// Auth + store:manage. Body: { excluded_template_ids: [uuid, ...] }
-// Replaces this baker's exclusion set (clear, then insert the new set). Only ids that are real active
-// GLOBAL templates are written, so a baker can never hide another tenant's private template and the
-// table can't accumulate junk. Same shape the flavour exclusions had before migration 037
-// widened those rows into priced settings and made replace unsafe for them.
-router.put('/baker/templates/exclusions', requireAuth, requireCapability('store:manage'), async (req, res) => {
-  try {
-    const { data: contact } = await supabase
-      .from('baker_appusers')
-      .select('baker_id')
-      .eq('auth_user_id', req.user.id)
-      .maybeSingle();
-    if (!contact) return res.status(404).json({ error: 'No baker account found' });
-
-    const requested = Array.isArray(req.body?.excluded_template_ids) ? req.body.excluded_template_ids : null;
-    if (!requested) return res.status(400).json({ error: 'excluded_template_ids must be an array' });
-
-    // Keep only ids that are real active GLOBAL templates (baker_id IS NULL).
-    const { data: globals } = await supabase
-      .from('cake_templates').select('id').is('baker_id', null).eq('is_active', true);
-    const valid = new Set((globals ?? []).map(t => t.id));
-    const ids = [...new Set(requested)].filter(id => valid.has(id));
-
-    // Replace the set: clear this baker's exclusions, then insert the new ones.
-    const { error: delErr } = await supabase
-      .from('baker_template_exclusions').delete().eq('baker_id', contact.baker_id);
-    if (delErr) return serverError(req, res, delErr);
-
-    if (ids.length) {
-      const rows = ids.map(template_id => ({ baker_id: contact.baker_id, template_id }));
-      const { error: insErr } = await supabase.from('baker_template_exclusions').insert(rows);
-      if (insErr) return serverError(req, res, insErr);
-    }
-
-    res.json({ ok: true, excluded_count: ids.length });
-  } catch (err) {
-    serverError(req, res, err);
-  }
-});
-
 // ── GET /api/baker/catalogue ──────────────────────────────────────────────────
 // Auth. Every template this baker COULD offer — Spattoo's library and their own saved designs —
 // each flagged with whether it is in their catalogue:
 //   [{ id, name, thumbnail_url, tier_count, offering, source: 'spattoo' | 'mine', offered }]
 //
-// ⚠️ THE OPT-IN TWIN OF GET /api/baker/templates, AND BOTH ARE LIVE ON PURPOSE. That route returns
-// GLOBALS ONLY, flagged `excluded`, and still drives the shipped Manage-templates screen. This one
-// returns globals AND the baker's own, flagged `offered`. They will disagree, and that is correct
-// while the old screen is still in released bundles — see plans/baker-catalogue.md. The old pair
-// goes when the new UI has shipped, not before.
+// ⚠️ THE ONLY ROUTE THAT LISTS WHAT A BAKER *COULD* OFFER, AND THAT IS NOW LOAD-BEARING. It used to
+// have an opt-OUT twin (GET /api/baker/templates, globals only, flagged `excluded`) which was
+// deleted on 2026-09-28 along with `baker_template_exclusions` — Sandeep: *"there are no bakers
+// existing in prod. so prev logic of exclusions is not valid."*
+//
+// Since the cutover, `GET /api/templates` returns ONLY the catalogue. So this is the one route that
+// can still see a template a baker has NOT chosen, which is what makes Library — and therefore
+// curation itself — possible. It must never be narrowed to the catalogue to match its sibling.
 //
 // ⚠️ `source` IS HERE BECAUSE THE TWO KINDS ARE NOT INTERCHANGEABLE. A baker may add or drop either
 // from their catalogue, but only their OWN can be deleted outright, and the screen has to be able to
