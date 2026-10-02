@@ -18,6 +18,7 @@ import { normalizePhone } from '../lib/phone.js';
 import { primaryOwnerConflict } from '../services/bakerProvisioning.js';
 import { sendOtpSms, smsConfigured } from '../services/msg91.js';
 import { maskPhone } from '../lib/mask.js';
+import { requireRecentPassword } from '../middleware/reauth.js';
 
 // Account erasure lifecycle — the CONTRACT-basis §12 right (DPDP "Layer 3").
 // See docs/CONSENT_WITHDRAWAL_AND_ERASURE_PLAN.md. Deletion is a lifecycle, never an instant hard
@@ -196,6 +197,13 @@ const phoneStartLimit = rateLimit({
   name: 'acct-phone-start', limit: 5, windowSec: 900, key: req => req.user?.id,
   message: 'Too many code requests. Please wait a few minutes and try again.',
 });
+// A password change is rarer than a phone change and more damaging, so it is metered harder. This
+// does not defend the password itself — nothing here checks one; requireRecentPassword does, by
+// reading a claim Supabase signed — it bounds how often an unlocked session can rewrite it.
+const passwordLimit = rateLimit({
+  name: 'acct-password', limit: 5, windowSec: 900, key: req => req.user?.id,
+  message: 'Too many attempts. Please wait a few minutes and try again.',
+});
 const phoneConfirmLimit = rateLimit({
   name: 'acct-phone-confirm', limit: 15, windowSec: 900, key: req => req.user?.id,
   message: 'Too many attempts. Please wait a few minutes and try again.',
@@ -215,7 +223,7 @@ async function ownerRow(authUserId) {
 // ── POST /api/baker/account/phone/start ───────────────────────────────────────
 // Body: { phone, country? }. Sends a code to the NEW number. Answers with the masked destination
 // so the client can say where it went without re-deriving a normalised form it never saw.
-router.post('/baker/account/phone/start', requireAuth, phoneStartLimit, async (req, res) => {
+router.post('/baker/account/phone/start', requireAuth, requireRecentPassword(), phoneStartLimit, async (req, res) => {
   try {
     // Shape first — a malformed number should cost nothing. normalizePhone is the single validator
     // every write path shares (lib/phone.js), so the stored shape here matches onboarding's exactly.
@@ -280,7 +288,7 @@ router.post('/baker/account/phone/start', requireAuth, phoneStartLimit, async (r
 // ── POST /api/baker/account/phone/confirm ─────────────────────────────────────
 // Body: { code }. The number is NOT in the body — it is read off the attempt row, so a caller
 // cannot prove one number and write another.
-router.post('/baker/account/phone/confirm', requireAuth, phoneConfirmLimit, async (req, res) => {
+router.post('/baker/account/phone/confirm', requireAuth, requireRecentPassword(), phoneConfirmLimit, async (req, res) => {
   try {
     const code = String(req.body?.code ?? '').trim();
     if (!code) return res.status(400).json({ error: 'Enter the code we sent you.', field: 'code' });
@@ -342,5 +350,37 @@ router.post('/baker/account/phone/confirm', requireAuth, phoneConfirmLimit, asyn
   }
 });
 
+
+// ── POST /api/baker/account/password ──────────────────────────────────────────
+// Changing your own password, THROUGH THIS API rather than straight from the browser.
+//
+// ⚠️ IT MOVED HERE TO BE GATED, AND THAT IS THE WHOLE REASON.
+// It used to be `supabase.auth.updateUser({ password })` in bakerApi.ts — browser to Supabase, our
+// server never in the path. Which meant we could not gate it however the screen behaved: a lock on
+// the UI is a rendering decision, and anyone holding a borrowed session could call updateUser from
+// a console and skip it. Gating the phone number while leaving this open would have moved the lock
+// to the side door — the password is the MORE damaging change, because it locks the real owner out
+// and then the phone number follows at leisure.
+//
+// So the re-auth gate is on the server, where it can actually refuse.
+//
+// The policy is Supabase's, not ours: admin.updateUserById rejects a weak password with its own
+// message, and the checklist on the screen mirrors that policy rather than inventing a second one.
+// A rule enforced in two places is a rule that disagrees with itself eventually.
+router.post('/baker/account/password', requireAuth, requireRecentPassword(), passwordLimit, async (req, res) => {
+  try {
+    const password = String(req.body?.password ?? '');
+    if (!password) return res.status(400).json({ error: 'Enter a new password.', field: 'password' });
+
+    const { error } = await supabase.auth.admin.updateUserById(req.user.id, { password });
+    if (error) return res.status(400).json({ error: error.message, field: 'password' });
+
+    // No session handling here. Supabase invalidates sessions on a password change and the client
+    // signs out deliberately afterwards; doing it from this side as well would race that.
+    res.json({ ok: true });
+  } catch (err) {
+    serverError(req, res, err);
+  }
+});
 
 export default router;
