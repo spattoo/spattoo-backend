@@ -285,7 +285,7 @@ router.get('/baker/profile', requireAuth, async (req, res) => {
   try {
     const { data: contact } = await supabase
       .from('baker_appusers')
-      .select('id, first_name, last_name, baker_id, role, welcome_sent_at')
+      .select('id, first_name, last_name, baker_id, role, welcome_sent_at, phone, phone_country, is_primary')
       .eq('auth_user_id', req.user.id)
       .maybeSingle();
     if (!contact) {
@@ -397,7 +397,17 @@ router.get('/baker/profile', requireAuth, async (req, res) => {
         subscription_plan_display: sub.plan?.display_name ?? null,
         subscription_cancellation_reason: sub.cancellation_reason ?? null,
       },
-      user: { firstName: contact.first_name, lastName: contact.last_name, email: req.user.email, role: contact.role },
+      // `phone` is the OWNER's number — the one under the unique index of migration 016, which
+      // migration 015 calls the subscription boundary. It is here so the account screen can show
+      // what it is about to change; changing it is POST /baker/account/phone/start+confirm, which
+      // proves possession by SMS and is the only path that writes this column.
+      // `canChangePhone` is is_primary, not a capability: staff numbers are not under that index
+      // and have no flow yet, so the screen must not offer one.
+      user: {
+        firstName: contact.first_name, lastName: contact.last_name, email: req.user.email,
+        role: contact.role, phone: contact.phone ?? null, phoneCountry: contact.phone_country ?? null,
+        canChangePhone: !!contact.is_primary,
+      },
       pending_consents,
     });
   } catch (err) {
