@@ -265,7 +265,8 @@ router.post('/baker/account/phone/start', requireAuth, phoneStartLimit, async (r
 
     // A provider failure must NOT read as "code sent" — the baker would sit and wait for nothing.
     try {
-      await sendOtpSms({ phone: phone.e164, otp: code });
+      // The profile template when it exists, the login one until DLT clears it — see config.sms.
+      await sendOtpSms({ phone: phone.e164, otp: code, templateId: config.sms.profileTemplateId });
     } catch (err) {
       return res.status(502).json({ error: 'We could not send the code. Please try again.' });
     }

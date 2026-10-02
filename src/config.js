@@ -277,6 +277,18 @@ export const config = {
     // channel settings — it delivers, but carries no branding and logs nothing in the OTP
     // section. See the STOREFRONT_OTP_CHANNELS note below for why `sms` stays off until DLT.
     templateId: process.env.MSG91_TEMPLATE_ID,
+    // A SECOND OTP template, for a code that edits a profile rather than signs anybody in.
+    //
+    // Two templates because the two messages say different things and DLT approves CONTENT, not
+    // intent: the login one reads "your verification code for Spattoo", which is a lie on a screen
+    // where nobody is logging in. This one reads "your code to edit your profile" — deliberately
+    // generic, so the same registration covers the next field that needs proving.
+    //
+    // OPTIONAL, AND IT FALLS BACK TO THE LOGIN TEMPLATE (see services/msg91.js). DLT approval runs
+    // on its own clock, and a half-wired feature that cannot be tested until a telco answers is
+    // worse than one sending slightly wrong words to a handful of dev numbers. Set it the day the
+    // template is Active in MSG91 and the copy corrects itself with no deploy.
+    profileTemplateId: process.env.MSG91_PROFILE_TEMPLATE_ID,
     // Shared secret from the Supabase dashboard (Authentication → Hooks), issued in the form
     // `v1,whsec_<base64>`. Stored verbatim; the `v1,whsec_` prefix is stripped at verify time.
     hookSecret: process.env.SEND_SMS_HOOK_SECRET,
@@ -328,19 +340,29 @@ export const config = {
     otpRequired: process.env.STOREFRONT_OTP_REQUIRED !== 'false',
     // Which channels a storefront visitor may verify on. Comma-separated: sms | email.
     //
-    // DEFAULTS TO EMAIL ONLY, and that is deliberate rather than timid. Sending an SMS to an Indian
-    // number requires DLT registration — entity, header, and per-template approval — and telcos
-    // scrub unregistered traffic at the network level. A channel offered but undeliverable is the
-    // worst of both: the customer picks it, waits for a code that was blocked upstream, and
-    // abandons. Better to offer only what is known to arrive.
+    // DEFAULTS TO `sms,email` SINCE 2026-10-02, and the history matters because the old default was
+    // right when it was written. It was `email` alone: sending an SMS to an Indian number needs DLT
+    // registration — entity, header, per-template approval — and telcos scrub unregistered traffic
+    // at the network level, so a channel offered but undeliverable is the worst of both. The
+    // customer picks it, waits for a code that was blocked upstream, and abandons.
     //
-    // Add `sms` the day the provider is live and DLT has cleared:  STOREFRONT_OTP_CHANNELS=sms,email
+    // That condition has passed. DLT cleared and SMS OTP ran end to end on dev (2026-09-19) and
+    // prod (2026-09-22), so the guard now protects against something that is no longer true — and
+    // it does it SILENTLY: an environment that never set the variable offers email only, and
+    // nothing says so. A default that no longer matches reality is worse than no default, because
+    // it looks like a decision.
+    //
+    // ⚠️ BOTH, NOT SMS ALONE. Phone-only was asked for on 2026-09-19 and the data refused it: of 17
+    // dev customers, 4 had no phone and 1 had no email (storefront-access-control.md). The OTP is
+    // how a customer proves a contact to place an enquiry, so dropping email shuts out whoever
+    // lacks a number. A baker changing their own phone is the opposite case and has no channel to
+    // choose — routes/account.js sends SMS and nothing else, and never reads this.
     //
     // ORDER MATTERS — the first entry is what the client offers first, so this is also how you say
     // "prefer phone" once phone works. Served on /storefront/:slug/settings so the client offers
     // exactly what the server will accept; enforced in the handlers too, because a UI that only
     // shows one option is not a restriction.
-    otpChannels: (process.env.STOREFRONT_OTP_CHANNELS || 'email')
+    otpChannels: (process.env.STOREFRONT_OTP_CHANNELS || 'sms,email')
       .split(',').map(c => c.trim().toLowerCase())
       .filter(c => ['sms', 'email'].includes(c)),
     // Which timezone a storefront view is dated in (services/storefrontViews.js). The API runs in
