@@ -867,7 +867,22 @@ router.put('/baker/settings', requireAuth, requireCapability('store:manage'), as
     // the one nothing reads.
     const { lead_time_days, delivery_radius_km, ...settings } = req.body ?? {};
 
-    const patch = { settings };
+    // ⚠️ MERGE, NOT REPLACE — and this changed on 2026-10-03 because the blob stopped having one
+    // owner. It was written verbatim while a single screen held every field, which was safe exactly
+    // as long as that stayed true. It no longer is: store hours moved to the Store page and orders
+    // and delivery stayed in Settings, and both of those live in `settings`. Written verbatim, each
+    // screen's save would silently delete the other's keys — the same replace-set hazard
+    // spattoo-core's catalogue.test.jsx exists to prevent, with the same signature: nothing errors,
+    // nothing warns, and the loss is only noticed later by whoever opens the other screen.
+    //
+    // TOP LEVEL ONLY. A deep merge would make a nested key impossible to REMOVE — `delivery` is an
+    // object, and a baker switching something off inside it writes the whole sub-object, which is
+    // the behaviour the screens already rely on. One level is enough to keep two owners apart, and
+    // any more starts making deletions undoable.
+    const { data: existing } = await supabase
+      .from('bakers').select('settings').eq('id', contact.baker_id).maybeSingle();
+
+    const patch = { settings: { ...(existing?.settings ?? {}), ...settings } };
     if (lead_time_days !== undefined) {
       // Matches 042's CHECK, so a bad value is a message rather than a constraint violation. The
       // ceiling is not fussiness: a typo'd 300 would make a baker unbookable for most of a year and
