@@ -326,7 +326,7 @@ router.get('/baker/profile', requireAuth, async (req, res) => {
       // person create designs"; this answers "is this bakery one of ours". They are different
       // questions and the second one has no user-level answer — every user of an authoring bakery
       // gets it, and nobody else does.
-      .select('id, name, slug, logo_url, logo_transparent_key, primary_color, accent_color, instagram_handle, website_url, tagline, storefront_theme_id, portrait_url, storefront_published, storefront_customizations, first_paid_at, is_catalog_author')
+      .select('id, name, slug, email, logo_url, logo_transparent_key, primary_color, accent_color, instagram_handle, website_url, tagline, storefront_theme_id, portrait_url, storefront_published, storefront_customizations, first_paid_at, is_catalog_author')
       .eq('id', contact.baker_id)
       .single();
     if (!baker) return res.status(404).json({ error: 'Baker not found' });
@@ -369,6 +369,12 @@ router.get('/baker/profile', requireAuth, async (req, res) => {
     res.json({
       baker: {
         id: baker.id, name: baker.name, slug: baker.slug,
+        /* ⚠️ THE BAKERY'S EMAIL, AND IT IS USUALLY NULL — 2 of 24 rows on dev carry one.
+           NULL is not "missing", it is "use the owner's", which is what bakerNotifyEmail() does and
+           has always done. The account screen shows the owner's address as the placeholder and
+           writes this column only when a baker types something different, so the default keeps
+           FOLLOWING the login email instead of freezing a copy of it that goes stale. */
+        email:            baker.email ?? null,
         logo_url:             toPublicUrl(baker.logo_url),
         logo_transparent_url: toPublicUrl(baker.logo_transparent_key),
         primary_color:    baker.primary_color,  accent_color: baker.accent_color,
@@ -440,7 +446,7 @@ router.patch('/baker/profile', requireAuth, requireCapability('store:manage'), a
       .maybeSingle();
     if (!contact) return res.status(404).json({ error: 'No baker account found' });
 
-    const ALLOWED = ['primary_color', 'accent_color', 'logo_url', 'instagram_handle', 'website_url', 'tagline', 'story', 'portrait_url',
+    const ALLOWED = ['email', 'primary_color', 'accent_color', 'logo_url', 'instagram_handle', 'website_url', 'tagline', 'story', 'portrait_url',
       'address_line1', 'address_line2', 'street', 'city', 'state', 'postal_code', 'country'];
     const updates = {};
     for (const f of ALLOWED) {
@@ -449,6 +455,22 @@ router.patch('/baker/profile', requireAuth, requireCapability('store:manage'), a
     // SEC-16 — a stored URL rendered into an href must be http(s); reject javascript:/data:/etc at
     // the write-point (defense-in-depth behind the front-end safeHref guard).
     if ('website_url' in updates) updates.website_url = normalizeWebUrl(updates.website_url);
+
+    /* ⚠️ CLEARING IT IS A REAL ACTION, NOT A MISSING FIELD. `updates[f] = req.body[f] || null` above
+       already turns '' into null, and null here means "use the owner's address" — bakerNotifyEmail()
+       falls back to the primary app-user. So emptying the box restores the default rather than
+       leaving the bakery unreachable, which is why nothing below rejects an empty value.
+
+       ⚠️ DELIBERATELY LOOSE, like storefront.js's: "Supabase is the real validator, and a clever
+       regex here would reject a valid address somebody actually owns". The job of this check is to
+       catch a typo that is obviously not an address, not to adjudicate RFC 5322. */
+    if (updates.email) {
+      const addr = String(updates.email).trim().toLowerCase();
+      if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(addr)) {
+        return res.status(400).json({ error: 'Enter a valid email address', field: 'email' });
+      }
+      updates.email = addr;
+    }
     // storefront_theme_id is a FK to the themes master table — validate it exists and
     // is available (is_active); never coerce the NOT-NULL column to null.
     if ('storefront_theme_id' in req.body) {
