@@ -30,12 +30,21 @@ const ok = (cond, label, extra = '') => {
 // Parsed rather than hardcoded here: a second list of the skins is a second thing to keep in step,
 // and the one that drifts is always the copy nobody is looking at.
 const sql = readFileSync(new URL('../migrations/120_rail_skins.sql', import.meta.url), 'utf8');
+
+/* ⚠️ A LATER MIGRATION MAY HAVE CORRECTED A ROW, and reading only 120 would measure a skin that no
+   longer exists. 121 did exactly that to chrome. Applied in number order, same as the database. */
+const corrections = new Map();
+for (const f of ['121_chrome_is_the_rail_as_it_is.sql']) {
+  const m = readFileSync(new URL(`../migrations/${f}`, import.meta.url), 'utf8')
+    .match(/set stops = '(\[[^\]]*\])'::jsonb\s*\n\s*where key = '([a-z]+)'/);
+  if (m) corrections.set(m[2], JSON.parse(m[1]));
+}
 const rows = [...sql.matchAll(
   /\('([a-z]+)',\s*'([^']+)',\s*(true|false),\s*(true|false),\s*'(\[[^\]]*\])'::jsonb,\s*(NULL|[\d.]+),\s*'([a-z]+)',\s*'([^']+)',\s*(\d+)\)/g
 )].map(m => ({
   key: m[1], name: m[2], is_default: m[3] === 'true', is_premium: m[4] === 'true',
   stops: JSON.parse(m[5]), joint_at: m[6] === 'NULL' ? null : +m[6], texture: m[7], ink: m[8],
-}));
+})).map(r => (corrections.has(r.key) ? { ...r, stops: corrections.get(r.key) } : r));
 
 // ⚠️ A TEXTURE THE RENDERER DOES NOT KNOW DRAWS NOTHING, silently. Keys live here so adding one in
 // admin without teaching core about it fails the build rather than shipping a skin that is just a
@@ -52,13 +61,30 @@ for (const r of rows) {
   ok(worst >= MIN_RAIL_CONTRAST,
      `${r.key}: labels clear AA against every one of its own stops`,
      `${worst.toFixed(2)} : 1, floor ${MIN_RAIL_CONTRAST}`);
-  ok(r.stops.length === 4, `${r.key}: four stops`, `${r.stops.length}`);
+  ok(r.stops.length >= 2, `${r.key}: at least two stops to ramp between`, `${r.stops.length}`);
   ok(r.stops.every(parseColour), `${r.key}: every stop is a colour`);
   ok(TEXTURES.has(r.texture), `${r.key}: its texture is one core can draw`, r.texture);
   // A joint is a FRACTION of the handle, not a pixel — the rail is drawn to its measured height.
   ok(r.joint_at === null || (r.joint_at > 0 && r.joint_at < 1),
      `${r.key}: any joint is a fraction between 0 and 1`, String(r.joint_at));
 }
+
+/* ── the default IS the rail, not a near-miss of it ───────────────────────────
+ *
+ * ⚠️ THESE THREE ARE spattoo-core/src/shared/chrome.js, COPIED BY HAND — which is the mistake this
+ * assertion exists to catch, made once already. That file's header says an approximation of this
+ * surface "would be wrong by definition": panel headers render it as CSS and the spatula as SVG,
+ * and they match only because both read one definition. The seed made a third copy and got the
+ * OFFSETS wrong on the first try — four stops where there are three, so the mid tone held a third
+ * longer and the default rail would have changed for everyone the moment the DB answered.
+ *
+ * A cross-repo import would be better and is not available to a backend gate. A hardcoded list that
+ * fails loudly is the next best thing. */
+const CHROME_STOPS = ['#121214', '#08080a', '#020203'];
+const chrome = rows.find(r => r.key === 'chrome');
+ok(chrome && JSON.stringify(chrome.stops) === JSON.stringify(CHROME_STOPS),
+   'the default skin is exactly the rail core already draws (shared/chrome.js)',
+   JSON.stringify(chrome?.stops));
 
 // ── exactly one default, and it is free ──────────────────────────────────────
 const defaults = rows.filter(r => r.is_default);
