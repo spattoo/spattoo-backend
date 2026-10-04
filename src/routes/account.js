@@ -18,6 +18,8 @@ import { normalizePhone } from '../lib/phone.js';
 import { primaryOwnerConflict } from '../services/bakerProvisioning.js';
 import { sendOtpSms, smsConfigured } from '../services/msg91.js';
 import { maskPhone } from '../lib/mask.js';
+import { getEntitlements } from '../services/entitlements.js';
+import { servedRailSkin, FALLBACK_RAIL_SKIN, worstInkContrast, MIN_RAIL_CONTRAST } from '../lib/railSkin.js';
 import { requireRecentPassword } from '../middleware/reauth.js';
 
 // Account erasure lifecycle — the CONTRACT-basis §12 right (DPDP "Layer 3").
@@ -378,6 +380,91 @@ router.post('/baker/account/password', requireAuth, requireRecentPassword(), pas
     // No session handling here. Supabase invalidates sessions on a password change and the client
     // signs out deliberately afterwards; doing it from this side as well would race that.
     res.json({ ok: true });
+  } catch (err) {
+    serverError(req, res, err);
+  }
+});
+
+// ── GET /api/baker/account/rail-skins ─────────────────────────────────────────
+// The skins this person may see, plus which one they are ON and which one is actually SERVED.
+//
+// ⚠️ THREE VALUES, NOT ONE, AND THEY GENUINELY DIFFER. `chosen` is the column; `served` is what the
+// rail draws after the entitlement is applied; `entitled` says whether the two can agree. A baker
+// who picked Walnut on Blaze and dropped to Flame gets chosen:'walnut', served:'chrome',
+// entitled:false — which is exactly what the screen needs to show the choice still ticked and tell
+// them why it is not on. Collapsing these into one field is how a downgrade silently looks like
+// their choice was deleted.
+router.get('/baker/account/rail-skins', requireAuth, async (req, res) => {
+  try {
+    const { data: me } = await supabase
+      .from('baker_appusers').select('baker_id, rail_skin').eq('auth_user_id', req.user.id).maybeSingle();
+    if (!me) return res.status(403).json({ error: 'Not a baker account' });
+
+    const { data: skins, error } = await supabase
+      .from('rail_skins')
+      .select('key, name, is_default, is_premium, stops, joint_at, texture, ink, ink_active')
+      .eq('is_active', true)
+      .order('sort_order', { ascending: true });
+    if (error) return serverError(req, res, error);
+
+    // Destructured, like every other caller — getEntitlements returns { status, plan, …, ent }.
+    const { ent } = await getEntitlements(me.baker_id);
+    res.json({
+      skins: skins ?? [],
+      chosen:   me.rail_skin ?? null,
+      served:   servedRailSkin(me.rail_skin, skins ?? [], ent),
+      entitled: !!ent?.rail_skins,
+    });
+  } catch (err) {
+    serverError(req, res, err);
+  }
+});
+
+// ── PUT /api/baker/account/rail-skin ──────────────────────────────────────────
+// Body: { key }. `null` clears it back to the default.
+//
+// ⚠️ CHOOSING IS GATED, DRAWING IS RESOLVED. This refuses a premium skin without the entitlement —
+// but losing the entitlement later never comes back here to clear the column. The two are different
+// events: this is "you may not pick that", and the resolver is "you are not seeing that right now".
+// See lib/railSkin.js for why the column is left alone.
+router.put('/baker/account/rail-skin', requireAuth, async (req, res) => {
+  try {
+    const key = req.body?.key == null || req.body.key === '' ? null : String(req.body.key);
+
+    const { data: me } = await supabase
+      .from('baker_appusers').select('id, baker_id').eq('auth_user_id', req.user.id).maybeSingle();
+    if (!me) return res.status(403).json({ error: 'Not a baker account' });
+
+    if (key !== null) {
+      const { data: skin } = await supabase
+        .from('rail_skins').select('key, is_premium, is_active, stops, ink')
+        .eq('key', key).maybeSingle();
+      if (!skin || !skin.is_active) return res.status(400).json({ error: 'That look is not available.', field: 'key' });
+
+      if (skin.is_premium) {
+        const { ent } = await getEntitlements(me.baker_id);
+        if (!ent?.rail_skins) {
+          return res.status(403).json({ error: 'That look is part of Blaze.', code: 'upgrade_required' });
+        }
+      }
+
+      /* ⚠️ THE SAME FLOOR THE GATE ENFORCES, ENFORCED AGAIN HERE. check:rail-skins measures the
+         SEEDED rows at build time; a row an admin adds afterwards has never met it. Without this a
+         baker could be handed an unreadable rail by someone choosing colours in admin, which is the
+         exact failure the gate exists to prevent — and the gate cannot see rows that did not exist
+         when it ran. One formula, in lib/railSkin.js, so the two can never disagree. */
+      const worst = worstInkContrast(skin);
+      if (worst !== null && worst < MIN_RAIL_CONTRAST) {
+        return res.status(422).json({
+          error: 'That look is not readable enough to use yet.',
+          code: 'skin_contrast', detail: `${worst.toFixed(2)}:1 against a ${MIN_RAIL_CONTRAST}:1 floor`,
+        });
+      }
+    }
+
+    const { error } = await supabase.from('baker_appusers').update({ rail_skin: key }).eq('id', me.id);
+    if (error) return serverError(req, res, error);
+    res.json({ chosen: key, served: key ?? FALLBACK_RAIL_SKIN });
   } catch (err) {
     serverError(req, res, err);
   }
