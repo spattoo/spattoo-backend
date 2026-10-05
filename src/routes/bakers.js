@@ -1262,7 +1262,7 @@ router.get('/baker/catalogue', requireAuth, async (req, res) => {
            row answers every age and the query looks like it filtered when it did not.
            Same shape as lib/templateList.js FIELDS + FILTER_JOIN, so the two lists cannot drift.
            Cost measured before adding: ~119 bytes a row, ~4KB for the whole shelf. */
-        .select('id, name, thumbnail_url, tier_count, offering, sort_order, baker_id, type, search_slugs, template_tags(tags(slug)), cake_template_attrs(min_weight_kg, min_age, max_age)')
+        .select('id, name, thumbnail_url, tier_count, offering, sort_order, baker_id, type, created_at, search_slugs, template_tags(tags(slug)), cake_template_attrs(min_weight_kg, min_age, max_age)')
         .or(`baker_id.is.null,baker_id.eq.${contact.baker_id}`)
         .eq('is_active', true)
         .order('sort_order').order('name'),
@@ -1288,6 +1288,13 @@ router.get('/baker/catalogue', requireAuth, async (req, res) => {
          keys, not URLs. Library reads THIS route rather than GET /api/templates, so without this a
          photo opened from the Library shelf had a picture and no way to order from it. */
       thumbnail_key: t.thumbnail_url ?? null,
+      /* ⚠️ WHEN IT ARRIVED ON THE SHELF, so Library can lift the new ones to the top. The shelf is
+         ordered `sort_order, name`, which is a browsing order and says nothing about what is new —
+         so a design a baker saved ten minutes ago lands wherever its name falls among forty others,
+         and the commonest reason to open this screen (put the thing I just made into my catalogue)
+         was a hunt. The window and the heading are the client's business; this route's job is only
+         to carry the date, and `created_at` is already on the row. */
+      created_at: t.created_at ?? null,
       /* ⚠️ SHAPED EXACTLY LIKE lib/templateList.js's row, so the Library screen and the Catalogue
          flyout can share ONE matcher (core designer/templateFilter.js) instead of growing two that
          drift. `tag_slugs` flattens the join; `attrs` takes the first row because PostgREST returns
