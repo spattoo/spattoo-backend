@@ -446,7 +446,12 @@ router.patch('/baker/profile', requireAuth, requireCapability('store:manage'), a
       .maybeSingle();
     if (!contact) return res.status(404).json({ error: 'No baker account found' });
 
-    const ALLOWED = ['email', 'primary_color', 'accent_color', 'logo_url', 'instagram_handle', 'website_url', 'tagline', 'story', 'portrait_url',
+    /* ⚠️ `email` IS NOT HERE, AND MUST NOT COME BACK. It was, for a day: the bakery's address could
+       be PATCHed straight in, shape-checked and saved. It is proved by a code now
+       (POST /baker/account/email/start + /confirm, migration 123), and an unverified door beside a
+       verified one makes the verified one decoration — whoever is defending against a typo or a
+       hijacked session simply uses the other route. */
+    const ALLOWED = ['primary_color', 'accent_color', 'logo_url', 'instagram_handle', 'website_url', 'tagline', 'story', 'portrait_url',
       'address_line1', 'address_line2', 'street', 'city', 'state', 'postal_code', 'country'];
     const updates = {};
     for (const f of ALLOWED) {
@@ -456,23 +461,9 @@ router.patch('/baker/profile', requireAuth, requireCapability('store:manage'), a
     // the write-point (defense-in-depth behind the front-end safeHref guard).
     if ('website_url' in updates) updates.website_url = normalizeWebUrl(updates.website_url);
 
-    /* ⚠️ CLEARING IT IS A REAL ACTION, NOT A MISSING FIELD. `updates[f] = req.body[f] || null` above
-       already turns '' into null, and null here means "use the owner's address" — bakerNotifyEmail()
-       falls back to the primary app-user. So emptying the box restores the default rather than
-       leaving the bakery unreachable, which is why nothing below rejects an empty value.
-
-       ⚠️ DELIBERATELY LOOSE, like storefront.js's: "Supabase is the real validator, and a clever
-       regex here would reject a valid address somebody actually owns". The job of this check is to
-       catch a typo that is obviously not an address, not to adjudicate RFC 5322. */
-    if (updates.email) {
-      const addr = String(updates.email).trim().toLowerCase();
-      if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(addr)) {
-        return res.status(400).json({ error: 'Enter a valid email address', field: 'email' });
-      }
-      updates.email = addr;
-    }
-    // storefront_theme_id is a FK to the themes master table — validate it exists and
-    // is available (is_active); never coerce the NOT-NULL column to null.
+    /* Clearing the bakery address back to the owner's is NOT done here either — it is
+       POST /baker/account/email/clear's job to do that without a code, because falling back to an
+       address Supabase already verified needs no second proof. */
     if ('storefront_theme_id' in req.body) {
       const id = Number(req.body.storefront_theme_id);
       const { data: theme } = await supabase

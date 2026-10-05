@@ -19,6 +19,8 @@ import { primaryOwnerConflict } from '../services/bakerProvisioning.js';
 import { sendOtpSms, smsConfigured } from '../services/msg91.js';
 import { maskPhone } from '../lib/mask.js';
 import { getEntitlements } from '../services/entitlements.js';
+import { sendEmail, mailConfigured } from '../services/mailer.js';
+import { maskEmail } from '../lib/mask.js';
 import { servedRailSkin, FALLBACK_RAIL_SKIN, worstInkContrast, MIN_RAIL_CONTRAST } from '../lib/railSkin.js';
 import { requireRecentPassword } from '../middleware/reauth.js';
 
@@ -188,8 +190,11 @@ router.post('/baker/account/restore', requireAuth, requireCapability('account:de
 // migration 015 names what that index is for: "one phone number per baker (subscription
 // boundary)". Moving it is a billing-adjacent act, not a profile tweak.
 
-const PHONE_CODE_TTL_SEC  = 10 * 60;   // long enough for a slow carrier, short enough to matter
-const PHONE_CODE_ATTEMPTS = 5;         // per issued code; the 6th wrong guess burns it
+/* ⚠️ ONE POLICY FOR BOTH CONTACTS. A phone proof and an email proof want the same window and the
+   same ceiling, and two copies of these numbers is how the pair drifts the first time either is
+   tuned. Named for the act rather than the channel since migration 123 generalised the table. */
+const CODE_TTL_SEC  = 10 * 60;   // long enough for a slow carrier or a slow inbox, short enough to matter
+const CODE_ATTEMPTS = 5;         // per issued code; the 6th wrong guess burns it
 
 const hashCode = code => createHash('sha256').update(String(code)).digest('hex');
 
@@ -259,17 +264,19 @@ router.post('/baker/account/phone/start', requireAuth, requireRecentPassword(), 
     // corrected it and asked again would have two valid codes, and the confirm step below — which
     // reads the newest — would silently accept the one for the number they abandoned.
     await supabase
-      .from('appuser_phone_changes')
+      .from('appuser_contact_changes')
       .update({ consumed_at: new Date().toISOString() })
       .eq('auth_user_id', req.user.id)
+      .eq('kind', 'phone')
       .is('consumed_at', null);
 
-    const { error: insErr } = await supabase.from('appuser_phone_changes').insert({
+    const { error: insErr } = await supabase.from('appuser_contact_changes').insert({
       auth_user_id: req.user.id,
-      new_phone:    phone.e164,
+      kind:         'phone',
+      new_value:    phone.e164,
       new_country:  phone.country,
       code_hash:    hashCode(code),
-      expires_at:   new Date(Date.now() + PHONE_CODE_TTL_SEC * 1000).toISOString(),
+      expires_at:   new Date(Date.now() + CODE_TTL_SEC * 1000).toISOString(),
     });
     if (insErr) return serverError(req, res, insErr);
 
@@ -281,7 +288,7 @@ router.post('/baker/account/phone/start', requireAuth, requireRecentPassword(), 
       return res.status(502).json({ error: 'We could not send the code. Please try again.' });
     }
 
-    res.json({ sent: true, to: maskPhone(phone.e164), expiresIn: PHONE_CODE_TTL_SEC });
+    res.json({ sent: true, to: maskPhone(phone.e164), expiresIn: CODE_TTL_SEC });
   } catch (err) {
     serverError(req, res, err);
   }
@@ -299,9 +306,13 @@ router.post('/baker/account/phone/confirm', requireAuth, requireRecentPassword()
     if (!owner) return res.status(403).json({ error: 'Only the account owner can change this number.' });
 
     const { data: attempt, error: readErr } = await supabase
-      .from('appuser_phone_changes')
-      .select('id, new_phone, new_country, code_hash, expires_at, attempts')
+      .from('appuser_contact_changes')
+      .select('id, new_value, new_country, code_hash, expires_at, attempts')
       .eq('auth_user_id', req.user.id)
+      /* ⚠️ SCOPED BY KIND since migration 123. Without it a baker changing both contacts at once
+         confirms whichever they started LAST with either code — the two flows would share one
+         "newest live attempt" and the email code would move the phone number. */
+      .eq('kind', 'phone')
       .is('consumed_at', null)
       .order('created_at', { ascending: false })
       .limit(1)
@@ -310,7 +321,7 @@ router.post('/baker/account/phone/confirm', requireAuth, requireRecentPassword()
     if (!attempt || new Date(attempt.expires_at) < new Date()) {
       return res.status(410).json({ error: 'That code has expired. Please ask for a new one.', code: 'expired' });
     }
-    if (attempt.attempts >= PHONE_CODE_ATTEMPTS) {
+    if (attempt.attempts >= CODE_ATTEMPTS) {
       return res.status(429).json({ error: 'Too many wrong codes. Please ask for a new one.', code: 'burned' });
     }
 
@@ -318,7 +329,7 @@ router.post('/baker/account/phone/confirm', requireAuth, requireRecentPassword()
       // Count the miss on the ROW. The Redis limiter above fails open by design; a brute-force
       // ceiling on a six-digit code must not.
       await supabase
-        .from('appuser_phone_changes')
+        .from('appuser_contact_changes')
         .update({ attempts: attempt.attempts + 1 })
         .eq('id', attempt.id);
       return res.status(401).json({ error: 'That code is not right.', field: 'code' });
@@ -326,13 +337,13 @@ router.post('/baker/account/phone/confirm', requireAuth, requireRecentPassword()
 
     // Burn the code FIRST. If the write below fails, a replay must not be able to reuse it.
     await supabase
-      .from('appuser_phone_changes')
+      .from('appuser_contact_changes')
       .update({ consumed_at: new Date().toISOString() })
       .eq('id', attempt.id);
 
     const { error: updErr } = await supabase
       .from('baker_appusers')
-      .update({ phone: attempt.new_phone, phone_country: attempt.new_country })
+      .update({ phone: attempt.new_value, phone_country: attempt.new_country })
       .eq('id', owner.id);
     if (updErr) {
       // The number was claimed by another bakery between start and confirm. Rare, but the index is
@@ -346,7 +357,7 @@ router.post('/baker/account/phone/confirm', requireAuth, requireRecentPassword()
       return serverError(req, res, updErr);
     }
 
-    res.json({ phone: attempt.new_phone, country: attempt.new_country });
+    res.json({ phone: attempt.new_value, country: attempt.new_country });
   } catch (err) {
     serverError(req, res, err);
   }
@@ -380,6 +391,149 @@ router.post('/baker/account/password', requireAuth, requireRecentPassword(), pas
     // No session handling here. Supabase invalidates sessions on a password change and the client
     // signs out deliberately afterwards; doing it from this side as well would race that.
     res.json({ ok: true });
+  } catch (err) {
+    serverError(req, res, err);
+  }
+});
+
+// ── Proving a new email address ───────────────────────────────────────────────
+//
+// `bakers.email` is where Spattoo writes: orders, quotes, invoices, trial reminders. It was a bare
+// PATCH — shape-checked and saved — so a typo stopped all of it, silently, with nothing on any
+// screen to say so. Sandeep: "are we sending a email OTP when user changes email?"
+//
+// ⚠️ THE SAME PROOF THE PHONE GETS, FOR THE SAME REASON, AND IT IS NOT THE SIGN-IN OTP. The
+// app-user's email is the Supabase auth identity and nothing here touches it; this proves a BUSINESS
+// address, so supabase.auth is not involved at either end. See lib/railSkin.js's neighbours and the
+// note on the phone routes above for why that distinction is load-bearing.
+//
+// ⚠️ IT GOES TO THE NEW ADDRESS. The question being asked is "does this inbox reach you", which only
+// the new address can answer — the same argument the phone change settled on 2026-10-02.
+const emailLimit = rateLimit({
+  name: 'acct-email-start', limit: 5, windowSec: 900, key: req => req.user?.id,
+  message: 'Too many codes requested. Please wait a few minutes and try again.',
+});
+
+router.post('/baker/account/email/start', requireAuth, requireRecentPassword(), emailLimit, async (req, res) => {
+  try {
+    const addr = String(req.body?.email ?? '').trim().toLowerCase();
+    // Deliberately loose, as storefront.js argues on its own copy: Supabase and the mail server are
+    // the real validators, and a clever regex rejects an address somebody actually owns.
+    if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(addr)) {
+      return res.status(400).json({ error: 'Enter a valid email address', field: 'email' });
+    }
+
+    const { data: me } = await supabase
+      .from('baker_appusers').select('id, baker_id').eq('auth_user_id', req.user.id).maybeSingle();
+    if (!me) return res.status(403).json({ error: 'Not a baker account' });
+
+    const { data: baker } = await supabase
+      .from('bakers').select('email, name').eq('id', me.baker_id).maybeSingle();
+    if ((baker?.email ?? '').toLowerCase() === addr) {
+      return res.status(400).json({ error: 'That is already your address.', field: 'email' });
+    }
+
+    // Before a code is minted, so a deployment without SMTP says so rather than leaving a row behind
+    // and a baker waiting for a message nothing tried to send.
+    if (!mailConfigured()) return res.status(503).json({ error: 'Email is not available right now.' });
+
+    const code = String(randomInt(0, 1_000_000)).padStart(6, '0');
+
+    // Supersede this person's older EMAIL attempts — scoped by kind, so a phone change running
+    // alongside is untouched.
+    await supabase.from('appuser_contact_changes')
+      .update({ consumed_at: new Date().toISOString() })
+      .eq('auth_user_id', req.user.id).eq('kind', 'email').is('consumed_at', null);
+
+    const { error: insErr } = await supabase.from('appuser_contact_changes').insert({
+      auth_user_id: req.user.id,
+      kind:         'email',
+      new_value:    addr,
+      code_hash:    hashCode(code),
+      expires_at:   new Date(Date.now() + CODE_TTL_SEC * 1000).toISOString(),
+    });
+    if (insErr) return serverError(req, res, insErr);
+
+    try {
+      await sendEmail({
+        to: addr,
+        subject: `${code} is your Spattoo confirmation code`,
+        text: `${code} is your code to confirm this address for ${baker?.name ?? 'your bakery'} on Spattoo.\n\n`
+            + `Once confirmed, this is where we send your orders, quotes and invoices.\n\n`
+            + `The code expires in ${CODE_TTL_SEC / 60} minutes. If you did not ask for it, you can ignore this email.`,
+      });
+    } catch {
+      // A provider failure must not read as "code sent" — the baker would wait for nothing.
+      return res.status(502).json({ error: 'We could not send the code. Please try again.' });
+    }
+
+    res.json({ sent: true, to: maskEmail(addr), expiresIn: CODE_TTL_SEC });
+  } catch (err) {
+    serverError(req, res, err);
+  }
+});
+
+// Body: { code }. The address is read off the attempt row, never the request, so a caller cannot
+// prove one address and save another.
+router.post('/baker/account/email/confirm', requireAuth, requireRecentPassword(), passwordLimit, async (req, res) => {
+  try {
+    const code = String(req.body?.code ?? '').trim();
+    if (!code) return res.status(400).json({ error: 'Enter the code we sent you.', field: 'code' });
+
+    const { data: me } = await supabase
+      .from('baker_appusers').select('id, baker_id').eq('auth_user_id', req.user.id).maybeSingle();
+    if (!me) return res.status(403).json({ error: 'Not a baker account' });
+
+    const { data: attempt, error: readErr } = await supabase
+      .from('appuser_contact_changes')
+      .select('id, new_value, code_hash, expires_at, attempts')
+      .eq('auth_user_id', req.user.id).eq('kind', 'email').is('consumed_at', null)
+      .order('created_at', { ascending: false }).limit(1).maybeSingle();
+    if (readErr) return serverError(req, res, readErr);
+    if (!attempt || new Date(attempt.expires_at) < new Date()) {
+      return res.status(410).json({ error: 'That code has expired. Please ask for a new one.', code: 'expired' });
+    }
+    if (attempt.attempts >= CODE_ATTEMPTS) {
+      return res.status(429).json({ error: 'Too many wrong codes. Please ask for a new one.', code: 'burned' });
+    }
+    if (hashCode(code) !== attempt.code_hash) {
+      // Counted on the ROW: the Redis limiter fails open by design and a brute-force ceiling must not.
+      await supabase.from('appuser_contact_changes')
+        .update({ attempts: attempt.attempts + 1 }).eq('id', attempt.id);
+      return res.status(401).json({ error: 'That code is not right.', field: 'code' });
+    }
+
+    // Burned before the write, so a replay cannot reuse it if the update below fails.
+    await supabase.from('appuser_contact_changes')
+      .update({ consumed_at: new Date().toISOString() }).eq('id', attempt.id);
+
+    const { error: updErr } = await supabase
+      .from('bakers').update({ email: attempt.new_value }).eq('id', me.baker_id);
+    if (updErr) return serverError(req, res, updErr);
+
+    res.json({ email: attempt.new_value });
+  } catch (err) {
+    serverError(req, res, err);
+  }
+});
+
+// ── POST /api/baker/account/email/clear ───────────────────────────────────────
+// Back to the owner's sign-in address — `bakers.email = null`, which bakerNotifyEmail already reads
+// as "use the primary app-user".
+//
+// ⚠️ NO CODE, AND THAT IS NOT AN OVERSIGHT. A proof answers "does this inbox reach you", and the
+// address this falls back to is the one Supabase verified at sign-up and the baker is logged in with
+// right now. Demanding a second proof of an address they are currently authenticated as would be
+// ceremony. The re-auth gate still applies, so it is not something a borrowed session can do.
+router.post('/baker/account/email/clear', requireAuth, requireRecentPassword(), async (req, res) => {
+  try {
+    const { data: me } = await supabase
+      .from('baker_appusers').select('baker_id').eq('auth_user_id', req.user.id).maybeSingle();
+    if (!me) return res.status(403).json({ error: 'Not a baker account' });
+
+    const { error } = await supabase.from('bakers').update({ email: null }).eq('id', me.baker_id);
+    if (error) return serverError(req, res, error);
+    res.json({ email: null });
   } catch (err) {
     serverError(req, res, err);
   }
