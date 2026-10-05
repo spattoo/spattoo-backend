@@ -31,6 +31,14 @@ COPY_BIN="$DOCS_DIR/bin/check-plan-copy.mjs"
 # on a number already pushed to origin/dev, which is the collision a local check cannot see.
 node scripts/check-migrations.mjs
 
+# ── A new table nobody can read ─────────────────────────────────────────────────────────
+# Supabase stops auto-granting Data API access to new public tables on 2026-10-30. A
+# migration that creates a table without a service_role grant applies CLEANLY and then
+# every route touching it answers "permission denied" — in whichever environment is built
+# last, which for us is production. Here rather than only in `npm run check` because the
+# mistake is made AT the commit that adds the migration.
+node scripts/check-migration-grants.mjs || exit 1
+
 # ── A name used where nothing declares it ───────────────────────────────────────────────
 # Here rather than only in `npm run check`, because the failure this catches is made AT THE
 # COMMIT and is invisible afterwards. 2e7a89d renamed a local in one function and used the
