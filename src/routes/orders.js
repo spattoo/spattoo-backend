@@ -359,8 +359,12 @@ async function insertOrderAndNotify({ baker, customerId, customerContact, body, 
   // customer stating their own requirement, or the baker writing down what a customer
   // told them on the phone. Keys were validated by the caller (validateDietaryKeys)
   // before we got here, so an unknown key is already a 400 rather than a silent drop.
-  if (Array.isArray(dietaryRequirementKeys) && dietaryRequirementKeys.length) {
-    await setOrderDietaryRequirements(order.id, dietaryRequirementKeys, authoredBy);
+  /* ⚠️ CALLED EVEN WITH NO KEYS, since 2026-10-05. It used to be skipped when the customer asserted
+     nothing — correct when the only rows were assertions, wrong now that the BAKERY can have a
+     standing one. A fully eggless kitchen's order carries `eggless` whether or not anybody
+     mentioned it, and skipping the call is exactly the order that would miss it. */
+  if (Array.isArray(dietaryRequirementKeys)) {
+    await setOrderDietaryRequirements(order.id, dietaryRequirementKeys, authoredBy, { bakerId: baker.id });
   }
 
   // Reference-photo gallery (manual orders only; ≤3, validated by the caller).
@@ -1621,7 +1625,7 @@ router.patch('/orders/:id', requireAuth, requireCapability('order:manage'), asyn
     // 'baker' as the source: this endpoint is baker-authenticated, so whoever is typing
     // is recording what the customer told them — Spattoo still asserts nothing.
     if (dietaryChange) {
-      await setOrderDietaryRequirements(req.params.id, dietaryChange.to, 'baker');
+      await setOrderDietaryRequirements(req.params.id, dietaryChange.to, 'baker', { bakerId: req.bakerId });
     }
 
     const { error: auditError } = await supabase.from('order_audit_log').insert({

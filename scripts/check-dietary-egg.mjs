@@ -74,8 +74,46 @@ accepts(null,      'null does not throw — an enquiry carries no dietary field'
 accepts(undefined, 'undefined does not throw');
 accepts('eggless', 'a non-array is left to validateDietaryKeys to reject, not crashed on here');
 
+/* ── 4. the bakery's own standing fact ──────────────────────────────────────────────────────────
+ *
+ * A kitchen that does not offer `egg` makes every cake eggless, so since 2026-10-05 its orders
+ * carry `eggless` whether or not anybody said so (migration 124). Three things can go wrong and
+ * every one of them is silent:
+ *
+ *   1. IT IS STAMPED ON A BAKERY THAT OFFERS BOTH — which destroys a real question by answering it.
+ *   2. IT IS WRITTEN AS THE CUSTOMER'S WORDS. `source` is provenance and nothing branches on it, so
+ *      a wrong value is invisible until somebody is arguing about what was ordered.
+ *   3. IT IS ADDED TWICE when the customer asked for eggless themselves — which the table's key
+ *      refuses, turning an ordinary order into a 500.
+ *
+ * Pure: `bakeryPolicyIds` is exercised through its own vocabulary rather than the database by
+ * handing it a fake requirement list, the same way the resolver checks above do.
+ */
+const { POLICY_SOURCE, policyKeysFor } = await import('../src/lib/dietaryRequirements.js');
+
+const offeringBoth    = [{ key: EGG_KEY, offered: true  }, { key: EGGLESS_KEY, offered: true }];
+const egglessKitchen  = [{ key: EGG_KEY, offered: false }, { key: EGGLESS_KEY, offered: true }];
+
+const same = (got, want, label) => {
+  const a = JSON.stringify([...got].sort()), b = JSON.stringify([...want].sort());
+  if (a === b) return;
+  failed++; console.error(`✗ ${label}  — got ${a}, wanted ${b}`);
+};
+
+same(policyKeysFor(egglessKitchen, []),            [EGGLESS_KEY], 'an eggless kitchen stamps eggless on an order nobody annotated');
+same(policyKeysFor(offeringBoth, []),              [],            'a bakery offering both stamps NOTHING — the question is real');
+same(policyKeysFor(egglessKitchen, [EGGLESS_KEY]), [],            'not stamped twice when the customer asked for it themselves');
+same(policyKeysFor(egglessKitchen, ['vegan', EGGLESS_KEY]), [],   'nor alongside a diet that already spelled it out');
+same(policyKeysFor(egglessKitchen, ['nut_free']),  [EGGLESS_KEY], 'still stamped beside an unrelated allergen');
+same(policyKeysFor([], []),                        [],            'an empty vocabulary stamps nothing rather than throwing');
+
+if (POLICY_SOURCE === 'customer' || POLICY_SOURCE === 'baker') {
+  failed++;
+  console.error(`✗ the stamp must not be filed as somebody's assertion — source is '${POLICY_SOURCE}'`);
+}
+
 if (failed) {
   console.error(`\n✗ check:dietary-egg — ${failed} failed\n`);
   process.exit(1);
 }
-console.log('✓ check:dietary-egg — contradictions refused, and every legitimate order shape still accepted');
+console.log('✓ check:dietary-egg — contradictions refused, every legitimate shape accepted, and the bakery stamp lands only where it is true');
