@@ -233,6 +233,15 @@ router.get('/storefront/:slug', async (req, res) => {
       testimonials:     (tms ?? []).map(t => ({ quote: t.quote, author: t.author, occasion: t.occasion })),
       whatsapp:         owner?.whatsapp_number ?? null,
       phone:            owner?.phone ?? null,
+      /* ── No `eggless_only` here, deliberately ──────────────────────────────────────────────────
+         It was added earlier today on the premise that the storefront had nowhere to ASK the egg
+         question, so the one fact it could not leave out was "this kitchen is fully eggless".
+         The premise died the same day: the flavour step asks it now, for the customer who sends an
+         enquiry without ever opening the designer.
+
+         So the storefront reads GET /api/dietary-requirements?bakerSlug= — the SAME annotated
+         vocabulary the order form has always used, with DB-authored labels — and a boolean here
+         would be a second, narrower copy of what that endpoint already says. */
     });
 
     // ── Count the visit — AFTER the response, and never in its way ──────────────────────────────

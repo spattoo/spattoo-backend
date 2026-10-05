@@ -363,9 +363,13 @@ async function insertOrderAndNotify({ baker, customerId, customerContact, body, 
      nothing — correct when the only rows were assertions, wrong now that the BAKERY can have a
      standing one. A fully eggless kitchen's order carries `eggless` whether or not anybody
      mentioned it, and skipping the call is exactly the order that would miss it. */
-  if (Array.isArray(dietaryRequirementKeys)) {
-    await setOrderDietaryRequirements(order.id, dietaryRequirementKeys, authoredBy, { bakerId: baker.id });
-  }
+  /* ⚠️ AND NOT GUARDED ON THE FIELD BEING PRESENT, which is what "even with no keys" has to mean
+     here. The storefront omits `dietaryRequirementKeys` entirely when the customer ticked nothing
+     (cakeDraft.js builds it conditionally, on purpose — see its note on `in payload`), so an
+     Array.isArray guard skipped the call on the exact order this stamp exists for: a customer
+     buying from a fully eggless kitchen, who was never asked. Nothing to delete on a fresh order,
+     so calling with [] only ever adds the bakery's own row. */
+  await setOrderDietaryRequirements(order.id, dietaryRequirementKeys ?? [], authoredBy, { bakerId: baker.id });
 
   // Reference-photo gallery (manual orders only; ≤3, validated by the caller).
   if (refKeys.length) {

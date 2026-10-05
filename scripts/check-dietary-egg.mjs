@@ -112,8 +112,44 @@ if (POLICY_SOURCE === 'customer' || POLICY_SOURCE === 'baker') {
   console.error(`✗ the stamp must not be filed as somebody's assertion — source is '${POLICY_SOURCE}'`);
 }
 
+/* ── 5. ⚠️ THE STAMP HAS TO BE REACHED ──────────────────────────────────────────────────────────
+ *
+ * Everything above tests the rule; this tests that the order path RUNS it. The fourth silent
+ * failure, and the one that actually shipped: the create path guarded the call with
+ * `if (Array.isArray(dietaryRequirementKeys))`, and the storefront omits that field entirely when
+ * the customer ticked nothing (cakeDraft.js builds it conditionally). So the stamp was skipped on
+ * precisely the order it exists for — a customer buying from a fully eggless kitchen, who was
+ * never asked — while every test above stayed green, because none of them could see the call site.
+ *
+ * Source-read rather than behavioural: the alternative is a database. Comments are stripped first,
+ * because the paragraph you are reading contains the string being searched for.
+ */
+{
+  const src = await import('node:fs').then(fs => fs.readFileSync('src/routes/orders.js', 'utf8'));
+  const code = src.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
+
+  code.includes('setOrderDietaryRequirements(order.id')
+    ? ok('the create path calls setOrderDietaryRequirements')
+    : bad('the create path no longer calls setOrderDietaryRequirements — no order can be stamped');
+
+  /* Reads the statement rather than guessing the guard's shape. The first attempt at this check
+     was `/if\s*\([^)]*dietaryRequirementKeys[^)]*\)/`, which cannot match
+     `if (Array.isArray(dietaryRequirementKeys))` — the inner `)` ends `[^)]*` early — so it passed
+     the exact bug it was written for when fed it deliberately. A gate nobody has fed the fault to
+     is a gate nobody has tested. */
+  const idx  = code.indexOf('setOrderDietaryRequirements(order.id');
+  // slice(0, -1) drops the PARTIAL line the call itself sits on: without it `prev` is the
+  // fragment `await ` and never the guard, which is how this check passed the bug twice.
+  const prev = code.slice(0, idx).split('\n').slice(0, -1).filter(l => l.trim()).pop() ?? '';
+  /^(if|}?\s*else|while|for)\b/.test(prev.trim()) || /&&\s*$|\?\s*$/.test(prev.trim())
+    ? bad(`the create call is conditional — preceded by: ${prev.trim()}\n`
+        + '      An order that carries no dietary field then skips the bakery stamp, which is every\n'
+        + '      storefront order from an eggless-only kitchen. Call it unconditionally with `?? []`.')
+    : ok('the create call is unconditional — an order with no dietary field still gets the stamp');
+}
+
 if (failed) {
   console.error(`\n✗ check:dietary-egg — ${failed} failed\n`);
   process.exit(1);
 }
-console.log('✓ check:dietary-egg — contradictions refused, every legitimate shape accepted, and the bakery stamp lands only where it is true');
+console.log('✓ check:dietary-egg — contradictions refused, every legitimate shape accepted, and the bakery stamp is reached and lands only where it is true');
