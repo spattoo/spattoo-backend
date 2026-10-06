@@ -285,7 +285,7 @@ router.get('/baker/profile', requireAuth, async (req, res) => {
   try {
     const { data: contact } = await supabase
       .from('baker_appusers')
-      .select('id, first_name, last_name, baker_id, role, welcome_sent_at')
+      .select('id, first_name, last_name, baker_id, role, welcome_sent_at, phone, phone_country, is_primary')
       .eq('auth_user_id', req.user.id)
       .maybeSingle();
     if (!contact) {
@@ -326,7 +326,7 @@ router.get('/baker/profile', requireAuth, async (req, res) => {
       // person create designs"; this answers "is this bakery one of ours". They are different
       // questions and the second one has no user-level answer — every user of an authoring bakery
       // gets it, and nobody else does.
-      .select('id, name, slug, logo_url, logo_transparent_key, primary_color, accent_color, instagram_handle, website_url, tagline, storefront_theme_id, portrait_url, storefront_published, storefront_customizations, first_paid_at, is_catalog_author')
+      .select('id, name, slug, email, logo_url, logo_transparent_key, primary_color, accent_color, instagram_handle, website_url, tagline, storefront_theme_id, portrait_url, storefront_published, storefront_customizations, first_paid_at, is_catalog_author')
       .eq('id', contact.baker_id)
       .single();
     if (!baker) return res.status(404).json({ error: 'Baker not found' });
@@ -369,6 +369,12 @@ router.get('/baker/profile', requireAuth, async (req, res) => {
     res.json({
       baker: {
         id: baker.id, name: baker.name, slug: baker.slug,
+        /* ⚠️ THE BAKERY'S EMAIL, AND IT IS USUALLY NULL — 2 of 24 rows on dev carry one.
+           NULL is not "missing", it is "use the owner's", which is what bakerNotifyEmail() does and
+           has always done. The account screen shows the owner's address as the placeholder and
+           writes this column only when a baker types something different, so the default keeps
+           FOLLOWING the login email instead of freezing a copy of it that goes stale. */
+        email:            baker.email ?? null,
         logo_url:             toPublicUrl(baker.logo_url),
         logo_transparent_url: toPublicUrl(baker.logo_transparent_key),
         primary_color:    baker.primary_color,  accent_color: baker.accent_color,
@@ -397,7 +403,17 @@ router.get('/baker/profile', requireAuth, async (req, res) => {
         subscription_plan_display: sub.plan?.display_name ?? null,
         subscription_cancellation_reason: sub.cancellation_reason ?? null,
       },
-      user: { firstName: contact.first_name, lastName: contact.last_name, email: req.user.email, role: contact.role },
+      // `phone` is the OWNER's number — the one under the unique index of migration 016, which
+      // migration 015 calls the subscription boundary. It is here so the account screen can show
+      // what it is about to change; changing it is POST /baker/account/phone/start+confirm, which
+      // proves possession by SMS and is the only path that writes this column.
+      // `canChangePhone` is is_primary, not a capability: staff numbers are not under that index
+      // and have no flow yet, so the screen must not offer one.
+      user: {
+        firstName: contact.first_name, lastName: contact.last_name, email: req.user.email,
+        role: contact.role, phone: contact.phone ?? null, phoneCountry: contact.phone_country ?? null,
+        canChangePhone: !!contact.is_primary,
+      },
       pending_consents,
     });
   } catch (err) {
@@ -430,6 +446,11 @@ router.patch('/baker/profile', requireAuth, requireCapability('store:manage'), a
       .maybeSingle();
     if (!contact) return res.status(404).json({ error: 'No baker account found' });
 
+    /* ⚠️ `email` IS NOT HERE, AND MUST NOT COME BACK. It was, for a day: the bakery's address could
+       be PATCHed straight in, shape-checked and saved. It is proved by a code now
+       (POST /baker/account/email/start + /confirm, migration 123), and an unverified door beside a
+       verified one makes the verified one decoration — whoever is defending against a typo or a
+       hijacked session simply uses the other route. */
     const ALLOWED = ['primary_color', 'accent_color', 'logo_url', 'instagram_handle', 'website_url', 'tagline', 'story', 'portrait_url',
       'address_line1', 'address_line2', 'street', 'city', 'state', 'postal_code', 'country'];
     const updates = {};
@@ -439,8 +460,10 @@ router.patch('/baker/profile', requireAuth, requireCapability('store:manage'), a
     // SEC-16 — a stored URL rendered into an href must be http(s); reject javascript:/data:/etc at
     // the write-point (defense-in-depth behind the front-end safeHref guard).
     if ('website_url' in updates) updates.website_url = normalizeWebUrl(updates.website_url);
-    // storefront_theme_id is a FK to the themes master table — validate it exists and
-    // is available (is_active); never coerce the NOT-NULL column to null.
+
+    /* Clearing the bakery address back to the owner's is NOT done here either — it is
+       POST /baker/account/email/clear's job to do that without a code, because falling back to an
+       address Supabase already verified needs no second proof. */
     if ('storefront_theme_id' in req.body) {
       const id = Number(req.body.storefront_theme_id);
       const { data: theme } = await supabase
@@ -857,7 +880,22 @@ router.put('/baker/settings', requireAuth, requireCapability('store:manage'), as
     // the one nothing reads.
     const { lead_time_days, delivery_radius_km, ...settings } = req.body ?? {};
 
-    const patch = { settings };
+    // ⚠️ MERGE, NOT REPLACE — and this changed on 2026-10-03 because the blob stopped having one
+    // owner. It was written verbatim while a single screen held every field, which was safe exactly
+    // as long as that stayed true. It no longer is: store hours moved to the Store page and orders
+    // and delivery stayed in Settings, and both of those live in `settings`. Written verbatim, each
+    // screen's save would silently delete the other's keys — the same replace-set hazard
+    // spattoo-core's catalogue.test.jsx exists to prevent, with the same signature: nothing errors,
+    // nothing warns, and the loss is only noticed later by whoever opens the other screen.
+    //
+    // TOP LEVEL ONLY. A deep merge would make a nested key impossible to REMOVE — `delivery` is an
+    // object, and a baker switching something off inside it writes the whole sub-object, which is
+    // the behaviour the screens already rely on. One level is enough to keep two owners apart, and
+    // any more starts making deletions undoable.
+    const { data: existing } = await supabase
+      .from('bakers').select('settings').eq('id', contact.baker_id).maybeSingle();
+
+    const patch = { settings: { ...(existing?.settings ?? {}), ...settings } };
     if (lead_time_days !== undefined) {
       // Matches 042's CHECK, so a bad value is a message rather than a constraint violation. The
       // ceiling is not fussiness: a typo'd 300 would make a baker unbookable for most of a year and
@@ -1224,7 +1262,7 @@ router.get('/baker/catalogue', requireAuth, async (req, res) => {
            row answers every age and the query looks like it filtered when it did not.
            Same shape as lib/templateList.js FIELDS + FILTER_JOIN, so the two lists cannot drift.
            Cost measured before adding: ~119 bytes a row, ~4KB for the whole shelf. */
-        .select('id, name, thumbnail_url, tier_count, offering, sort_order, baker_id, type, search_slugs, template_tags(tags(slug)), cake_template_attrs(min_weight_kg, min_age, max_age)')
+        .select('id, name, thumbnail_url, tier_count, offering, sort_order, baker_id, type, created_at, search_slugs, template_tags(tags(slug)), cake_template_attrs(min_weight_kg, min_age, max_age)')
         .or(`baker_id.is.null,baker_id.eq.${contact.baker_id}`)
         .eq('is_active', true)
         .order('sort_order').order('name'),
@@ -1250,6 +1288,13 @@ router.get('/baker/catalogue', requireAuth, async (req, res) => {
          keys, not URLs. Library reads THIS route rather than GET /api/templates, so without this a
          photo opened from the Library shelf had a picture and no way to order from it. */
       thumbnail_key: t.thumbnail_url ?? null,
+      /* ⚠️ WHEN IT ARRIVED ON THE SHELF, so Library can lift the new ones to the top. The shelf is
+         ordered `sort_order, name`, which is a browsing order and says nothing about what is new —
+         so a design a baker saved ten minutes ago lands wherever its name falls among forty others,
+         and the commonest reason to open this screen (put the thing I just made into my catalogue)
+         was a hunt. The window and the heading are the client's business; this route's job is only
+         to carry the date, and `created_at` is already on the row. */
+      created_at: t.created_at ?? null,
       /* ⚠️ SHAPED EXACTLY LIKE lib/templateList.js's row, so the Library screen and the Catalogue
          flyout can share ONE matcher (core designer/templateFilter.js) instead of growing two that
          drift. `tag_slugs` flattens the join; `attrs` takes the first row because PostgREST returns

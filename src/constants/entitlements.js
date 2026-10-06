@@ -53,6 +53,15 @@ export const ENTITLEMENTS = {
   // have that kind. Keeping the tier ladder out of the themes table means a plan can be
   // renamed or re-ranked without touching a theme.
   premium_themes:         { type: 'bool', fallback: false, label: 'Premium storefront themes' },
+  /* How the baker's own rail looks (rail_skins, migration 120). Blaze+.
+     ⚠️ BAKER-FACING ONLY, which is why it can be resolved at RENDER where premium_themes could not
+     be for months: nothing a CUSTOMER sees depends on it, so a downgrade changing it takes nothing
+     away from anybody but the person who chose it. lib/railSkin.js does the resolving and the
+     choice is never cleared, so it returns on re-subscribe.
+     Not sold on any plan page — a delight a Blaze baker finds, not a reason to upgrade. Adding a
+     bullet for it means adding the same bullet to marketing's Pricing.tsx, or check:plan-copy
+     fails; the two surfaces agreeing to say nothing is consistent. */
+  rail_skins:             { type: 'bool', fallback: false, label: 'Choose how your menu bar looks' },
   // numeric limits — null (in a plan's features) = unlimited
   max_team_members:       { type: 'int',  fallback: 1, label: 'Team members' },
   max_saved_templates:    { type: 'int',  fallback: 0, label: 'Saved templates (custom)' },                     // Spark 3 / Flame 30 / Blaze+ unlimited

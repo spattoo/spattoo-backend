@@ -9,6 +9,7 @@ import { templatesForStorefront } from '../lib/templateList.js';
 import { rateLimit } from '../middleware/rateLimit.js';
 import { normalizePhone } from '../lib/phone.js';
 import { signUpload } from '../lib/signUpload.js';
+import { maskEmail, maskPhone } from '../lib/mask.js';
 import { requireAuth } from '../middleware/auth.js';
 import { recordStorefrontView, daysAgoIn } from '../services/storefrontViews.js';
 import { requireCapability } from '../middleware/rbac.js';
@@ -232,6 +233,15 @@ router.get('/storefront/:slug', async (req, res) => {
       testimonials:     (tms ?? []).map(t => ({ quote: t.quote, author: t.author, occasion: t.occasion })),
       whatsapp:         owner?.whatsapp_number ?? null,
       phone:            owner?.phone ?? null,
+      /* ── No `eggless_only` here, deliberately ──────────────────────────────────────────────────
+         It was added earlier today on the premise that the storefront had nowhere to ASK the egg
+         question, so the one fact it could not leave out was "this kitchen is fully eggless".
+         The premise died the same day: the flavour step asks it now, for the customer who sends an
+         enquiry without ever opening the designer.
+
+         So the storefront reads GET /api/dietary-requirements?bakerSlug= — the SAME annotated
+         vocabulary the order form has always used, with DB-authored labels — and a boolean here
+         would be a second, narrower copy of what that endpoint already says. */
     });
 
     // ── Count the visit — AFTER the response, and never in its way ──────────────────────────────
@@ -591,17 +601,6 @@ router.post('/storefront/:slug/sign-reference-upload', requireAuth, referenceUpl
 // Public landing for an invite link. Returns baker branding + the MASKED contact
 // to prefill/lock on the login screen, plus validity. Marks the invite opened.
 // The id grants nothing — OTP still gates access.
-function maskEmail(e) {
-  if (!e) return null;
-  const [u, d] = e.split('@');
-  if (!d) return null;
-  return `${u.slice(0, 1)}${'•'.repeat(Math.max(1, u.length - 1))}@${d}`;
-}
-function maskPhone(p) {
-  if (!p) return null;
-  const digits = p.replace(/\D/g, '');
-  return digits.length <= 4 ? p : `${'•'.repeat(digits.length - 4)}${digits.slice(-4)}`;
-}
 
 router.get('/invite/:id', async (req, res) => {
   try {

@@ -118,7 +118,7 @@ export async function validateDietaryKeys(keys) {
 // `source` records WHO asserted it — 'customer' or 'baker' (a baker recording what a
 // customer told them). It is NOT a claim by Spattoo that the requirement is met; see
 // the header of dietary_requirements.sql for why that distinction is load-bearing.
-export async function setOrderDietaryRequirements(orderId, keys, source) {
+export async function setOrderDietaryRequirements(orderId, keys, source, { bakerId = null } = {}) {
   const ids = await idsForKeys(keys);
 
   const { error: delErr } = await supabase
@@ -127,12 +127,65 @@ export async function setOrderDietaryRequirements(orderId, keys, source) {
     .eq('order_id', orderId);
   if (delErr) throw new Error(delErr.message);
 
-  if (!ids.length) return [];
+  /* ── The bakery's own standing fact ──────────────────────────────────────────────────────────
+   * A kitchen that does not offer `egg` makes every cake eggless, so every order is eggless —
+   * whether or not anybody said so. Stamped here rather than at the call sites because this
+   * function DELETES the set first: a stamp applied outside it would survive creation and vanish
+   * the first time a baker edited the order's requirements, which is the kind of loss nothing
+   * reports.
+   *
+   * ⚠️ source='bakery_policy', NOT 'customer' and NOT 'baker' (migration 124). Nobody asserted it.
+   * Writing 'customer' is what the order form refuses to do — it would put words in their mouth —
+   * and 'baker' would read, in a dispute, as a conversation that never happened.
+   *
+   * ⚠️ ONLY WHEN THE BAKERY CANNOT DO THE ALTERNATIVE. A bakery that offers both is asking a real
+   * question, and stamping an answer would destroy it.
+   */
+  const policyIds = bakerId ? await bakeryPolicyIds(bakerId, keys) : [];
 
-  const rows = ids.map(requirement_id => ({ order_id: orderId, requirement_id, source }));
-  const { error: insErr } = await supabase.from('order_dietary_requirements').insert(rows);
+  const all = [
+    ...ids.map(requirement_id => ({ order_id: orderId, requirement_id, source })),
+    ...policyIds.map(requirement_id => ({ order_id: orderId, requirement_id, source: 'bakery_policy' })),
+  ];
+  if (!all.length) return [];
+
+  const { error: insErr } = await supabase.from('order_dietary_requirements').insert(all);
   if (insErr) throw new Error(insErr.message);
-  return ids;
+  return all.map(r => r.requirement_id);
+}
+
+/**
+ * Requirement ids this BAKERY asserts of every order, minus anything the caller already carries.
+ *
+ * Today that is exactly one case: `egg` not offered ⇒ every cake is eggless. Written as a lookup
+ * rather than `if (eggless)` so a second standing fact — a wholly vegan kitchen, say — is a row in
+ * baker_dietary_exclusions and a line in this map, not another branch somewhere else.
+ */
+const POLICY_IMPLIES = { [EGG_KEY]: EGGLESS_KEY };   // not offered → always true of this bakery
+
+/** What the stamp is filed as. Not 'customer' and not 'baker' — see migration 124. */
+export const POLICY_SOURCE = 'bakery_policy';
+
+/**
+ * Which keys this bakery asserts of every order, given its annotated vocabulary and what the order
+ * already carries. Pure and exported so `check:dietary-egg` can exercise it without a database —
+ * the stamp is silent in all three of its failure modes, so it needs a gate that can see it.
+ *
+ * @param {{key: string, offered: boolean}[]} rows  requirementsForBaker's output
+ * @param {string[]} alreadyKeys                    what the caller is already writing
+ */
+export function policyKeysFor(rows, alreadyKeys) {
+  const have = new Set(alreadyKeys ?? []);
+  return [...new Set((rows ?? [])
+    .filter(r => !r.offered && POLICY_IMPLIES[r.key])
+    .map(r => POLICY_IMPLIES[r.key])
+    // Not twice: a customer who said eggless themselves already has the row, and the table keys on
+    // (order_id, requirement_id) — a duplicate turns an ordinary order into a 500.
+    .filter(k => !have.has(k)))];
+}
+
+async function bakeryPolicyIds(bakerId, alreadyKeys) {
+  return idsForKeys(policyKeysFor(await requirementsForBaker(bakerId), alreadyKeys));
 }
 
 // Force a reload (e.g. after editing the table). Mostly for tests/ops.

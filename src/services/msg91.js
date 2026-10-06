@@ -29,11 +29,13 @@ export function smsConfigured() {
 /**
  * Deliver an already-minted OTP to a phone number.
  *
- * @param {{ phone: string, otp: string }} args  `phone` in E.164 (Supabase's shape, with `+`).
+ * @param {{ phone: string, otp: string, templateId?: string }} args  `phone` in E.164 (Supabase's
+ *   shape, with `+`). `templateId` picks WHICH approved template renders the message; omitted, the
+ *   login one does.
  * @returns {Promise<object>} MSG91's parsed response body.
  * @throws  on any provider failure — the caller decides how to react.
  */
-export async function sendOtpSms({ phone, otp }) {
+export async function sendOtpSms({ phone, otp, templateId }) {
   // Supabase hands us E.164 WITH the leading '+' ("+919876543210"); MSG91 wants country code and
   // digits only. Stripping every non-digit rather than just the '+' also absorbs the spaces and
   // dashes a hand-typed test number arrives with.
@@ -41,7 +43,16 @@ export async function sendOtpSms({ phone, otp }) {
   if (!mobile) throw new Error('sendOtpSms: phone is required');
 
   const url = new URL(OTP_URL);
-  url.searchParams.set('template_id', config.sms.templateId);
+  // ⚠️ THE TEMPLATE IS THE MESSAGE. MSG91's OTP API renders the APPROVED template and drops the
+  // code into it — the words are not ours at send time, they are whatever DLT signed off. So
+  // choosing the template is choosing what the recipient reads, and a caller that wants different
+  // words has to pass a different id, not different arguments.
+  //
+  // Falling back to the login template is deliberate while a second registration is in flight: the
+  // flow works today and says "your verification code for Spattoo", which is imprecise on a profile
+  // screen but true and deliverable. Setting MSG91_PROFILE_TEMPLATE_ID corrects the wording with no
+  // code change.
+  url.searchParams.set('template_id', templateId || config.sms.templateId);
   url.searchParams.set('mobile', mobile);
   url.searchParams.set('otp', otp);   // OURS — see the note above on why we never let MSG91 mint it.
 

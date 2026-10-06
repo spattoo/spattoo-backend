@@ -216,6 +216,21 @@ async function eraseOneBaker(bakerId) {
   const { error: tokenErr } = await supabase.from('device_tokens').delete().eq('baker_id', bakerId);
   if (tokenErr) throw new Error(`device token delete failed: ${tokenErr.message}`);
 
+  // PENDING PHONE CHANGES — same reasoning as the tokens above, same trap. appuser_phone_changes
+  // (migration 119) holds a phone number somebody was part-way through proving, keyed by
+  // auth_user_id — which, as the note above says, is a plain uuid and not an FK, so deleting the
+  // auth user below cascades nothing. The row IS the personal data: a number and a user id, with
+  // nothing it is retained FOR once the attempt is over. So delete, never anonymise.
+  //
+  // Keyed off `appusers`, captured before anonymisation, because nothing in this table names a
+  // baker — it is written by routes/account.js from the session alone.
+  const authIds = (appusers ?? []).map(u => u.auth_user_id).filter(Boolean);
+  if (authIds.length) {
+    const { error: phoneErr } = await supabase
+      .from('appuser_phone_changes').delete().in('auth_user_id', authIds);
+    if (phoneErr) throw new Error(`pending phone change delete failed: ${phoneErr.message}`);
+  }
+
   // Delete the Supabase Auth users (blocks login + erases their auth-side PII).
   for (const u of appusers ?? []) {
     if (!u.auth_user_id) continue;
