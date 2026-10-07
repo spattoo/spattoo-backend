@@ -11,14 +11,21 @@
 -- the same change as this row.
 --
 -- ⚠️ MODELLED ON `Puffy cloud`, deliberately, because it is the closest thing already on the shelf:
--- the same element type, fondant, and the same category as the cloud and the rainbow. Copying the
--- shape of a row that works is how a new element avoids inventing a fourth way to be configured.
+-- the same element type and the same medium. Copying the shape of a row that works is how a new
+-- element avoids inventing a fourth way to be configured.
+--
+-- ⚠️ BUT NOT ITS CATEGORY. The cloud and the rainbow live in `sky`, and taking the whole row would
+-- have put the balloon there with them — which is how it was first written. Sandeep: "category
+-- should not be sky. should party&shapes." He is right, and the distinction is about how a CUSTOMER
+-- browses rather than about how the element is built: a cloud is weather, and a balloon is a party.
+-- Category is identity, and identity is the half you cannot inherit from a template.
 --
 -- Differences from the cloud, each one a decision:
 --   · `color: true` in allowed_actions. A cloud is white and the control would be a lie; a
 --     balloon's colour is most of the point — the reference is a pale one, a mint one and a pink
 --     one on the same cake.
---   · zones are top_surface only. A balloon goes in on a pick, and the pick goes into the lid.
+--   · `party-shapes`, not the cloud's `sky` — see above.
+--     A balloon goes in on a pick, and the pick goes into the lid.
 --     A cloud leans against the wall and stands on the board; a balloon does neither.
 --   · `placement_config.balloon` carries the proportions signed off in the studio, so an admin
 --     retunes the shape on the row without a deploy (INVARIANTS #1a). Core's BALLOON_DEFAULTS is
@@ -37,7 +44,7 @@ insert into public.cake_elements
 select
   'Balloon', true, true, 60,
   (select element_type_id from public.cake_elements where name = 'Puffy cloud' limit 1),
-  (select category_id     from public.cake_elements where name = 'Puffy cloud' limit 1),
+  (select id from public.element_categories where slug = 'party-shapes'),
   'fondant',
   '#F4EFE6',
   array['top_surface']::text[],
