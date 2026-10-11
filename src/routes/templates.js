@@ -152,8 +152,30 @@ router.get('/admin/templates/export', requireAuth, requireCapability('catalog:ad
 // row came from a particular bakery, and no copy for them to keep. Both are fine when the bakery is
 // ours; neither would be if this were ever opened up, and the is_catalog_author gate is what stops
 // that happening quietly.
+/* ⚠️ THE RENDERER FLOOR IS STAMPED HERE, because this is the moment a template stops being one
+   bakery's and becomes everyone's — and therefore the last moment anyone is still looking at the
+   cake they are making a claim about. A template is data, but it does not render itself: it renders
+   on whatever build of @spattoo/designer the viewer has, and a design that needs a renderer fix
+   (plans/renderer-version-floor.md, class 3 — no new key, no new control, the renderer just got
+   more correct) is indistinguishable from one that does not by looking at its config.
+
+   `auto` is what admin's build reported and is never edited by hand; `min` is what ships and the
+   author may override it. Both optional: omitted leaves NULL, which means "renders anywhere" and is
+   what every template before this has. */
+const SEMVER = /^[0-9]+\.[0-9]+\.[0-9]+$/;
+
 router.post('/admin/templates/:id/publish', requireAuth, requireCapability('catalog:admin'), async (req, res) => {
   try {
+    /* Validated here as well as by the column constraint. The constraint protects the DATA; this
+       protects the PERSON, who would otherwise get a raw Postgres check-violation naming a
+       constraint instead of being told their version is malformed. */
+    const floor = req.body?.min_core_version ?? null;
+    const auto  = req.body?.auto_core_version ?? null;
+    for (const [k, v] of [['min_core_version', floor], ['auto_core_version', auto]]) {
+      if (v !== null && !(typeof v === 'string' && SEMVER.test(v))) {
+        return res.status(400).json({ error: `${k} must be x.y.z or omitted — got ${JSON.stringify(v)}` });
+      }
+    }
     const { data: src, error: readErr } = await supabase
       .from('cake_templates').select('*').eq('id', req.params.id).single();
     if (readErr || !src) return res.status(404).json({ error: 'No such template' });
@@ -202,13 +224,16 @@ router.post('/admin/templates/:id/publish', requireAuth, requireCapability('cata
         parent_template_id: null,
         sort_order: (last?.sort_order ?? 0) + 10,
         is_active: true,
+        min_core_version: floor,
+        auto_core_version: auto,
       })
       .eq('id', src.id)
-      .select('id, name')
+      .select('id, name, min_core_version')
       .single();
     if (updErr) return serverError(req, res, updErr);
 
-    res.json({ ok: true, id: made.id, name: made.name, from: { baker: baker.name } });
+    res.json({ ok: true, id: made.id, name: made.name, from: { baker: baker.name },
+               min_core_version: made.min_core_version });
   } catch (err) {
     serverError(req, res, err);
   }
