@@ -510,7 +510,14 @@ router.post(
 // invisible in the worst way: the filter simply matched nothing, which reads as "you added nothing
 // today" rather than "this column never arrived". A hand-maintained field list drops columns
 // silently — the reason the export below uses select('*') instead.
-const ADMIN_ELEM_FIELDS = 'id, created_at, name, description, image_url, thumbnail_url, thumb_key, element_type_id, category_id, parent_id, allowed_zones, placement_config, allowed_actions, default_color, sort_order, is_active, baker_id, file_size, asset_class, tri_count, texture_max_dim, decoded_mem_kb, optimized_size_kb, over_cap, medium';
+/* ⚠️ `updated_at` IS SELECTED, and it was the missing half of a column that already existed.
+   Migration 082 added it to cake_elements with a BEFORE UPDATE trigger, precisely so the answer is
+   trustworthy across the several paths that write elements — the studios, Manage Elements, the
+   optimizer, the promotion flow, bulk imports. None of that reaches a screen while the admin list
+   does not ASK for it: Manage Elements' Today / 7 days filter could only compare `created_at`, so
+   an element authored in March and edited this morning read as old. Sandeep: *"they are displaying
+   only based on the created date i think, it should also show based on modified date."* */
+const ADMIN_ELEM_FIELDS = 'id, created_at, updated_at, name, description, image_url, thumbnail_url, thumb_key, element_type_id, category_id, parent_id, allowed_zones, placement_config, allowed_actions, default_color, sort_order, is_active, baker_id, file_size, asset_class, tri_count, texture_max_dim, decoded_mem_kb, optimized_size_kb, over_cap, medium';
 
 // asset_class is a compact surrogate in the DB; admin clients speak the readable key (schema-scale rule).
 const toAdminElement = el => ({ ...withPublicUrls(el), asset_class: ASSET_CLASS_KEY[el.asset_class] ?? null });
