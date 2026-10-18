@@ -1,6 +1,7 @@
 import { config } from '../config.js';
 import { captureError } from '../lib/telemetry.js';
 import { removeBackground as removeBgVendor } from './removebg.js';
+import { removeBackground as leonardoVendor } from './leonardo.js';
 import {
   failureKind, freshBreaker, breakerOpen, afterFailure, afterSuccess,
   freshCap, capReached, afterFallback,
@@ -33,9 +34,20 @@ import {
 // See features/my-decorations.md for the measurements.
 
 const PROVIDERS = {
-  // Paid vendor. Metered per image — the thing we intend to stop paying. It reports no confidence
-  // of its own, and null means "unknown" rather than "fine".
+  // ⚠️ DEAD ON 1 DECEMBER 2026, 09:00 CET — remove.bg's self-service API stops accepting requests,
+  // and unused credits expire the same morning with no refund. Kept so an environment holding
+  // credits can spend them; it is no longer the default anywhere. Metered per image (~₹15). It
+  // reports no confidence of its own, and null means "unknown" rather than "fine".
   removebg: async (buffer) => ({ png: await removeBgVendor(buffer), confidence: null, doubts: null }),
+
+  // Where that API went. Metered per image too (~$0.1047, about ₹9), so the reasoning that built
+  // the self-hosted service is unchanged — a per-image fee in front of an upload button is still
+  // user-driven and unbounded. It is cheaper, not free. `costUsd` is what THIS image actually cost,
+  // read off their response rather than off a price we remember.
+  leonardo: async (buffer) => {
+    const { png, costUsd } = await leonardoVendor(buffer);
+    return { png, confidence: null, doubts: null, costUsd };
+  },
 
   // Our own model (silueta), on its OWN Render service — repo: spattoo-bgremover, built 2026-07-12
   // (features/my-decorations.md). This comment said "not built yet" for three weeks after it was;
@@ -106,22 +118,41 @@ export function _resetFallbackState() {
   dailyCap = freshCap();
 }
 
+// WHICH paid vendor answers for us when our own service cannot. Config, not a literal: the
+// fallback used to name remove.bg in three places, so moving vendor meant finding all three — and
+// missing one leaves an outage path pointing at an API that no longer exists.
+function vendorName() {
+  return config.bgRemoval.vendor;
+}
+
+function vendorKeySet(name) {
+  return name === 'leonardo' ? !!config.leonardo?.apiKey : !!config.removeBg.apiKey;
+}
+
+function vendorKeyEnvVar(name) {
+  return name === 'leonardo' ? 'LEONARDO_API_KEY' : 'REMOVE_BG_API_KEY';
+}
+
 async function fallbackToVendor(buffer, reason, cause) {
   const now = Date.now();
+  const vendor = vendorName();
+  const serve = PROVIDERS[vendor];
+  if (!serve) throw new Error(`unknown BG_REMOVAL_VENDOR "${vendor}"`);
 
   // ALERT ON EVERY FALLBACK, loudly. The danger of a fallback that works is that it hides the thing
   // it is compensating for: the storefront looks fine, nobody investigates, and we quietly pay a
   // per-image fee for days. This is the only signal that our own service is down.
-  captureError(cause ?? new Error(`bg-removal fell back to remove.bg (${reason})`), {
+  captureError(cause ?? new Error(`bg-removal fell back to ${vendor} (${reason})`), {
     action: 'bgRemoval.fallback', severity: 'error',
-    extra: { reason, consecutiveFailures: breaker.consecutiveFailures, fallbacksToday: dailyCap.used },
+    extra: { reason, vendor, consecutiveFailures: breaker.consecutiveFailures, fallbacksToday: dailyCap.used },
   });
 
   if (!config.bgRemoval.fallbackToVendor) throw cause ?? new Error(`bg-removal unavailable (${reason})`);
   // A fallback nobody funded is decorative. Easy to reach once the flip to `self` makes the vendor
   // account look unused and someone lets it lapse — so say which of the two things is wrong.
-  if (!config.removeBg.apiKey) {
-    throw Object.assign(new Error(`bg-removal unavailable (${reason}) and REMOVE_BG_API_KEY is not set`),
+  if (!vendorKeySet(vendor)) {
+    throw Object.assign(
+      new Error(`bg-removal unavailable (${reason}) and ${vendorKeyEnvVar(vendor)} is not set`),
       { cause });
   }
   if (capReached(dailyCap, now, config.bgRemoval.fallbackDailyCap)) {
@@ -132,9 +163,10 @@ async function fallbackToVendor(buffer, reason, cause) {
   }
 
   dailyCap = afterFallback(dailyCap, now);
-  // Same shape every provider returns. The vendor reports no confidence of its own, and null means
-  // "unknown" rather than "fine".
-  return { png: await removeBgVendor(buffer), confidence: null, doubts: null };
+  // Same shape every provider returns, and it comes from the PROVIDERS table so a vendor added
+  // there is automatically available here. Neither vendor reports confidence of its own, and null
+  // means "unknown" rather than "fine".
+  return { ...(await serve(buffer)), vendor };
 }
 
 // Remove the background from image bytes.
@@ -158,7 +190,8 @@ export async function cutOutSubject(buffer) {
 
   const now = Date.now();
   if (breakerOpen(breaker, now)) {
-    return { ...(await fallbackToVendor(buffer, 'breaker-open', null)), provider: 'removebg', fellBack: true, reason: 'breaker-open' };
+    const served = await fallbackToVendor(buffer, 'breaker-open', null);
+    return { ...served, provider: served.vendor, fellBack: true, reason: 'breaker-open' };
   }
 
   try {
@@ -172,6 +205,7 @@ export async function cutOutSubject(buffer) {
 
     breaker = afterFailure(breaker, now);
     const reason = err.status == null ? 'unreachable' : `http-${err.status}`;
-    return { ...(await fallbackToVendor(buffer, reason, err)), provider: 'removebg', fellBack: true, reason };
+    const served = await fallbackToVendor(buffer, reason, err);
+    return { ...served, provider: served.vendor, fellBack: true, reason };
   }
 }

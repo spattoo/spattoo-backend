@@ -1,6 +1,6 @@
 import sharp from 'sharp';
 import { getObjectBuffer, putObject } from '../../services/r2.js';
-import { removeBackground } from '../../services/removebg.js';
+import { cutOutSubject } from '../../services/backgroundRemoval.js';
 // NOT metered, deliberately (see migration 036, which meters the baker-facing cut-out route). This
 // fires ONCE, on the logo a baker uploads while setting up their bakery — before they have used the
 // product, and quite possibly before they understand what a credit is. Charging for onboarding is
@@ -16,14 +16,20 @@ export function enqueueLogoBgRemoval(bakerId, logoKey) {
   return jobQueue.add('remove_logo_bg', { bakerId, logoKey });
 }
 
-// Fetch the uploaded logo, strip its background via remove.bg, store the transparent PNG in R2, and
-// point bakers.logo_transparent_key at it. On ANY failure we leave the column null so the storefront
-// simply falls back to the original logo — a bad cutout or a remove.bg outage never breaks the logo.
+// Fetch the uploaded logo, strip its background, store the transparent PNG in R2, and point
+// bakers.logo_transparent_key at it. On ANY failure we leave the column null so the storefront
+// simply falls back to the original logo — a bad cutout or a vendor outage never breaks the logo.
+//
+// ⚠️ THROUGH cutOutSubject() LIKE EVERYTHING ELSE. This was the THIRD door straight to the vendor
+// and the quietest: it runs in a background job and swallows its own errors, so when remove.bg
+// stopped answering, every new baker would simply have had no transparent logo and nothing on any
+// screen would have said why. Found by the gate below this file, not by reading — the two doors I
+// went looking for were both in routes.
 export async function removeLogoBg({ bakerId, logoKey }) {
   if (!bakerId || !logoKey) return;
   try {
     const input = await getObjectBuffer(logoKey);
-    const cutout = await removeBackground(input);   // remove.bg → transparent PNG
+    const { png: cutout } = await cutOutSubject(input);   // whichever provider is configured
     // Re-encode as lossless WebP (smaller than PNG, keeps alpha + crisp logo edges) and bound the
     // size — a logo never needs to be huge (displays ~30px tall, so 640px covers retina).
     const webp = await sharp(cutout)

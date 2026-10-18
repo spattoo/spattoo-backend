@@ -4,7 +4,15 @@ const required = [
   'SUPABASE_URL',
   'SUPABASE_SERVICE_KEY',
   'OPENAI_API_KEY',
-  'REMOVE_BG_API_KEY',
+  /* ⚠️ REMOVE_BG_API_KEY WAS HERE, AND IT WOULD HAVE TAKEN THE API DOWN. It stops working on
+     1 December 2026, so the natural tidy-up — delete the dead key from Render — would have failed
+     the next boot with "Missing required env var" and 502'd the whole service, for a vendor
+     nothing calls any more. A key for a dead API cannot be a condition of starting.
+
+     LEONARDO_API_KEY deliberately does NOT replace it in this list either: making a vendor key a
+     boot condition means the day someone rotates it wrong, the storefront goes down rather than
+     one feature. cutOutSubject() already refuses per call, by name — "LEONARDO_API_KEY is not
+     set" — which breaks background removal and nothing else. */
   'REDIS_URL',
   'R2_ENDPOINT',
   'R2_ACCESS_KEY_ID',
@@ -82,13 +90,32 @@ export const config = {
     // side-by-side comparison in hand, and knowing it quadruples the cost of every guide.
     guideImageQuality: process.env.OPENAI_GUIDE_IMAGE_QUALITY || 'low',
   },
+  // ⚠️ DEAD ON 1 DECEMBER 2026, 09:00 CET. remove.bg's self-service API stops accepting requests
+  // that morning and unused credits expire with it. Kept only so an environment that still has
+  // credits can finish them; nothing defaults here any more.
   removeBg: { apiKey: process.env.REMOVE_BG_API_KEY },
-  // Background removal for user uploads ("My Decorations"). `removebg` = the paid vendor (metered per
-  // image); `self` = our own model on its own Render service (free per image, not built yet). Env-driven
-  // so the switch is a config change per environment, instantly reversible — see
-  // services/backgroundRemoval.js for why the model can't live in this process.
+  // Where the remove.bg API actually went. A different account and a different key — they do not
+  // carry over. app.leonardo.ai → API Access.
+  leonardo: {
+    apiKey:    process.env.LEONARDO_API_KEY,
+    // One synchronous call does the work, so this deadline is the whole budget rather than a poll
+    // interval. Generous for a large photo, short enough that a hung vendor still falls back.
+    timeoutMs: parseInt(process.env.LEONARDO_TIMEOUT_MS || '45000', 10),
+  },
+  // Background removal for user uploads ("My Decorations") AND for admin authoring. `leonardo` =
+  // the paid vendor, metered per image; `removebg` = the old one, dead after 1 Dec 2026; `self` =
+  // our own model on its own Render service, free per image. Env-driven so the switch is a config
+  // change per environment, instantly reversible — see services/backgroundRemoval.js for why the
+  // model can't live in this process.
   bgRemoval: {
-    provider:     process.env.BG_REMOVAL_PROVIDER || 'removebg',
+    // ⚠️ THE DEFAULT MOVED FROM `removebg` TO `leonardo` ON 2026-10-18, because a default pointing
+    // at a vendor that stops answering in six weeks is a trap for every environment nobody
+    // remembers to set — preview, local, and whichever one is created next.
+    provider:     process.env.BG_REMOVAL_PROVIDER || 'leonardo',
+    // WHICH paid vendor answers when `self` is configured and cannot. It used to be hardcoded as
+    // remove.bg inside the fallback, which made "switch vendor" a code change in two places and
+    // left the fallback pointing at a dead API the moment the provider moved.
+    vendor:       process.env.BG_REMOVAL_VENDOR || 'leonardo',
     serviceUrl:   process.env.BG_REMOVAL_SERVICE_URL || '',      // Render internal host, e.g. http://spattoo-bgremover:3000
     serviceToken: process.env.BG_REMOVAL_SERVICE_TOKEN || '',    // must match the service's BG_SERVICE_TOKEN
     // Inference measured ~3s on Render. 20s is generous for a slow image and still well short of a
