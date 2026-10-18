@@ -88,12 +88,20 @@ export async function removeBackground(imageInput) {
   }
 
   const parsed = await res.json().catch(() => null);
-  const url = parsed?.results?.[0]?.url;
+  /* ⚠️ THE RESULT IS INSIDE AN ENVELOPE THEIR DOCS DO NOT SHOW. Their migration guide prints the
+     response as `{ id, blockedCount, cost, results }` and the live API answers
+     `{ generateSync: { id, blockedCount, cost, results } }`. Reading the documented shape found no
+     `results`, so a call that had SUCCEEDED — and been charged $0.1047 — was thrown away as a
+     failure, and the screen showed the picture with its background still on.
+
+     Both shapes are accepted, because the one that is wrong today is the one I can see. */
+  const payload = parsed?.generateSync ?? parsed?.generationsSync ?? parsed ?? {};
+  const url = payload?.results?.[0]?.url;
   if (!url) {
     // A 200 with nothing in it is still a failure, and it is OURS to notice: their `blockedCount`
     // reports images their safety filter refused, which is a verdict on the bytes rather than an
     // outage — falling back to another vendor for it would pay twice for the same answer.
-    const blocked = Number(parsed?.blockedCount) > 0;
+    const blocked = Number(payload?.blockedCount) > 0;
     throw Object.assign(
       new Error(blocked
         ? 'leonardo refused the image (blocked by their content filter)'
@@ -113,6 +121,6 @@ export async function removeBackground(imageInput) {
     // What this image ACTUALLY cost, from their response rather than from a price we remember. It
     // is in dollars; nothing here converts it, because an exchange rate written in code is a number
     // that is wrong by a little every day and nobody is watching.
-    costUsd: parsed?.cost?.amount != null ? Number(parsed.cost.amount) : null,
+    costUsd: payload?.cost?.amount != null ? Number(payload.cost.amount) : null,
   };
 }
