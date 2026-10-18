@@ -5,6 +5,7 @@ import { rateLimit } from '../middleware/rateLimit.js';
 import { sendEmail, mailConfigured } from '../services/mailer.js';
 import { verifyTurnstile, turnstileConfigured } from '../services/turnstile.js';
 import { serverError } from '../lib/httpError.js';
+import { normalizePhone } from '../lib/phone.js';
 
 // ── "Request a demo", from the public marketing site ─────────────────────────────────────────────
 //
@@ -83,6 +84,29 @@ async function requireCaptcha(req, res, next) {
 // the row is kept either way. Erring towards accepting is the cheaper mistake here.
 const looksLikeEmail = (v) => /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(v);
 
+/* ── A PHONE NUMBER IS NOT LOOSE, AND THAT IS THE DIFFERENCE ─────────────────────────────────────
+ *
+ * ⚠️ This field had NO validation at all — `clean(b.mobile, 40)` and into the table — so a demo
+ * request arrived with a twelve-digit number. A bad email costs one bounce and the row survives to
+ * be read by a human; a bad phone number is a lead nobody can ring, discovered by someone dialling
+ * it, and there is no second address to fall back to.
+ *
+ * So this one is checked, by `lib/phone.js` — the same `normalizePhone` every authenticated write
+ * path already uses, on the FULL libphonenumber metadata rather than the "min" bundle that
+ * "only does loose length checks and wrongly accepts junk like 123123123 / over-length numbers".
+ * One verdict on what a phone number is, shared by onboarding, self-signup and now the front door.
+ *
+ * It is also stored normalised (+919876543210), which is the shape spattoo-leads dedupes on — a
+ * number typed as "98765 43210" here and scraped as "+91 98765 43210" there is one bakery. */
+function phoneFor(raw) {
+  if (!raw) return { ok: true, e164: '' };                 // absent is allowed; wrong is not
+  const parsed = normalizePhone(raw);                      // defaults to IN, an explicit +code wins
+  if (!parsed.ok) {
+    return { ok: false, error: 'Enter a valid mobile number — 10 digits in India, or with the country code (+…).' };
+  }
+  return { ok: true, e164: parsed.e164 };
+}
+
 // Escape everything that reaches the notification's HTML. The body is entirely attacker-controlled
 // and lands in a mail client that will happily render markup.
 const esc = (v) => String(v ?? '').replace(/[&<>"']/g, c => (
@@ -111,7 +135,7 @@ router.post('/public/demo-request', perIp, requireCaptcha, perEmail, async (req,
       first_name:      clean(b.firstName, 80),
       last_name:       clean(b.lastName, 80),
       email:           clean(b.email, 160).toLowerCase(),
-      phone:           clean(b.mobile, 40),
+      phone:           '',                                   // filled below, normalised — see phoneFor
       city:            clean(b.city, 120),
       business_name:   clean(b.brandName, 160),
       cakes_per_month: clean(b.cakesPerMonth, 40),
@@ -125,6 +149,15 @@ router.post('/public/demo-request', perIp, requireCaptcha, perEmail, async (req,
       // anything set means "asked for a demo" — no extra column needed to tell them apart.
       source:          clean(b.heardFrom, 80),
     };
+
+    /* ⚠️ REFUSED EVEN WHEN THE EMAIL IS FINE, which is the opposite of how the email field is
+       treated two fields up, and deliberately so. A number that cannot be dialled is not a weaker
+       lead, it is a wrong fact in the table — and the shape of this form means the visitor is
+       sitting in front of it and can fix a typo in two seconds. The browser checks first (see
+       DemoModal), so reaching this is a bypassed form or a bot. */
+    const phone = phoneFor(clean(b.mobile, 40));
+    if (!phone.ok) return res.status(400).json({ error: phone.error, code: 'PHONE_INVALID' });
+    lead.phone = phone.e164;
 
     // The minimum that makes a lead followable: a name, and a way to reach them.
     if (!lead.first_name || (!looksLikeEmail(lead.email) && !lead.phone)) {

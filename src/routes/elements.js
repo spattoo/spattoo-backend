@@ -6,7 +6,7 @@ import { requireAuth } from '../middleware/auth.js';
 import { requireCapability } from '../middleware/rbac.js';
 import { scopeCatalogRead } from '../lib/tenantScope.js';
 import { config } from '../config.js';
-import { removeBackground } from '../services/removebg.js';
+import { cutOutSubject } from '../services/backgroundRemoval.js';
 import { jobQueue } from '../jobs/queue.js';
 import { reindexElement } from '../services/elementIndex.js';
 import { generateWebpThumbnail } from '../services/thumbnails.js';
@@ -485,6 +485,15 @@ router.get('/elements', requireAuth, requireCapability('design:create'), async (
 // NOT metered, unlike the baker-facing /api/elements/remove-bg (migration 036). This is
 // catalog:admin — us building the Spattoo catalogue — and a baker's credits must never pay for our
 // own authoring. Same rule as the decoration guides that ship with a library element.
+//
+// ⚠️ THIS ROUTE CALLED THE VENDOR DIRECTLY FOR MONTHS, AND IT IS THE BUSIER OF THE TWO. It imported
+// removeBackground() from services/removebg.js, so BG_REMOVAL_PROVIDER did not reach it: the
+// "one chokepoint, swappable provider" the service file describes was true of the baker path only.
+// Most images we cut are authored HERE — AddElement, ManageElements thumbnails, GlbStudio,
+// RecomposeEditor, GenerateModel, GenerateShape all post to this route — so the admin half was the
+// larger share of the bill, it would have gone on being spent after a flip to `self`, and it would
+// have broken on its own when remove.bg stopped answering. Through the chokepoint now, which also
+// gives admin authoring the breaker, the daily cap and the fallback.
 router.post(
   '/admin/remove-bg',
   requireAuth,
@@ -492,9 +501,9 @@ router.post(
   express.raw({ type: '*/*', limit: '10mb' }),
   async (req, res) => {
     try {
-      const pngBuffer = await removeBackground(req.body);
+      const { png } = await cutOutSubject(req.body);
       res.set('Content-Type', 'image/png');
-      res.send(pngBuffer);
+      res.send(png);
     } catch (err) {
       serverError(req, res, err);
     }

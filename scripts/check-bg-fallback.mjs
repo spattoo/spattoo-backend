@@ -91,8 +91,42 @@ ok(rolled.used === 1, 'the counter restarts at 1 on the new IST day, not 4', Str
 
 ok(DEFAULT_DAILY_CAP > 0, 'the shipped default actually allows a fallback', String(DEFAULT_DAILY_CAP));
 
+// ── ONE DOOR TO A PAID VENDOR ────────────────────────────────────────────────
+// ⚠️ THIS IS WHAT THE PURE RULES ABOVE COULD NOT SEE. Every rule in this file describes
+// cutOutSubject's behaviour — and for months the BUSIER caller never reached it: the admin route
+// imported services/removebg.js directly, so it had no breaker, no cap, no provider switch and no
+// fallback, and BG_REMOVAL_PROVIDER did not reach the half of the traffic we author ourselves. A
+// flip to `self` would have left that bill running; remove.bg's shutdown would have broken it on
+// its own. The policy is only as good as the number of doors into it.
+import { readdirSync, readFileSync, statSync } from 'node:fs';
+import { join } from 'node:path';
+
+const VENDOR_MODULES = ['removebg.js', 'leonardo.js'];
+const CHOKEPOINT = 'src/services/backgroundRemoval.js';
+
+const walk = (dir) => readdirSync(dir).flatMap((entry) => {
+  const full = join(dir, entry);
+  return statSync(full).isDirectory() ? walk(full) : [full];
+});
+
+for (const file of walk('src').filter(f => f.endsWith('.js') && !f.endsWith(CHOKEPOINT))) {
+  const src = readFileSync(file, 'utf8');
+  for (const vendor of VENDOR_MODULES) {
+    ok(!new RegExp(`from '[^']*/${vendor.replace('.', '\\.')}'`).test(src),
+      `${file} imports ${vendor} directly — go through cutOutSubject()`,
+      'a second door to a paid vendor has no breaker, no daily cap and no provider switch');
+  }
+}
+
+// And the fallback must not name a vendor in code: BG_REMOVAL_VENDOR decides, so that moving vendor
+// is one variable rather than a hunt through three string literals.
+const chokepoint = readFileSync(CHOKEPOINT, 'utf8');
+ok(!/provider: 'removebg'/.test(chokepoint),
+  'backgroundRemoval.js still stamps a hardcoded vendor name on a fallback result',
+  'it would report remove.bg while Leonardo did the work — and the ledger reads that field');
+
 if (failures) {
   console.error(`\n✗ check:bg-fallback — ${failures} failing`);
   process.exit(1);
 }
-console.log('✓ check:bg-fallback — fallback fires on our outages, never on bad bytes, and is capped');
+console.log('✓ check:bg-fallback — fallback fires on our outages, never on bad bytes, is capped, and a paid vendor has exactly one door');
