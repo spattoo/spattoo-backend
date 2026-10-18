@@ -35,11 +35,22 @@ CREATE INDEX IF NOT EXISTS appuser_contact_changes_verified_idx
 
 -- ── 2. Whether the number on the account has ever been proved ───────────────────────────────────
 --
--- ⚠️ DEFAULT FALSE, AND THE EXISTING ROWS STAY FALSE. Every baker who signed up before this
--- migration gave a number nobody checked, and back-filling `true` would be inventing a fact about
--- several hundred real people — the one thing a verification flag must never do. False here means
+-- ⚠️ DEFAULT FALSE, AND THE MIGRATION BACK-FILLS NOTHING. Every baker who signed up before this
+-- gave a number nobody checked, and writing `true` from a migration would be inventing a fact about
+-- people it has never asked — the one thing a verification flag must never do. False here means
 -- "not proven", not "known bad"; nothing is taken away from them, and the account screen's existing
 -- change flow sets it true the first time they prove one.
+--
+-- ⚠️ I FIRST WROTE "several hundred real people" HERE, AND THAT WAS A GUESS AT THE SCALE RATHER
+-- THAN A COUNT. Sandeep, 2026-10-18: "in production there is only one baker available now… lets
+-- assume that baker has verified." So prod is back-filled BY HAND, as a one-off, by the person who
+-- can vouch for that number — which is a different act from a migration deciding it for everybody:
+--
+--   update baker_appusers set phone_verified = true
+--   where is_primary = true and phone is not null and phone_verified = false;
+--
+-- `phone is not null` matters: a null number is not unverified, it is nothing to verify, and true
+-- there would be the one lie this column must not carry. Dev's test bakers are left alone.
 ALTER TABLE public.baker_appusers
   ADD COLUMN IF NOT EXISTS phone_verified boolean NOT NULL DEFAULT false;
 
