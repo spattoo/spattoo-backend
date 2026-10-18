@@ -15,6 +15,9 @@ import { cancelBakerSubscription } from './billing.js';
 import { createHash, randomInt } from 'node:crypto';
 import { rateLimit } from '../middleware/rateLimit.js';
 import { normalizePhone } from '../lib/phone.js';
+import {
+  issueContactCode, verifyContactCode, CODE_TTL_SEC, CODE_ATTEMPTS,
+} from '../lib/contactOtp.js';
 import { primaryOwnerConflict } from '../services/bakerProvisioning.js';
 import { sendOtpSms, smsConfigured } from '../services/msg91.js';
 import { maskPhone } from '../lib/mask.js';
@@ -190,13 +193,11 @@ router.post('/baker/account/restore', requireAuth, requireCapability('account:de
 // migration 015 names what that index is for: "one phone number per baker (subscription
 // boundary)". Moving it is a billing-adjacent act, not a profile tweak.
 
-/* ⚠️ ONE POLICY FOR BOTH CONTACTS. A phone proof and an email proof want the same window and the
-   same ceiling, and two copies of these numbers is how the pair drifts the first time either is
-   tuned. Named for the act rather than the channel since migration 123 generalised the table. */
-const CODE_TTL_SEC  = 10 * 60;   // long enough for a slow carrier or a slow inbox, short enough to matter
-const CODE_ATTEMPTS = 5;         // per issued code; the 6th wrong guess burns it
-
-const hashCode = code => createHash('sha256').update(String(code)).digest('hex');
+/* ⚠️ THE WINDOW, THE CEILING AND THE MECHANICS MOVED TO lib/contactOtp.js (2026-10-18), because
+   onboarding now proves a phone number too and cannot reach this file's routes: there is no owner
+   row to look up yet, and `requireRecentPassword` has nothing to gate on someone who created the
+   password four minutes ago. Two copies of "supersede, insert, count on the row, burn before
+   acting" is how the pair drifts the first time either is tuned. */
 
 // Keyed on the auth user, never the IP: the abuse unit here is an account, and a baker on hotel
 // wifi must not inherit a stranger's budget. `req.user` is set by requireAuth, which runs first.
@@ -257,28 +258,9 @@ router.post('/baker/account/phone/start', requireAuth, requireRecentPassword(), 
     // would be told to verify.
     if (!smsConfigured()) return res.status(503).json({ error: 'Text messages are not available right now.' });
 
-    // randomInt, not Math.random: this is a credential, however short-lived.
-    const code = String(randomInt(0, 1_000_000)).padStart(6, '0');
-
-    // Supersede the user's older live attempts. Without this, a baker who typed the wrong number,
-    // corrected it and asked again would have two valid codes, and the confirm step below — which
-    // reads the newest — would silently accept the one for the number they abandoned.
-    await supabase
-      .from('appuser_contact_changes')
-      .update({ consumed_at: new Date().toISOString() })
-      .eq('auth_user_id', req.user.id)
-      .eq('kind', 'phone')
-      .is('consumed_at', null);
-
-    const { error: insErr } = await supabase.from('appuser_contact_changes').insert({
-      auth_user_id: req.user.id,
-      kind:         'phone',
-      new_value:    phone.e164,
-      new_country:  phone.country,
-      code_hash:    hashCode(code),
-      expires_at:   new Date(Date.now() + CODE_TTL_SEC * 1000).toISOString(),
+    const { code } = await issueContactCode({
+      authUserId: req.user.id, kind: 'phone', value: phone.e164, country: phone.country,
     });
-    if (insErr) return serverError(req, res, insErr);
 
     // A provider failure must NOT read as "code sent" — the baker would sit and wait for nothing.
     try {
@@ -305,45 +287,16 @@ router.post('/baker/account/phone/confirm', requireAuth, requireRecentPassword()
     const owner = await ownerRow(req.user.id);
     if (!owner) return res.status(403).json({ error: 'Only the account owner can change this number.' });
 
-    const { data: attempt, error: readErr } = await supabase
-      .from('appuser_contact_changes')
-      .select('id, new_value, new_country, code_hash, expires_at, attempts')
-      .eq('auth_user_id', req.user.id)
-      /* ⚠️ SCOPED BY KIND since migration 123. Without it a baker changing both contacts at once
-         confirms whichever they started LAST with either code — the two flows would share one
-         "newest live attempt" and the email code would move the phone number. */
-      .eq('kind', 'phone')
-      .is('consumed_at', null)
-      .order('created_at', { ascending: false })
-      .limit(1)
-      .maybeSingle();
-    if (readErr) return serverError(req, res, readErr);
-    if (!attempt || new Date(attempt.expires_at) < new Date()) {
-      return res.status(410).json({ error: 'That code has expired. Please ask for a new one.', code: 'expired' });
-    }
-    if (attempt.attempts >= CODE_ATTEMPTS) {
-      return res.status(429).json({ error: 'Too many wrong codes. Please ask for a new one.', code: 'burned' });
-    }
-
-    if (hashCode(code) !== attempt.code_hash) {
-      // Count the miss on the ROW. The Redis limiter above fails open by design; a brute-force
-      // ceiling on a six-digit code must not.
-      await supabase
-        .from('appuser_contact_changes')
-        .update({ attempts: attempt.attempts + 1 })
-        .eq('id', attempt.id);
-      return res.status(401).json({ error: 'That code is not right.', field: 'code' });
-    }
-
-    // Burn the code FIRST. If the write below fails, a replay must not be able to reuse it.
-    await supabase
-      .from('appuser_contact_changes')
-      .update({ consumed_at: new Date().toISOString() })
-      .eq('id', attempt.id);
+    const attempt = await verifyContactCode({ authUserId: req.user.id, kind: 'phone', code });
+    if (!attempt.ok) return res.status(attempt.status).json(attempt.body);
 
     const { error: updErr } = await supabase
       .from('baker_appusers')
-      .update({ phone: attempt.new_value, phone_country: attempt.new_country })
+      /* ⚠️ `phone_verified` IS SET HERE AND NOWHERE ELSE ON THIS PATH. The flow has always proved
+         the number and then thrown the fact away; migration 130 gives it somewhere to live, so a
+         baker who predates the onboarding gate becomes verified the first time they change their
+         number — rather than being asked to prove something they already did. */
+      .update({ phone: attempt.value, phone_country: attempt.country, phone_verified: true })
       .eq('id', owner.id);
     if (updErr) {
       // The number was claimed by another bakery between start and confirm. Rare, but the index is
@@ -357,7 +310,7 @@ router.post('/baker/account/phone/confirm', requireAuth, requireRecentPassword()
       return serverError(req, res, updErr);
     }
 
-    res.json({ phone: attempt.new_value, country: attempt.new_country });
+    res.json({ phone: attempt.value, country: attempt.country });
   } catch (err) {
     serverError(req, res, err);
   }

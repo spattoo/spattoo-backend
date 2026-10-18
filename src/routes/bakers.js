@@ -23,6 +23,9 @@ import { createBakerForUser, slugTaken, primaryOwnerConflict, findAppuserByIdent
 import { recordAttestation, attestationMissing, publishError } from '../services/contentAttestation.js';
 import { ATTESTATION_TARGET_TYPE } from '../constants/legalDocuments.js';
 import { normalizePhone } from '../lib/phone.js';
+import { issueContactCode, verifyContactCode, provedRecently, CODE_TTL_SEC } from '../lib/contactOtp.js';
+import { sendOtpSms, smsConfigured } from '../services/msg91.js';
+import { maskPhone } from '../lib/mask.js';
 import { sendStaffWelcomeEmail } from '../services/email.js';
 import { getEntitlements } from '../services/entitlements.js';
 import { requireEntitlement } from '../middleware/entitlements.js';
@@ -155,6 +158,110 @@ router.get('/bakers/phone-available', availabilityLimit, async (req, res) => {
 });
 
 // ── POST /api/bakers/self ─────────────────────────────────────────────────────
+/* ── Proving the first phone number, during onboarding ───────────────────────────────────────────
+ *
+ * The account screen's change flow (routes/account.js) cannot serve this moment: it looks up the
+ * caller's owner row and 403s without one, and it is gated on `requireRecentPassword`, which has
+ * nothing useful to say about someone who created the password four minutes ago. Same mechanics
+ * though — lib/contactOtp.js holds them once, so the window, the ceiling and the superseding rule
+ * cannot drift between the two flows.
+ *
+ * ⚠️ AUTHENTICATED, WHICH IS WHY THE GATE SITS AT BRAND SETUP RATHER THAN ON THE SIGNUP FORM. On
+ * the signup form there is no session yet — the number lives in user_metadata until the email link
+ * is confirmed — so an endpoint there would be a PUBLIC one that spends an SMS per call. Here the
+ * caller is signed in and email-confirmed, and the number still has not been written anywhere, so
+ * proving it costs nothing to defend and still happens before anyone can claim it.
+ */
+const verifyStartLimit = rateLimit({
+  // Keyed on the auth user, never the IP: the abuse unit is an account, and a baker on hotel wifi
+  // must not inherit a stranger's budget.
+  name: 'onboarding-phone-start', limit: 5, windowSec: 900, key: req => req.user?.id,
+  message: 'Too many code requests. Please wait a few minutes and try again.',
+});
+const verifyConfirmLimit = rateLimit({
+  name: 'onboarding-phone-confirm', limit: 15, windowSec: 900, key: req => req.user?.id,
+  message: 'Too many attempts. Please wait a few minutes and try again.',
+});
+
+// ── POST /api/bakers/self/phone/start ─────────────────────────────────────────
+// Body: { phone, country? }. Texts a code to the number given, and answers with the masked
+// destination so the screen can say where it went without re-deriving a form it never saw.
+router.post('/bakers/self/phone/start', requireAuth, verifyStartLimit, async (req, res) => {
+  try {
+    const phone = normalizePhone(req.body?.phone, req.body?.country || 'IN');
+    if (!phone.ok) return res.status(400).json({ error: phone.error, field: 'phone' });
+
+    /* ⚠️ THE COLLISION IS CHECKED BEFORE THE SMS IS SPENT, and it is the same check /bakers/self
+       makes. Otherwise a baker proves a number that is already somebody else's, and the refusal
+       arrives after they have waited for a code and typed it — at the end of a flow they cannot
+       retry differently. */
+    if (await primaryOwnerConflict({ phone: phone.e164 })) {
+      return res.status(409).json({
+        error: 'An account with this phone number already exists. Please sign in, or use a different number.',
+        code: 'owner_exists', field: 'phone',
+      });
+    }
+
+    // Deliberately before the insert: a row with no code on its way is a dead attempt the baker
+    // would be told to verify.
+    if (!smsConfigured()) return res.status(503).json({ error: 'Text messages are not available right now.' });
+
+    const { code } = await issueContactCode({
+      authUserId: req.user.id, kind: 'phone', value: phone.e164, country: phone.country,
+    });
+
+    // A provider failure must NOT read as "code sent" — the baker would sit and wait for nothing.
+    try {
+      await sendOtpSms({ phone: phone.e164, otp: code, templateId: config.sms.profileTemplateId });
+    } catch {
+      return res.status(502).json({ error: 'We could not send the code. Please try again.' });
+    }
+
+    res.json({ sent: true, to: maskPhone(phone.e164), expiresIn: CODE_TTL_SEC });
+  } catch (err) {
+    serverError(req, res, err);
+  }
+});
+
+// ── POST /api/bakers/self/phone/confirm ───────────────────────────────────────
+// Body: { code }. The number is NOT in the body — it is read off the attempt row, so a caller
+// cannot prove one number and submit another.
+router.post('/bakers/self/phone/confirm', requireAuth, verifyConfirmLimit, async (req, res) => {
+  try {
+    const code = String(req.body?.code ?? '').trim();
+    if (!code) return res.status(400).json({ error: 'Enter the code we sent you.', field: 'code' });
+
+    const result = await verifyContactCode({ authUserId: req.user.id, kind: 'phone', code });
+    if (!result.ok) return res.status(result.status).json(result.body);
+
+    /* Nothing is written to a baker row here, because there is no baker yet — the proof IS the
+       outcome, and POST /bakers/self reads it back. The number is returned so the screen can show
+       what was proved rather than what is sitting in its input. */
+    res.json({ verified: true, phone: result.value, country: result.country });
+  } catch (err) {
+    serverError(req, res, err);
+  }
+});
+
+// ── GET /api/bakers/self/phone/status ─────────────────────────────────────────
+// Has this user already proved the number they signed up with? Asked when the verify step mounts.
+//
+// ⚠️ IT EXISTS SO A RELOAD DOES NOT COST AN SMS. The proof lives in a row, not in the page, and a
+// baker who verifies and then refreshes — or closes the tab and comes back — would otherwise be
+// asked to prove the same number again, spending a message to tell us what we already know.
+router.get('/bakers/self/phone/status', requireAuth, async (req, res) => {
+  try {
+    const meta  = req.user.user_metadata ?? {};
+    const phone = normalizePhone(req.query.phone ?? meta.phone, req.query.country ?? meta.phone_country ?? 'IN');
+    if (!phone.ok) return res.json({ verified: false, phone: null });
+
+    const verified = await provedRecently({ authUserId: req.user.id, kind: 'phone', value: phone.e164 });
+    res.json({ verified, phone: phone.e164, masked: maskPhone(phone.e164) });
+  } catch (err) {
+    serverError(req, res, err);
+  }
+});
+
 // Baker self-signup completion (wizard step 1). Auth = the signed-up user's JWT.
 // Creates their baker on the free Spark tier. Idempotent: one baker per auth user.
 // First/last name + phone come from the signup metadata (collected on the signup
@@ -183,6 +290,28 @@ router.post('/bakers/self', requireAuth, selfSignupLimit, async (req, res) => {
 
     const ownerEmail = String(req.user.email ?? '').trim().toLowerCase();
 
+    /* ── THE NUMBER MUST HAVE BEEN PROVED, AND THIS IS THE LAST MOMENT IT IS FREE TO CHECK ───────
+     *
+     * ⚠️ THE SQUATTER IS THE REASON, NOT THE TYPO. A baker who mistypes their own number can
+     * already fix it — the account flow texts the NEW number and is authorised by the password, so
+     * nothing is ever sent to the wrong one. What has no remedy is the other half: `phone` is
+     * unique across is_primary rows ("one phone number per baker — subscription boundary",
+     * migration 015), so a typo landing on a REAL stranger's number occupies it, and when that
+     * person signs up they are told it belongs to another bakery with no way to release it.
+     *
+     * This row is where that happens, so this is where the proof is required. Before it, the
+     * number exists only in user_metadata and in an attempt row, and an abandoned signup costs
+     * nobody their number.
+     *
+     * ⚠️ AND THE PROOF IS MATCHED TO THE VALUE, not merely "this user proved something" — see
+     * provedRecently. Otherwise the field can be edited after the code is typed. */
+    if (!(await provedRecently({ authUserId: req.user.id, kind: 'phone', value: phone.e164 }))) {
+      return res.status(403).json({
+        error: 'Please verify your mobile number first — we will text you a code.',
+        code: 'phone_unverified', field: 'phone',
+      });
+    }
+
     // One owner per phone AND per email. Generic message (no baker name) — a self-signup
     // caller is anonymous-ish, so we don't leak WHICH bakery owns the identity.
     if (await primaryOwnerConflict({ email: ownerEmail, phone: phone.e164 })) {
@@ -199,7 +328,9 @@ router.post('/bakers/self', requireAuth, selfSignupLimit, async (req, res) => {
     const { id } = await createBakerForUser({
       authUserId: req.user.id,
       name, slug,
-      primaryUser: { first_name: firstName, last_name: lastName, email: ownerEmail, phone: phone.e164 },
+      // Proved a few lines up — the gate above refuses this request otherwise, so `true` here is a
+      // fact this handler established rather than an assumption it is passing on.
+      primaryUser: { first_name: firstName, last_name: lastName, email: ownerEmail, phone: phone.e164, phone_verified: true },
       phoneCountry: phone.country,
     });
     res.status(201).json({ id, slug });

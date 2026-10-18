@@ -168,6 +168,13 @@ export async function createBakerForUser({
       email:           primaryUser.email,
       phone:           primaryUser.phone || null,   // normalised E.164 (see lib/phone.js)
       phone_country:   phoneCountry      || null,   // ISO-2 region
+      /* ⚠️ A FACT THE CALLER ESTABLISHED, NOT A DEFAULT. Self-signup proves the number with a
+         texted code before it reaches here (routes/bakers.js refuses POST /bakers/self without a
+         matching proof), so it passes true. Admin-created bakers do not, and theirs stays false —
+         which is the honest answer, since nobody has ever sent a code to that number. Never
+         defaulted to true: a verification flag that can be set by forgetting to pass it is worth
+         less than no flag at all. */
+      phone_verified:  primaryUser.phone_verified === true,
       whatsapp_number: primaryUser.whatsapp_number || null,
       role:            'owner',
       is_primary:      true,
