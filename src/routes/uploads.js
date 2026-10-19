@@ -10,7 +10,7 @@ import { recordAttestation, attestationMissing, publishError } from '../services
 import { ATTESTATION_TARGET_TYPE } from '../constants/legalDocuments.js';
 import { requireCapability } from '../middleware/rbac.js';
 import { reindexElement } from '../services/elementIndex.js';
-import { ensureThumbKey, toPublicUrl } from './elements.js';   // reuse the SAME post-create + URL helpers
+import { ensureThumbKey, ensureRenderKey, toPublicUrl } from './elements.js';   // reuse the SAME post-create + URL helpers
 import { UPLOADED_BY, promotable } from '../constants/uploads.js';
 import { withAiCredits, AI_ACTION, InsufficientCreditsError } from '../services/aiCredits.js';
 import { config } from '../config.js';
@@ -399,6 +399,10 @@ router.post('/uploads/:id/promote', requireAuth, requireCapability('element:mana
     res.status(201).json({ id: el.id, uploadId: upload.id });
     reindexElement(el.id).catch(e => console.error('reindex(promote) failed:', e.message));
     ensureThumbKey(el.id, imageUrl);
+    // A baker's own decoration is textured onto the same cake as a catalogue one, so it gets the
+    // same ≤512 render copy (migration 132). Same call the admin create path makes — an element is
+    // an element, whoever made it.
+    ensureRenderKey(el.id, imageUrl);
   } catch (err) {
     // publishError, not serverError: if the attestation WORDING is unpublished there is nothing to
     // point the record at, and we refuse to expose the image rather than release it without evidence.

@@ -99,11 +99,19 @@ export async function elementClosure(ids) {
   const tags = tagIds.length ? await supabase.from('tags').select('*').in('id', tagIds) : { data: [] };
   if (tags.error) throw tags.error;
 
-  // The three asset columns, plus anything nested in placement_config — found by the same deep walk
+  // The four asset columns, plus anything nested in placement_config — found by the same deep walk
   // the designs use, so a nested asset added in core is picked up here without this file changing.
+  //
+  // ⚠️ `render_key` IS THE PICTURE THE CAKE IS ACTUALLY DRAWN FROM (migration 132), so leaving it
+  // out is the exact failure check:bundle-assets exists for: the row promotes carrying a key, prod
+  // has no bytes behind it, and every decoration on every imported template renders as nothing. The
+  // master would still be there and the fallback does not fire — the column is not null, it is
+  // wrong — so there is no error to read and no broken image to see. Prod could regenerate these
+  // itself (ensureRenderKey), but only on an element somebody re-saves; copying 40 KB of WebP per
+  // decoration is cheaper than a catalogue that heals one row at a time.
   const keys = new Set();
   for (const el of rows) {
-    for (const k of [el.image_url, el.thumbnail_url, el.thumb_key]) {
+    for (const k of [el.image_url, el.thumbnail_url, el.thumb_key, el.render_key]) {
       if (k && !/^https?:\/\//i.test(k)) keys.add(k);
     }
     assetKeysIn(el.placement_config, keys, config.r2.publicUrl);
