@@ -267,6 +267,23 @@ router.get('/bakers/self/phone/status', requireAuth, async (req, res) => {
 // First/last name + phone come from the signup metadata (collected on the signup
 // screen, stored in user_metadata); the slug is generated server-side from the
 // bakery name (never user-chosen — see generateUniqueSlug). Body: { name }.
+/* ── A campaign tag, narrowed to something safe to store and read back ───────────────────────────
+ *
+ * These arrive from a query string the whole internet can write, travel through the browser's own
+ * storage, and are read back in admin beside a baker's name — so they are narrowed HERE, at the
+ * boundary, rather than trusted because they are "only analytics". A tag that cannot be expressed
+ * as a short lowercase slug is not a tag we sent, so it becomes null rather than an error: a
+ * mangled attribution must never be the reason a bakery cannot be created.
+ *
+ * ⚠️ NULL, NOT 400. The only caller is a signup that has already crossed an email confirmation and
+ * a phone OTP; refusing it at the last step over a decoration would be the most expensive possible
+ * response to the least important field in the request.
+ */
+const campaignTag = (v) => {
+  const s = String(v ?? '').trim().toLowerCase();
+  return /^[a-z0-9][a-z0-9_-]{0,63}$/.test(s) ? s : null;
+};
+
 router.post('/bakers/self', requireAuth, selfSignupLimit, async (req, res) => {
   try {
     const { data: existingUser } = await supabase
@@ -328,6 +345,9 @@ router.post('/bakers/self', requireAuth, selfSignupLimit, async (req, res) => {
     const { id } = await createBakerForUser({
       authUserId: req.user.id,
       name, slug,
+      // Where they came from, if the link that started this carried it — see migration 131.
+      signupSource:   campaignTag(req.body.signup_source),
+      signupCampaign: campaignTag(req.body.signup_campaign),
       // Proved a few lines up — the gate above refuses this request otherwise, so `true` here is a
       // fact this handler established rather than an assumption it is passing on.
       primaryUser: { first_name: firstName, last_name: lastName, email: ownerEmail, phone: phone.e164, phone_verified: true },

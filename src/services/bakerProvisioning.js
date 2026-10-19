@@ -122,6 +122,10 @@ export async function createBakerForUser({
   email, tagline, instagram_handle, website_url,
   primary_color, accent_color, logo_url,
   currency_code, timezone, primaryUser, phoneCountry,
+  // Where this account came from, first touch — see migration 131. Already narrowed to a short
+  // slug by the caller; absent for every path that is not a self-signup off a campaign link, which
+  // is most of them.
+  signupSource = null, signupCampaign = null,
 }) {
   // Idempotent: a user owns AT MOST ONE baker (enforced by the unique index on
   // bakers.auth_user_id — migration 012). If they already have one, return it
@@ -154,6 +158,13 @@ export async function createBakerForUser({
       // collected later via the profile screen. The onboarding phone is the OWNER's,
       // stored on baker_appusers below (see migration 015).
       is_active:        true,
+      /* ⚠️ WRITTEN AT BIRTH AND NEVER AGAIN. This is a fact about where the account came from, so
+         it belongs to the insert and to nothing else — there is deliberately no update path. The
+         idempotent early return above means a retried signup keeps the tag the FIRST attempt
+         carried, which is the honest answer: a baker who starts over in a new tab did not arrive
+         from a second campaign. */
+      signup_source:    signupSource   || null,
+      signup_campaign:  signupCampaign || null,
     })
     .select('id')
     .single();
