@@ -101,7 +101,12 @@ const DOLL = {
   // Matched across the call's whole argument object: `[^)]*` stops at the first `)`, which is the
   // one inside toPublicUrl(imageKey), so it never reached the argument that matters.
   ok(/suggestBuildGuide\(\{[\s\S]{0,300}?\broles\b/.test(gen), 'the roles are passed to the prompt');
-  ok(/build-guide-v4/.test(gen), 'the prompt version records the change');
+  /* v4 OR LATER, not v4 exactly. What this asserts is that whoever added the roles feature also
+     BUMPED the lineage — without that, every guide claims the same provenance and the stale ones
+     cannot be found. A later bump satisfies that just as well, and pinning the literal string turns
+     the next honest bump into a gate failure, which teaches people to edit the gate rather than
+     read it. (v5, 2026-10-22, spends the guide on the signature feature.) */
+  ok(/build-guide-v([4-9]|\d{2,})/.test(gen), 'the prompt version records the change');
 
   const ai = readFileSync(new URL('../src/services/openai.js', import.meta.url), 'utf8');
   ok(/roles = \[\]/.test(ai), 'suggestBuildGuide accepts roles');

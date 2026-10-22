@@ -406,6 +406,19 @@ export function buildEmail(typeSlug, recipientEmail, payload) {
   // JSX `{/* … */}` block. This file is plain JS and that is not a comment — it is text, and it
   // rendered into the email a baker receives. Notes about the copy go out here; only copy goes in
   // there.
+  // ⚠️ THE CATALOGUE IS THE MISSING MIDDLE, and the list went from three steps to five because of
+  // it. Sandeep: "we need to introuce a point about the catalogue. like - Explore spattoo's 3d cakes
+  // library. 4th one - create your catalogue by either by adding cakes from library or your own cake
+  // images. then 5th one is about publish storefront." Branding and the designer told a baker how to
+  // make ONE cake; publishing told them to open a shop. Nothing said how the shop gets anything in
+  // it, which is the step between the two and the one a storefront is empty without.
+  //
+  // ⚠️ THE WORDS ARE THE ONBOARDING SCREEN'S, not new ones. That screen already says "Create your
+  // catalogue — Select cakes from Library … or upload photos of cakes you have already made", and it
+  // is the screen this email follows minutes later. A second vocabulary for one idea ("gallery",
+  // "collection", "your cakes") is how a baker ends up unsure whether they are two features; the
+  // root CLAUDE.md's rule about grepping a label before rewording it is the same rule one surface
+  // over.
   if (typeSlug === 'baker_welcome') {
     const who          = esc(p.firstName || p.bakerName || 'there');
     const storefront   = p.slug ? config.storefront.urlTemplate.replace('{slug}', p.slug) : null;
@@ -419,6 +432,8 @@ export function buildEmail(typeSlug, recipientEmail, payload) {
         <ol style="margin:0;padding-left:20px;line-height:1.9;">
           <li>Add your branding — logo &amp; colours</li>
           <li>Explore the 3D cake designer — visualise a cake in seconds</li>
+          <li>Explore the Library — Spattoo's 3D cake designs, ready to use</li>
+          <li>Create your catalogue — add cakes from the Library, or upload photos of cakes you have already made</li>
           <li>Publish your storefront${storefrontLc ? ` at <b>${esc(storefrontLc)}</b>` : ''} and share the link — customers can ask for a cake straight from it</li>
         </ol>
         ${dashUrl ? `<p style="margin:24px 0 0;text-align:center;"><a href="${escUrl(dashUrl)}" style="display:inline-block;background:#2C4433;color:#ffffff;text-decoration:none;font-size:16px;font-weight:700;padding:14px 34px;border-radius:12px;">Open your dashboard &rarr;</a></p>` : ''}`),

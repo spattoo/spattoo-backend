@@ -48,7 +48,29 @@ import { visionImageKey, decorationDimension, knownRoles } from './decorationPol
 // rather than from what a model thinks it can see. A part being hard to see is now explicitly not a
 // reason to omit it. Unsegmented decorations are unchanged — they still have nothing to read.
 //
-export const GUIDE_PROMPT_VERSION = 'build-guide-v4';
+// v5 (2026-10-22) spends the guide on the part nobody can guess. Reported on a mermaid tail:
+// *"its build guide does not show how to make those folds. guide is vagues and nearly useless in
+// this case."* He was right, and it was not a one-off — across the 83 catalogue guides that should
+// have steps, 49% had a step of a single sentence and 20% had a shaping step naming a LOOK with no
+// number in it. The tail's read "gently press into the fondant to create lines along the tail for a
+// textured look": the result described, the method withheld, while cutting the outline — the half
+// anyone can see from the picture — got two steps of its own.
+//
+// ⚠️ v3 ALREADY DEMANDED THE MOVEMENT, and this still happened, because v3's rule is about a step
+// that changes a piece's SHAPE — loops, petals, a curve. Marks pressed INTO a face change no
+// silhouette, so relief fell straight through it. v5 adds the missing half: name the one feature
+// that makes the decoration recognisable, give it its own step and the most detail in the guide,
+// and for anything pressed, scored, veined or quilted say HOW MANY, WHICH WAY it runs, and HOW
+// DEEP. Preparation stops taking a step of its own, because a 4-step guide cannot spare one.
+//
+// ⚠️ MEASURED BEFORE IT WAS BELIEVED, and the first idea failed. The obvious cause was that the
+// model cannot SEE the folds in one flat-on thumbnail, so the first attempt rendered the GLB from
+// three angles and sent all three. Over 4 runs each that moved a ridge-forming step from 2/4 to
+// 3/4 and made the numbers slightly WORSE — inside the noise, for a change that would have cost a
+// capture surface in admin and new plumbing through the API. The pictures were never the
+// bottleneck; the asking was. The prompt rule, over 5 runs each: "how many" 2/5 → 5/5, "which way"
+// 2/5 → 5/5, and the guide got shorter (5.0 → 4.0 steps) rather than longer.
+export const GUIDE_PROMPT_VERSION = 'build-guide-v5';
 
 // Generate and store the guide for ONE element.
 //

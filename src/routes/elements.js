@@ -9,7 +9,7 @@ import { config } from '../config.js';
 import { cutOutSubject } from '../services/backgroundRemoval.js';
 import { jobQueue } from '../jobs/queue.js';
 import { reindexElement } from '../services/elementIndex.js';
-import { generateWebpThumbnail } from '../services/thumbnails.js';
+import { generateWebpVariant, generateRenderVariant } from '../services/thumbnails.js';
 import { putObject, objectExists } from '../services/r2.js';
 import { elementClosure } from '../lib/promotionBundle.js';
 import { rewriteAssetHost } from '../lib/assetKeys.js';
@@ -25,14 +25,22 @@ const router = Router();
 import { toPublicUrl } from '../lib/publicUrl.js';
 export { toPublicUrl };
 
-// Every element response resolves the same three R2 keys to public URLs. One helper, so a fourth
+// Every element response resolves the same four R2 keys to public URLs. One helper, so a fifth
 // asset column (or a change to how keys resolve) lands in ONE place instead of four call sites.
+//
+// ⚠️ `render_key` IS RESOLVED HERE AND CHOSEN NOWHERE. This returns both the master and its small
+// copy and lets the consumer pick, because the two consumers want different ones and neither can be
+// talked out of it: the 3D cake wants the small one (a quarter of the GPU memory — migration 132),
+// and an edible print wants the master (300 dpi; 1024 px is 87 mm of printed decoration). Resolving
+// `image_url` to the small copy here would halve every printed sheet's resolution silently, and
+// nobody would find out until a cake came out soft.
 function withPublicUrls(el) {
   return {
     ...el,
     image_url:     toPublicUrl(el.image_url),
     thumbnail_url: toPublicUrl(el.thumbnail_url),
     thumb_key:     toPublicUrl(el.thumb_key),
+    render_key:    toPublicUrl(el.render_key),
   };
 }
 
@@ -65,10 +73,31 @@ function glbStatColumns(body) {
 // rather than growing a second copy that drifts. An element is an element, whoever made it.
 export async function ensureThumbKey(id, thumbnailKey) {
   try {
-    const webpKey = await generateWebpThumbnail(thumbnailKey);
+    const webpKey = await generateWebpVariant(thumbnailKey);
     if (webpKey) await supabase.from('cake_elements').update({ thumb_key: webpKey }).eq('id', id);
   } catch (e) {
     console.error('thumb_key generation failed:', e.message);
+  }
+}
+
+// Generate (or refresh) the ≤512 copy the 3D cake is textured from and store its key (migration
+// 132). The same fire-and-forget shape as ensureThumbKey above, for the same reason: it is a
+// derived picture, and an element that is published a second later without one simply renders from
+// its master until this lands.
+//
+// ⚠️ A MISS IS NOT A FAILURE. Most of the catalogue has nothing to make here — a `.glb` is 3D, an
+// `.svg` has no resolution to reduce, a calendar carries no artwork at all — so
+// generateRenderVariant returns null and the column stays null, which the renderer reads as "draw
+// the master". Nothing is logged for those, because there is nothing wrong with them.
+//
+// EXPORTED for the same reason ensureThumbKey is: the baker-facing create path (routes/uploads.js)
+// runs the SAME post-create work rather than growing a second copy that drifts.
+export async function ensureRenderKey(id, imageKey) {
+  try {
+    const renderKey = await generateRenderVariant(imageKey);
+    if (renderKey) await supabase.from('cake_elements').update({ render_key: renderKey }).eq('id', id);
+  } catch (e) {
+    console.error('render_key generation failed:', e.message);
   }
 }
 
@@ -425,7 +454,7 @@ router.get('/elements', requireAuth, requireCapability('design:create'), async (
   try {
     const { element_type_id, category_id, parents_only } = req.query;
 
-    const ELEM_FIELDS = 'id, name, description, image_url, thumbnail_url, thumb_key, element_type_id, category_id, allowed_zones, placement_config, allowed_actions, default_color, sort_order';
+    const ELEM_FIELDS = 'id, name, description, image_url, thumbnail_url, thumb_key, render_key, element_type_id, category_id, allowed_zones, placement_config, allowed_actions, default_color, sort_order';
 
     if (parents_only === 'true') {
       // SEC-7: global elements + the caller's own tenant only (never another baker's private lib).
@@ -526,7 +555,7 @@ router.post(
    does not ASK for it: Manage Elements' Today / 7 days filter could only compare `created_at`, so
    an element authored in March and edited this morning read as old. Sandeep: *"they are displaying
    only based on the created date i think, it should also show based on modified date."* */
-const ADMIN_ELEM_FIELDS = 'id, created_at, updated_at, name, description, image_url, thumbnail_url, thumb_key, element_type_id, category_id, parent_id, allowed_zones, placement_config, allowed_actions, default_color, sort_order, is_active, baker_id, file_size, asset_class, tri_count, texture_max_dim, decoded_mem_kb, optimized_size_kb, over_cap, medium';
+const ADMIN_ELEM_FIELDS = 'id, created_at, updated_at, name, description, image_url, thumbnail_url, thumb_key, render_key, element_type_id, category_id, parent_id, allowed_zones, placement_config, allowed_actions, default_color, sort_order, is_active, baker_id, file_size, asset_class, tri_count, texture_max_dim, decoded_mem_kb, optimized_size_kb, over_cap, medium';
 
 // asset_class is a compact surrogate in the DB; admin clients speak the readable key (schema-scale rule).
 const toAdminElement = el => ({ ...withPublicUrls(el), asset_class: ASSET_CLASS_KEY[el.asset_class] ?? null });
@@ -1050,6 +1079,10 @@ router.patch('/admin/elements/:id', requireAuth, requireCapability('catalog:admi
       reindexElement(id).catch(e => console.error('reindex(update) failed:', e.message));
     // Regenerate the optimised WebP thumbnail when the raw thumbnail changed. Fire-and-forget.
     if ('thumbnail_url' in updates) ensureThumbKey(id, updates.thumbnail_url);
+    // ...and the ≤512 copy the cake is textured from, when the MASTER artwork changed. A replaced
+    // asset gets a fresh uuid, so the old render_key would otherwise keep pointing at the picture
+    // the admin just replaced — right row, previous decoration, nothing logged.
+    if ('image_url' in updates) ensureRenderKey(id, updates.image_url);
   } catch (err) {
     serverError(req, res, err);
   }
@@ -1131,9 +1164,48 @@ router.post('/admin/elements', requireAuth, requireCapability('catalog:admin'), 
     reindexElement(data.id).catch(e => console.error('reindex(create) failed:', e.message));
     // Generate the optimised WebP picker thumbnail (raw PNG stays as the source). Fire-and-forget.
     ensureThumbKey(data.id, thumbnail_url);
+    // ...and the ≤512 copy the cake is textured from (the master stays as the source). Fire-and-forget.
+    ensureRenderKey(data.id, image_url);
     // A catalogue decoration should ARRIVE with its guide, so that no baker is ever the one who
     // triggers it. Ours to pay for and therefore unmetered.
     ensureDecorationGuide(data.id);
+  } catch (err) {
+    serverError(req, res, err);
+  }
+});
+
+// ── POST /admin/elements/:id/render-variant — make the ≤512 copy now ────────────────────────────
+//
+// Every element created from migration 132 onwards gets one at ingest, and an element whose master
+// is REPLACED gets a fresh one. Neither covers the element that already existed, and there are
+// hundreds of those — so without this the only way to give an old decoration its render copy is
+// `scripts/backfillRenderVariants.mjs`, which needs R2 credentials and a terminal. Manage Elements
+// shows whether a row has one; this is the button beside it.
+//
+// ⚠️ AWAITED, NOT FIRE-AND-FORGET, unlike ensureRenderKey's two other callers. Somebody pressed a
+// button and is watching: the answer is the key, or the reason there isn't one. The ingest paths
+// are fire-and-forget because nobody is waiting on them and a slow sharp() must not hold up a
+// publish.
+//
+// Idempotent. The derived key is a pure function of the master (`<master>-512.webp`), so pressing
+// this twice writes the same bytes to the same key — which is also why it is safe under the
+// immutable cache header every object carries (scripts/check-object-keys.mjs).
+router.post('/admin/elements/:id/render-variant', requireAuth, requireCapability('catalog:admin'), async (req, res) => {
+  try {
+    const { data: el, error } = await supabase
+      .from('cake_elements').select('id, image_url').eq('id', req.params.id).single();
+    if (error || !el) return res.status(404).json({ error: 'No such element' });
+
+    const renderKey = await generateRenderVariant(el.image_url);
+    // Null is a legitimate answer, not a failure: a 3D model, an SVG, or an element with no artwork
+    // at all has no smaller copy to make, and the renderer draws the master. Say so plainly rather
+    // than returning a 400 for a row that is perfectly correct.
+    if (!renderKey) return res.json({ render_key: null, reason: 'No raster master to resize (3D model, SVG, or no artwork)' });
+
+    const { error: upErr } = await supabase
+      .from('cake_elements').update({ render_key: renderKey }).eq('id', el.id);
+    if (upErr) return serverError(req, res, upErr);
+    res.json({ render_key: renderKey, url: toPublicUrl(renderKey) });
   } catch (err) {
     serverError(req, res, err);
   }
