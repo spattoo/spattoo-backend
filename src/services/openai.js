@@ -1201,6 +1201,21 @@ export async function generateDecorationStages(referenceBuffer, { title, steps =
     `SHOW THE WHOLE OF EACH STEP. If a step cuts five petals, show five petals being cut and laid ` +
     `out. If it assembles a flower, show the petals going together into the flower. The picture ` +
     `should carry the step on its own, so a baker who reads nothing still knows what to do.\n\n` +
+    /* ⚠️ A STEP THAT MARKS A SURFACE IS THE ONE THAT GETS SKIPPED, and until now only the FLAT
+       branch was warned about skipping anything ("SHOW THE CUTTING"); a 3D decoration got no such
+       rule at all — the ternary's else is empty. Reported on a mermaid tail, twice: the sheet goes
+       straight from the cut outline to a finished, fully ridged tail, so the one operation that
+       makes it a mermaid tail is never shown. Cutting and assembly are easy to draw because the
+       piece CHANGES; pressing ridges into a face is easy to draw badly, because the quickest
+       picture of "a ridged tail" is the finished object again. Naming what the panel must contain —
+       tool touching the piece, some marks made and some not — is what makes it a different
+       picture from the last panel. */
+    `A STEP THAT PRESSES, SCORES, VEINS OR QUILTS A SURFACE MUST SHOW IT HALF DONE. The tool is ` +
+    `touching the piece, mid-stroke; some of the marks are already there and the rest of the ` +
+    `surface is still blank, so it is obvious which way they run and where they start. Do NOT ` +
+    `draw the finished, fully marked decoration for that step — that is the last panel's job, and ` +
+    `a sheet that jumps from a plain cut-out to a finished textured piece has hidden the only ` +
+    `part a baker could not work out alone.\n\n` +
     `LAYOUT: a clean grid of panels, one per step, in reading order — left to right, then down. ` +
     `The finished decoration is the last panel. Use as many panels as the steps need. White ` +
     `background, soft even lighting, photorealistic, shot straight down.\n\n` +
