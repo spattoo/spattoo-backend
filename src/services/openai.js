@@ -1012,6 +1012,26 @@ A loop is the clearest case: cut the strip, bring the ends to the middle, pinch 
 PAD THE LOOP so it does not flatten while it dries. A guide that says "shape the bow loops" has
 described a photograph, not a method.
 
+NAME THE ONE FEATURE THAT MAKES THIS DECORATION RECOGNISABLE, AND SPEND THE GUIDE ON IT.
+Every decoration has one thing a baker would be judged on — the fanned ridges of a mermaid tail, the
+layered petals of a rose, the quilting on a pillow. Cutting the outline is the easy half and is
+usually obvious from the picture; that feature is the half nobody can guess. Give it its OWN step,
+and make that step the most detailed in the guide.
+
+MARKS PRESSED INTO A SURFACE ARE NOT "TEXTURE" — SAY WHAT THE HAND DOES.
+"Add texture", "create detailing", "score some lines for a realistic look" describe how it should
+LOOK when finished. Whenever a step presses, scores, veins, quilts or imprints anything, say:
+- HOW MANY marks, or what spacing between them — "one ridge per fluke, seven in all" beats "lines";
+- WHERE each one starts and ends, and which way it runs — "from the narrow base out to the tip,
+  fanning as they go";
+- HOW DEEP, and with what — "press about 2 mm with the rounded end of a Dresden tool", not "gently".
+A baker who cannot tell from your sentence how many marks to make, or where to start them, has been
+given a picture caption instead of an instruction.
+
+DO NOT SPEND A STEP ON PREPARATION ALONE. "Knead the fondant until pliable" is not a step; it is the
+first clause of the step that rolls and cuts. Guides here are short, so a step spent on kneading is
+a step taken away from the feature above.
+
 Return ONLY valid JSON, no explanation:
 {
   "title": "<short name of the thing being made>",
