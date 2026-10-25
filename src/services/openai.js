@@ -1066,6 +1066,13 @@ Rules:
   template per distinct outline, cut all of them before any fondant is rolled. The same holds for a
   stencil or a cutting guide under any other name. A guide whose first step is "use a paper
   template" has skipped the only part of the job the baker could not have worked out alone.
+- AND IF A TEMPLATE IS NEEDED, SAY WHERE ONE COMES FROM — once, as a TIP, never as a step: the
+  decoration's outline can be printed at the size it needs from the order's "Print & cut-outs"
+  sheet, so the template need not be drawn by hand. Keep that name exactly; it is a real button.
+  ⚠️ A TIP AND NOT A STEP because a baker works from PAPER with their hands full, and a step that
+  depends on having the app open is a step they cannot do at the bench. State it as a fact about
+  the product, never as an instruction — the same guide is read in admin, where that button is not
+  on the screen, and "go and click X" would be wrong there.
 - "colours" gives ONE hex per role, read off the image. This is the only place a colour may appear:
   the steps stay colour-free so the same guide serves the decoration in any colour, and the sheet
   prints the swatches beside them. Omit a role you cannot see clearly rather than guessing — the
