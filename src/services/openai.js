@@ -1060,6 +1060,12 @@ Rules:
   step with an empty tools array reads as though it needs none. Tools must be real and namable
   (Rolling Pin, Craft Knife, Ball Tool, Dresden Tool, Veiner, Brush (Water), Fondant Smoother,
   Round Cutter, Paper Template).
+- A PAPER TEMPLATE IS MADE, NOT OWNED. Nobody has a tiger-shaped template in a drawer. If ANY step
+  cuts around one, then STEP 1 of the guide must be MAKING it: print the shape at the size it needs
+  to be, or draw it by eye, then cut it out of paper or thin card. Say which pieces need one — one
+  template per distinct outline, cut all of them before any fondant is rolled. The same holds for a
+  stencil or a cutting guide under any other name. A guide whose first step is "use a paper
+  template" has skipped the only part of the job the baker could not have worked out alone.
 - "colours" gives ONE hex per role, read off the image. This is the only place a colour may appear:
   the steps stay colour-free so the same guide serves the decoration in any colour, and the sheet
   prints the swatches beside them. Omit a role you cannot see clearly rather than guessing — the
