@@ -18,6 +18,7 @@ import { supabase } from '../services/supabase.js';
 import { searchHelp } from '../services/helpSearch.js';
 import { logQuestion, markAnswered } from '../services/helpLog.js';
 import { escalateQuestion } from '../services/helpEscalate.js';
+import { outOfScope } from '../services/helpScope.js';
 
 const router = Router();
 
@@ -31,19 +32,31 @@ router.post('/help/search', requireAuth, attachBakerContext, async (req, res) =>
        is priced per token. A question is a sentence. */
     const text = question.slice(0, 600);
     const n = Math.min(Math.max(parseInt(limit, 10) || 4, 1), 8);
-    const { sections } = await searchHelp(text, { limit: n });
+    /* ⚠️ BEFORE RETRIEVAL, DELIBERATELY. It costs nothing (no embedding call), it is
+       deterministic, and it is independent of whatever answers the question — so it still holds
+       the day a model is doing the writing, when "it will not say that" stops being a property of
+       the code and becomes a sentence in a prompt. See services/helpScope.js for why it is narrow:
+       "how many orders did I get last month" is a real question one word from a probe. */
+    const declined = outOfScope(text);
+
+    const { sections } = declined ? { sections: [] } : await searchHelp(text, { limit: n });
 
     /* ⚠️ EVERY QUESTION IS RECORDED, NOT ONLY THE ONES THAT FAIL — without the answered ones there
        is no denominator, and "nine complaints" means nothing when you cannot tell it from nine out
        of ninety. The id goes back so the panel can report a verdict against this exact question.
        It never blocks or fails the answer: see services/helpLog.js. */
+    /* Logged either way — a baker probing is worth knowing about, and a declined question that
+       turns out to be ordinary is how we find out the guard is too wide. */
     const questionId = await logQuestion({
       question: text, sections, bakerId: req.bakerId ?? null, userId: req.user?.id ?? null,
     });
 
     /* `question` travels back so the panel can show what was actually asked against an empty
        result — "we have nothing written about that" reads very differently from a silent panel. */
-    res.json({ ok: true, question: text, sections, questionId });
+    /* `outOfScope` rather than an empty result, so the panel can say "I only help with using
+       Spattoo" instead of "nothing is written about that" — which would be untrue and would invite
+       them to rephrase a question we are never going to answer. */
+    res.json({ ok: true, question: text, sections, questionId, outOfScope: declined ?? null });
   } catch (err) {
     serverError(req, res, err);
   }
