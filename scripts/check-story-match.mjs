@@ -9,7 +9,10 @@
  * Run by `npm run check` with the other gates.
  */
 
-import { rankTemplates, evidenceOf, EVIDENCE_FLOOR, MAX_EVIDENCE } from '../src/services/storyRank.js';
+import {
+  rankTemplates, evidenceOf, EVIDENCE_FLOOR, MAX_EVIDENCE,
+  genderOf, suitsAge, applyAudience, subjectOf, AGE_CEILING, GENDER_PENALTY,
+} from '../src/services/storyRank.js';
 
 let failed = 0;
 const ok = (cond, what) => { if (!cond) { failed++; console.error(`  ✗ ${what}`); } };
@@ -102,6 +105,62 @@ ok(rankTemplates({ hits: [{ id: 'e1', similarity: 0.9 }], links: [{ template_id:
   const hits = Array.from({ length: 20 }, (_, i) => ({ id: `e${i}`, similarity: 0.9 - i * 0.01 }));
   const links = hits.map((h, i) => ({ template_id: `t${i}`, element_id: h.id }));
   ok(rankTemplates({ hits, links, limit: 5 }).length === 5, 'limit caps the list');
+}
+
+
+// ── who the cake is for ─────────────────────────────────────────────────────────────────────────
+/* ⚠️ THIS HALF SHIPPED UNBUILT ONCE ALREADY. `subjectOf` pulled the 8 out of "a super hero cake for
+   8 year old boy", handed it back, and nothing used it — so a story about an eight-year-old ranked
+   a wedding cake exactly as highly as a children's one. These are the properties that says it. */
+ok(genderOf('a cake for my 8 year old boy') === 'boys', 'a boy is read from the story');
+ok(genderOf('my daughter likes makeup kits') === 'girls', 'a daughter is read as girls');
+ok(genderOf('she loves doing her nails') === 'girls', 'pronouns count too');
+ok(genderOf('i need a birthday cake') === null, 'a story that says nothing gives nothing');
+/* ⚠️ REFUSES TO GUESS WHEN BOTH ARE NAMED. "for my son and daughter" names two people; picking one
+   files the cake under half the request. */
+ok(genderOf('a cake for my son and daughter') === null, 'two genders named is not a signal');
+
+/* ⚠️ THE GENDER WORDS LEAVE THE SUBJECT once they have been read — they describe the person, never
+   the cake. "daughter makeup kits" was embedding a word about no cake at all. */
+ok(!subjectOf('my daughter likes makeup kits').subject.includes('daughter'), 'gender words leave the subject');
+ok(subjectOf('my daughter likes makeup kits').subject.includes('makeup'), '…and the subject survives');
+
+// ⚠️ MIRRORS core's matchesAge. The two surfaces must agree about the same template.
+ok(suitsAge({ min_age: 1, max_age: 10 }, 8), 'an 8-year-old fits a 1–10 cake');
+ok(!suitsAge({ min_age: 20, max_age: 99 }, 8), 'and does not fit a 20–99 cake');
+ok(suitsAge(null, 8) && suitsAge({}, 8), 'a cake with no range stated excludes nobody');
+ok(suitsAge({ min_age: 1, max_age: 10 }, null), 'no age asked for excludes nobody');
+/* ⚠️ THE CEILING MEANS "18 OR OLDER", NOT EXACTLY 18 — core's own comment. Testing 18 exactly
+   would drop every design whose min_age is 20, Couple (20–99) among them. */
+ok(suitsAge({ min_age: 20, max_age: 99 }, AGE_CEILING), 'at the ceiling, a 20–99 cake still counts');
+ok(!suitsAge({ min_age: 1, max_age: 10 }, AGE_CEILING), '…but one that stops at 10 does not');
+
+// ── age excludes, gender only demotes ───────────────────────────────────────────────────────────
+{
+  const ranked = [{ templateId: 'kids', score: 0.5 }, { templateId: 'adult', score: 0.9 }];
+  const byId = new Map([
+    ['kids',  { attrs: { min_age: 1, max_age: 10 }, genders: ['girls'] }],
+    ['adult', { attrs: { min_age: 20, max_age: 99 }, genders: ['anyone'] }],
+  ]);
+  const out = applyAudience(ranked, { ages: [8], gender: null }, byId);
+  ok(out.length === 1 && out[0].templateId === 'kids', 'an age mismatch is excluded, however well it scored');
+}
+{
+  const ranked = [{ templateId: 'girly', score: 0.9 }, { templateId: 'neutral', score: 0.7 }];
+  const byId = new Map([
+    ['girly',   { attrs: null, genders: ['girls'] }],
+    ['neutral', { attrs: null, genders: ['anyone'] }],
+  ]);
+  const out = applyAudience(ranked, { ages: [], gender: 'boys' }, byId);
+  ok(out[0].templateId === 'neutral', 'a gender mismatch is demoted below a neutral cake');
+  ok(out.length === 2, '…but never removed — a catalogue that leans one way must still answer');
+  ok(out.find(r => r.templateId === 'girly')?.audience === 'other gender', 'and it says why it dropped');
+  ok(GENDER_PENALTY > 0 && GENDER_PENALTY < 1, 'the penalty reorders rather than buries');
+}
+{
+  const byId = new Map([['t', { attrs: null, genders: [] }]]);
+  const out = applyAudience([{ templateId: 't', score: 0.8 }], { ages: [], gender: 'boys' }, byId);
+  ok(out[0].score === 0.8, 'a template that states no gender is not penalised for saying nothing');
 }
 
 if (failed) { console.error(`\n✗ check:story-match — ${failed} property/properties broken\n`); process.exit(1); }

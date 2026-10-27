@@ -164,7 +164,96 @@ export function subjectOf(story) {
   const raw = String(story ?? '').toLowerCase();
   const ages = [];
   const rest = raw.replace(AGE_PHRASE, (_, n) => { ages.push(parseInt(n, 10)); return ' '; });
+  /* ⚠️ GENDER WORDS COME OUT TOO, now that `genderOf` reads them off the raw story. They describe
+     the PERSON, never the cake — "daughter makeup kits" was embedding a word about no cake at all.
+     Taking them out sharpens the subject and costs nothing, because the signal was already read. */
   const words = rest.split(/[^a-z0-9]+/)
-    .filter(w => w.length > 2 && !DOMAIN_NOISE.has(w) && !ASKING.has(w));
+    .filter(w => w.length > 2 && !DOMAIN_NOISE.has(w) && !ASKING.has(w) && !GENDER_VOCAB.has(w));
   return { subject: words.join(' ') || String(story ?? '').trim(), ages, words };
+}
+
+/* ── Who the cake is FOR ─────────────────────────────────────────────────────────────────────────
+ *
+ * ⚠️ THIS WAS THE HALF OF MY OWN DESIGN THAT WAS NOT BUILT. The header above says "elements for the
+ * subject, tags and attrs for the audience", and only the subject half existed: `subjectOf` pulled
+ * "8" out of "a super hero cake for 8 year old boy", handed it back, and nothing used it. A story
+ * mentioning an eight-year-old ranked a wedding cake exactly as highly as a children's one.
+ *
+ * ⚠️ AGE EXCLUDES, GENDER ONLY DEMOTES, and the asymmetry is about what each one means. A design
+ * authored for 20–99 is not a cake for an eight-year-old — that is a fact about the cake, and the
+ * catalogue filter already excludes on it, so this must agree or the two surfaces disagree about
+ * the same template. A gender tag is softer: a cake tagged Girls is not unusable for a boy, it is
+ * the wrong first suggestion. Excluding it would also empty the results for any baker whose
+ * catalogue leans one way, which is the opposite of helpful.
+ */
+
+/* Boys · Girls · Anyone — the three gender tags, by slug. */
+const GENDER_WORDS = {
+  boys:  ['boy', 'boys', 'son', 'grandson', 'nephew', 'brother', 'husband', 'father', 'dad', 'he', 'him', 'his'],
+  girls: ['girl', 'girls', 'daughter', 'granddaughter', 'niece', 'sister', 'wife', 'mother', 'mum', 'mom', 'she', 'her'],
+};
+
+/**
+ * Who the story is about — read from the words a person actually uses.
+ *
+ * ⚠️ IT READS THE RAW STORY, NOT THE SUBJECT. `subjectOf` strips "she" and "her" as asking-words,
+ * so by then the signal is gone; and the relationship words it does NOT strip ("daughter") were
+ * polluting the subject instead — "daughter makeup kits" embeds a word about no cake at all.
+ * Reading them here lets `subjectOf` drop them too, which cleans the subject and buys the audience
+ * signal from the same words.
+ *
+ * ⚠️ AND IT REFUSES TO GUESS WHEN A STORY SAYS BOTH. "a cake for my son and daughter" names two
+ * people; picking one would quietly file the cake under half the request. Null means "not said",
+ * which is the honest reading and leaves every template on equal footing.
+ */
+export function genderOf(story) {
+  const words = new Set(String(story ?? '').toLowerCase().split(/[^a-z]+/).filter(Boolean));
+  const hits = Object.entries(GENDER_WORDS)
+    .filter(([, list]) => list.some(w => words.has(w)))
+    .map(([slug]) => slug);
+  return hits.length === 1 ? hits[0] : null;
+}
+
+/** Every word that carries a gender signal — `subjectOf` drops these once they have been read. */
+export const GENDER_VOCAB = new Set([...GENDER_WORDS.boys, ...GENDER_WORDS.girls]);
+
+/* ⚠️ MIRRORS core's `matchesAge` (designer/templateFilter.js), WHICH OWNS THE RULE. Core cannot be
+   imported here — spattoo-api does not depend on @spattoo/designer, and taking that dependency for
+   five lines would be worse than this. The duplication is real and is why `check:story-match` pins
+   the two behaviours core's own comment calls out: a bare number is not an age (handled upstream in
+   `subjectOf`), and the ceiling means "18 or older" rather than exactly 18 — testing 18 exactly
+   would drop every design whose `min_age` is 20, Couple (20–99) among them. */
+export const AGE_CEILING = 18;
+
+export function suitsAge(attrs, n) {
+  if (!Number.isInteger(n)) return true;
+  if (n >= AGE_CEILING) return !(attrs?.max_age != null && attrs.max_age < AGE_CEILING);
+  if (attrs?.min_age != null && attrs.min_age > n) return false;
+  if (attrs?.max_age != null && attrs.max_age < n) return false;
+  return true;
+}
+
+/** How much a gender mismatch costs. Enough to reorder, not enough to bury. */
+export const GENDER_PENALTY = 0.35;
+
+/**
+ * Apply the audience to a ranked list.
+ *
+ *   audience  { ages: [8], gender: 'boys' | null }
+ *   byId      Map(templateId → { attrs, genders: ['girls'] })
+ */
+export function applyAudience(ranked, audience, byId) {
+  const ages = audience?.ages ?? [];
+  const want = audience?.gender ?? null;
+  return ranked
+    .filter(r => ages.every(n => suitsAge(byId.get(r.templateId)?.attrs, n)))
+    .map((r) => {
+      const genders = byId.get(r.templateId)?.genders ?? [];
+      /* "Anyone" is not a mismatch with anything, and a template with no gender tag has said
+         nothing — neither should be penalised for a story that mentions a boy. */
+      const mismatch = !!want && genders.length > 0
+        && !genders.includes('anyone') && !genders.includes(want);
+      return mismatch ? { ...r, score: +(r.score * (1 - GENDER_PENALTY)).toFixed(4), audience: 'other gender' } : r;
+    })
+    .sort((a, b) => (b.score - a.score) || String(a.templateId).localeCompare(String(b.templateId)));
 }

@@ -31,7 +31,7 @@
 import { supabase } from './supabase.js';
 import { embedText } from './openai.js';
 import { retrieve } from './inspirationMatch.js';
-import { rankTemplates, subjectOf } from './storyRank.js';
+import { rankTemplates, subjectOf, genderOf, applyAudience } from './storyRank.js';
 
 /* How many elements to pull from the index before rolling up. Wider than the photo path's
    shortlist of 20: there we want the single best element for ONE decoration, here we want enough
@@ -41,7 +41,7 @@ const ELEMENT_POOL = 80;
 /** Embed a story, find the elements nearest it, and rank the templates that contain them. */
 export async function searchTemplatesByStory(story, { limit = 12, includeInactive = false } = {}) {
   const text = String(story ?? '').trim();
-  if (!text) return { templates: [], elements: [], subject: '', ages: [] };
+  if (!text) return { templates: [], elements: [], subject: '', ages: [], gender: null };
 
   /* ⚠️ `embedText` RETURNS `{ embedding, usage, model }`, NOT THE VECTOR. Handing the whole object
      to the cosine gives 0.000 against every element in the library — which looks exactly like "we
@@ -51,6 +51,7 @@ export async function searchTemplatesByStory(story, { limit = 12, includeInactiv
      ranks space above cars, because "theme cake" is in 37% and 70% of the catalogue's descriptions
      and "cars" is in almost none. */
   const { subject, ages } = subjectOf(text);
+  const gender = genderOf(text);
   const { embedding, usage } = await embedText(subject);
   /* ⚠️ THE SAME RETRIEVAL THE PHOTO PATH USES, not a second one. It already decides between the
      pgvector RPC and an in-JS cosine over the whole index, and on dev the RPC does not exist — so
@@ -58,7 +59,7 @@ export async function searchTemplatesByStory(story, { limit = 12, includeInactiv
   const hits = await retrieve(embedding, ELEMENT_POOL);
 
   const ids = hits.map(h => h.id);
-  if (!ids.length) return { templates: [], elements: [], subject, ages };
+  if (!ids.length) return { templates: [], elements: [], subject, ages, gender };
 
   const elements = new Map(hits.map(h => [h.id, { id: h.id, name: h.name }]));
   const { data: links } = await supabase
@@ -69,21 +70,39 @@ export async function searchTemplatesByStory(story, { limit = 12, includeInactiv
      tool printed `embedded: "undefined"` on exactly the queries that found nothing — the one case
      where you most need to know what was asked. A debugging surface that goes blank when it fails
      is worse than none. */
-  if (!ranked.length) return { templates: [], elements: [...elements.values()], usage, subject, ages };
+  if (!ranked.length) return { templates: [], elements: [...elements.values()], usage, subject, ages, gender };
 
   /* ⚠️ THE ACTIVE CHECK IS HERE, NOT IN THE JOIN. `template_elements` has no opinion about whether
      a template is still offered, and a retired cake surfacing in a search is worse than a thin
-     result. Fetched after ranking so one query covers however many came back. */
-  const { data: tpls } = await supabase
-    .from('cake_templates')
-    .select('id, name, thumbnail_url, tier_count, shape, is_active')
-    .in('id', ranked.map(r => r.templateId));
+     result. Fetched after ranking so one query covers however many came back.
+     ⚠️ AND THE AUDIENCE COMES WITH IT. Age lives on `cake_template_attrs` (77 of 79 carry a range)
+     and gender is a tag — neither is in the element index, which only knows what a cake is ABOUT.
+     Fetched for the RANKED set rather than filtered in the query, because the audience has to be
+     applied BEFORE the list is cut to `limit`: filtering afterwards would let twelve wedding cakes
+     fill the slots and then empty them. */
+  /* `templateIds`, not `ids` — that name is already the ELEMENT ids above, and reusing it shadowed
+     nothing and redeclared everything: `Identifier 'ids' has already been declared`, which takes
+     the whole server down at import time rather than at the route. check:bindings passed it;
+     check:boot is what caught it. */
+  const templateIds = ranked.map(r => r.templateId);
+  const [{ data: tpls }, { data: attrRows }, { data: genderRows }] = await Promise.all([
+    supabase.from('cake_templates')
+      .select('id, name, thumbnail_url, tier_count, shape, is_active').in('id', templateIds),
+    supabase.from('cake_template_attrs').select('template_id, min_age, max_age').in('template_id', templateIds),
+    supabase.from('template_tags').select('template_id, tags(slug, category)').in('template_id', templateIds),
+  ]);
   const byId = new Map((tpls ?? []).map(t => [t.id, t]));
+  const audienceOf = new Map();
+  for (const id of templateIds) audienceOf.set(id, { attrs: null, genders: [] });
+  for (const a of attrRows ?? []) audienceOf.get(a.template_id).attrs = a;
+  for (const g of genderRows ?? []) {
+    if (g?.tags?.category === 'gender' && g.tags.slug) audienceOf.get(g.template_id)?.genders.push(g.tags.slug);
+  }
 
-  const templates = ranked
-    .map(r => ({ ...byId.get(r.templateId), score: r.score, why: r.why }))
+  const templates = applyAudience(ranked, { ages, gender }, audienceOf)
+    .map(r => ({ ...byId.get(r.templateId), score: r.score, why: r.why, audience: r.audience ?? null }))
     .filter(t => t.id && (includeInactive || t.is_active))
     .slice(0, limit);
 
-  return { templates, elements: [...elements.values()], usage, subject, ages };
+  return { templates, elements: [...elements.values()], usage, subject, ages, gender };
 }
