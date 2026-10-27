@@ -64,6 +64,68 @@ function sectionsOf(raw) {
   flush(); return out;
 }
 
+/* ── --cases: grade the corpus against spattoo-docs/help/questions.json ──────────────────────────
+ *
+ * ⚠️ THE ASSERTION IS THE PHRASE, NOT THE ARTICLE. Checking only that the right article came back
+ * would have passed several questions that were not answered at all — the measured failure is
+ * retrieval finding the right article and that article not containing the fact. So a case passes
+ * only when the returned TEXT contains what a correct answer must say.
+ *
+ * ⚠️ AND IT READS THE LIVE INDEX, not the files on disk, because that is what a baker gets. If the
+ * backfill has not been run since an article changed, this says so by failing — which is the same
+ * thing spattoo-docs' push gate says, from the other end.
+ */
+if (process.argv.includes('--cases')) {
+  const { searchHelp } = await import('../src/services/helpSearch.js');
+  const CASES = join(HELP_DIR, 'questions.json');
+  const { cases } = JSON.parse(readFileSync(CASES, 'utf8'));
+
+  const out = { pass: [], wrongDoc: [], missingFact: [], nothing: [], toWrite: [], unexpected: [] };
+  for (const c of cases) {
+    const r = await searchHelp(c.q);
+    const hit = r.sections?.length ? r.sections : null;
+    const text = (hit ?? []).map(s => `${s.doc_title}\n${s.heading ?? ''}\n${s.body}`).join('\n');
+    const docOk = !c.doc || (hit ?? []).some(s => s.doc_slug === c.doc);
+    const factOk = (c.contains ?? []).every(p => text.toLowerCase().includes(String(p).toLowerCase()));
+    const row = { ...c, top: hit?.[0] ? `${hit[0].doc_slug}§${hit[0].heading ?? '(opening)'}` : '—',
+                  score: hit?.[0] ? hit[0].score : 0 };
+
+    if (c.status === 'to-write') {
+      /* ⚠️ A 'to-write' CASE THAT NOW PASSES IS NEWS, NOT NOISE. Somebody wrote the article and
+         this file was not updated — which would leave it on the to-do list forever. */
+      if (docOk && factOk && (c.contains ?? []).length) out.unexpected.push(row);
+      else out.toWrite.push(row);
+      continue;
+    }
+    if (!hit) out.nothing.push(row);
+    else if (!docOk) out.wrongDoc.push(row);
+    else if (!factOk) out.missingFact.push(row);
+    else out.pass.push(row);
+  }
+
+  const n = cases.filter(c => c.status !== 'to-write').length;
+  console.log(`${out.pass.length}/${n} answerable cases pass\n`);
+  const show = (label, rows, why) => {
+    if (!rows.length) return;
+    console.log(`${label} (${rows.length})${why ? ' — ' + why : ''}`);
+    for (const r of rows) {
+      console.log(`   "${r.q}"`);
+      console.log(`      got ${r.top} ${r.score ? `(${r.score.toFixed(3)})` : ''}`);
+      if (r.contains?.length) console.log(`      wanted text containing: ${r.contains.map(x => `"${x}"`).join(', ')}`);
+      if (r.note) console.log(`      ${r.note}`);
+    }
+    console.log('');
+  };
+  show('✗ NOTHING FOUND', out.nothing, 'nothing cleared the answer floor');
+  show('✗ WRONG ARTICLE', out.wrongDoc, 'retrieval missed');
+  show('✗ FACT MISSING', out.missingFact, 'right article, the answer is not in it');
+  show('! NOW ANSWERED', out.unexpected, 'mark these answerable in questions.json');
+  console.log(`○ still to write (${out.toWrite.length}):`);
+  for (const r of out.toWrite) console.log(`   ${r.q}${r.note ? `\n      ${r.note}` : ''}`);
+  process.exit(out.nothing.length + out.wrongDoc.length + out.missingFact.length ? 1 : 0);
+}
+
+
 let rows;
 if (existsSync(CACHE)) {
   rows = JSON.parse(readFileSync(CACHE, 'utf8'));
