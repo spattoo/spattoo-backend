@@ -22,7 +22,7 @@ import { cosine, rankSections } from './helpRank.js';
    working on an environment where the pgvector RPC was never created, which is the situation the
    element index is actually in on dev. If this grows, an RPC goes here and the ranking below does
    not change. */
-export async function searchHelp(question, { limit = 4, perDoc = 1 } = {}) {
+export async function searchHelp(question, { limit = 4, perDoc = 2 } = {}) {
   const text = String(question ?? '').trim();
   if (!text) return { sections: [], question: '' };
 

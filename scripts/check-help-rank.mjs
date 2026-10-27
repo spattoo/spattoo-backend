@@ -38,6 +38,9 @@ ok(rankSections([{ doc_slug: 'a', score: NaN }, { doc_slug: 'b', score: 'x' }]).
 /* The real corpus is internally similar by construction: "Changing the cake colour" has six
    sections that all mention tiers and cream. Unfiltered, they take every slot. */
 {
+  /* ⚠️ THE SHAPE THAT BROKE IT IN THE REAL CORPUS. "Can I use multi color sprinkles on cake?" put
+     two sections of the SAME article at 0.566 and 0.561 — and the answer was the second one. A cap
+     of one discarded it and answered with three unrelated articles instead. */
   const same = [
     { doc_slug: 'colour', heading: 'a', position: 0, score: 0.80 },
     { doc_slug: 'colour', heading: 'b', position: 1, score: 0.79 },
@@ -46,11 +49,12 @@ ok(rankSections([{ doc_slug: 'a', score: NaN }, { doc_slug: 'b', score: 'x' }]).
     { doc_slug: 'glaze',  heading: 'e', position: 0, score: 0.55 },
   ];
   const out = rankSections(same, { limit: 4 });
-  ok(out.length === 3, 'four slots over three articles returns three sections, not four');
-  ok(out.map(s => s.doc_slug).join() === 'colour,tiers,glaze', 'best article first, then the others');
-  ok(out[0].heading === 'a', 'and the best section of the winning article is the one shown');
-  const two = rankSections(same, { limit: 4, perDoc: 2 });
-  ok(two.filter(s => s.doc_slug === 'colour').length === 2, 'perDoc is honoured when a caller raises it');
+  ok(out.filter(s => s.doc_slug === 'colour').length === 2, 'the winning article may contribute a SECOND section');
+  ok(out[0].heading === 'a' && out[1].heading === 'b', 'and they are its two best, in order');
+  ok(new Set(out.map(s => s.doc_slug)).size >= 2, 'but never all four slots — another article still gets in');
+  ok(out.length === 4, 'four slots are filled when four qualifying sections exist');
+  const one = rankSections(same, { limit: 4, perDoc: 1 });
+  ok(one.filter(s => s.doc_slug === 'colour').length === 1, 'perDoc is honoured when a caller lowers it');
 }
 
 // ── ordering is total, so the same question gives the same answer twice ─────────────────────────
@@ -62,8 +66,8 @@ ok(rankSections([{ doc_slug: 'a', score: NaN }, { doc_slug: 'b', score: 'x' }]).
     { doc_slug: 'apple', position: 3, score: 0.7 },
     { doc_slug: 'apple', position: 0, score: 0.7 },
   ];
-  const a = rankSections(tied, { limit: 3, perDoc: 2 }).map(s => `${s.doc_slug}#${s.position}`).join();
-  const b = rankSections([...tied].reverse(), { limit: 3, perDoc: 2 }).map(s => `${s.doc_slug}#${s.position}`).join();
+  const a = rankSections(tied, { limit: 3 }).map(s => `${s.doc_slug}#${s.position}`).join();
+  const b = rankSections([...tied].reverse(), { limit: 3 }).map(s => `${s.doc_slug}#${s.position}`).join();
   ok(a === b, 'shuffling the rows does not change the answer');
   ok(a === 'apple#0,apple#3,zebra#1', 'ties break by article then by position in the article');
 }
