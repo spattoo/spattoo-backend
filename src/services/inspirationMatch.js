@@ -26,7 +26,12 @@ function cosine(a, b) {
 
 // KNN shortlist over the element index. Prefers the pgvector RPC (scale); falls back to in-JS
 // cosine if the RPC isn't present yet (works before migration 011 is applied).
-async function retrieve(queryEmbedding, k = SHORTLIST) {
+/* ⚠️ EXPORTED, BECAUSE "WHICH ELEMENTS ARE NEAREST THIS EMBEDDING" IS ASKED IN TWO PLACES NOW —
+   here, for one decoration read off a photo, and by storyMatch.js, for a whole sentence. A second
+   copy would be a second answer to the RPC-or-fallback question, and the fallback is the branch
+   that is actually running: `match_elements` is NOT present on dev, so every call today takes the
+   in-JS cosine path. A duplicate would have been written against the branch nobody exercises. */
+export async function retrieve(queryEmbedding, k = SHORTLIST) {
   const rpc = await supabase.rpc('match_elements', { query_embedding: JSON.stringify(queryEmbedding), match_count: k });
   if (!rpc.error && Array.isArray(rpc.data)) {
     const sim = new Map(rpc.data.map(r => [r.id, r.similarity]));
