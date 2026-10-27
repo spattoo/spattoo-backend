@@ -17,6 +17,7 @@ import { requireCapability } from '../middleware/rbac.js';
 import { supabase } from '../services/supabase.js';
 import { searchHelp } from '../services/helpSearch.js';
 import { logQuestion, markAnswered } from '../services/helpLog.js';
+import { escalateQuestion } from '../services/helpEscalate.js';
 
 const router = Router();
 
@@ -91,7 +92,7 @@ router.get('/admin/help/questions', requireAuth, requireCapability('baker:suppor
 
     let q = supabase
       .from('help_questions')
-      .select('id, asked_at, question, result_count, top_score, top_doc_slug, top_heading, helpful, baker_id')
+      .select('id, asked_at, question, result_count, top_score, top_doc_slug, top_heading, helpful, baker_id, escalated_at, escalation_note, escalation_delivery')
       .gte('asked_at', since)
       .order('asked_at', { ascending: false })
       .limit(500);
@@ -100,6 +101,9 @@ router.get('/admin/help/questions', requireAuth, requireCapability('baker:suppor
        empty result is a gap we can see. `helpful: false` is a gap only a baker could see — a card
        that scored well, came from the right article, and did not contain the answer. */
     if (req.query.filter === 'missed') q = q.or('result_count.eq.0,helpful.is.false');
+    /* ⚠️ A SEPARATE FILTER FROM "missed", because they are different queues. A miss is something to
+       write about eventually; an escalation is a person waiting for a reply right now. */
+    if (req.query.filter === 'escalated') q = q.not('escalated_at', 'is', null);
 
     const { data, error } = await q;
     if (error) throw new Error(error.message);
@@ -111,9 +115,48 @@ router.get('/admin/help/questions', requireAuth, requireCapability('baker:suppor
       asked: rows.length,
       nothingFound: rows.filter(r => r.result_count === 0).length,
       saidUnhelpful: rows.filter(r => r.helpful === false).length,
+      escalated:     rows.filter(r => r.escalated_at).length,
       days,
     };
     res.json({ ok: true, questions: rows, summary });
+  } catch (err) {
+    serverError(req, res, err);
+  }
+});
+
+/* ── POST /help/escalate — "ask the Spattoo team" ────────────────────────────────────────────────
+ *
+ * Sandeep: *"lets build that escalation … for now, email."*
+ *
+ * ⚠️ BAKER-INITIATED, ALWAYS. Never fired by a miss. We already log every question and whether it
+ * landed; that is us deciding what to write next. This is somebody asking a person and waiting for
+ * an answer, and the two must not be confused — auto-mailing every empty result would fill an
+ * inbox with questions nobody is waiting on, and an inbox like that stops being read.
+ *
+ * ⚠️ IT ANSWERS 200 EVEN WHEN THE EMAIL FAILED. The request is recorded either way (see
+ * services/helpEscalate.js): the baker asked the moment they pressed, and showing them an error
+ * for our SMTP problem would make them press again or give up, neither of which helps.
+ */
+router.post('/help/escalate', requireAuth, attachBakerContext, async (req, res) => {
+  try {
+    const { questionId, note } = req.body ?? {};
+    if (!questionId) return res.status(400).json({ error: 'questionId is required' });
+
+    /* The baker row is read HERE rather than in the service, so the service stays about composing
+       and sending and can be exercised without a request. */
+    let baker = null;
+    if (req.bakerId) {
+      const { data } = await supabase.from('bakers').select('id, name, email').eq('id', req.bakerId).maybeSingle();
+      baker = data ?? null;
+    }
+    /* The account's own address wins over the bakery's: it is the person who actually asked, and
+       the one who will be watching for a reply. */
+    const bakerEmail = req.user?.email ?? baker?.email ?? null;
+
+    const { ok, alreadySent } = await escalateQuestion({
+      id: questionId, userId: req.user?.id, note, baker, bakerEmail,
+    });
+    res.json({ ok: true, recorded: ok, alreadySent, replyTo: bakerEmail });
   } catch (err) {
     serverError(req, res, err);
   }

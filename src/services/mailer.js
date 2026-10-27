@@ -26,7 +26,7 @@ export function mailConfigured() {
 // Send one email. Throws on provider failure — the caller decides how to react (the outbox
 // records status + retries; fire-and-forget callers swallow). `from` defaults to the platform
 // sender when omitted.
-export async function sendEmail({ from, to, subject, html, text, bcc }) {
+export async function sendEmail({ from, to, subject, html, text, bcc, replyTo }) {
   const info = await transporter.sendMail({
     from: from || config.smtp.from,
     to,
@@ -38,6 +38,11 @@ export async function sendEmail({ from, to, subject, html, text, bcc }) {
     // receives. Which notifications get copied is a decision for the caller that knows what the
     // message is — see BCC_TYPES in jobs/processors/sendNotification.js.
     ...(bcc ? { bcc } : {}),
+    /* Who a reply goes to, when that is not the sender. Used by the help escalation: the mail comes
+       FROM Spattoo's own address so it is not refused by SPF, but a reply must reach the BAKER who
+       asked — otherwise answering them means copying an address out of the body by hand, and the
+       hand-off stops being a conversation. Omitted everywhere else, so nothing else changes. */
+    ...(replyTo ? { replyTo } : {}),
   });
   return {
     id:       info?.messageId ?? null,

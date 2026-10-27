@@ -247,6 +247,25 @@ export const config = {
     // rather than the day somebody remembers to set a variable. Set it empty to switch the copies
     // off entirely.
     internalBcc: process.env.INTERNAL_NOTIFY_EMAIL ?? 'sandeep@spattoo.com',
+
+    // ── Where a question the assistant could not answer is sent ────────────────────────────────
+    // Sandeep: *"email should be configurable"*.
+    //
+    // Comma-separated, because a support inbox is rarely one person for long — "support@ and the
+    // person on shift" is the normal shape, and splitting here means the day it becomes two
+    // addresses is a variable change rather than a code change.
+    //
+    // Falls back to INTERNAL_NOTIFY_EMAIL rather than carrying its own default address: these are
+    // the same decision today ("who at Spattoo hears about this"), and two independent defaults
+    // would mean changing one and silently not the other.
+    //
+    // ⚠️ AN ENV VAR, SO CHANGING IT NEEDS A DEPLOY. That is the wrong home by the root CLAUDE.md's
+    // rule 3 — every value an admin would tune belongs in the DB, overlaid — and it is here anyway
+    // because there is no platform-settings store to put it in (`bakers.settings` is per-bakery).
+    // Worth building one when a second value wants the same treatment; not worth inventing for one
+    // address.
+    helpEscalationTo: (process.env.HELP_ESCALATION_EMAIL ?? process.env.INTERNAL_NOTIFY_EMAIL ?? 'sandeep@spattoo.com')
+      .split(',').map(s => s.trim()).filter(Boolean),
   },
   // Cloudflare Turnstile. The app's login has used the widget for a while, but Supabase verified
   // those tokens — this is the first SECRET we hold, for endpoints of our own with no such backstop.
