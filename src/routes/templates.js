@@ -25,7 +25,11 @@ function toPublicUrl(key) {
    check constraint so the database refuses a pairing this route would. */
 const TEMPLATE_KINDS = ['basic', 'photo'];
 
-const TEMPLATE_FIELDS = 'id, name, shape, tier_count, type, offering, baker_id, parent_template_id, design, thumbnail_url, sort_order, is_active';
+/* ⚠️ ADMIN SEES THE TWO SLUG COLUMNS SEPARATELY, and the browsing list (lib/templateList.js) merges
+   them into one. That is deliberate: a searcher wants the union and should not care where a word
+   came from, while the screen that EDITS them has to show a person only the half they own —
+   `search_slugs` is rebuilt from the design on every save and typing into it would be pointless. */
+const TEMPLATE_FIELDS = 'id, name, shape, tier_count, type, offering, baker_id, parent_template_id, design, thumbnail_url, sort_order, is_active, search_slugs, manual_slugs';
 const TEMPLATE_FILTER_JOIN = 'template_tags(tags(slug)), cake_template_attrs(min_weight_kg, min_age, max_age)';
 
 function withTagsAndAttrs({ template_tags, cake_template_attrs, ...t }) {
@@ -601,8 +605,24 @@ router.post('/admin/templates', requireAuth, requireCapability('catalog:admin'),
 
 router.patch('/admin/templates/:id', requireAuth, requireCapability('catalog:admin'), async (req, res) => {
   try {
-    const allowed = ['name', 'shape', 'tier_count', 'type', 'offering', 'design', 'thumbnail_url', 'sort_order', 'is_active'];
+    /* ⚠️ `manual_slugs` IS HERE AND `search_slugs` IS NOT. The derived column has one writer,
+       `syncTemplateDerived`, and letting a request set it would put a value in that the next design
+       save silently overwrites — which is exactly the trap the two columns exist to avoid. */
+    const allowed = ['name', 'shape', 'tier_count', 'type', 'offering', 'design', 'thumbnail_url', 'sort_order', 'is_active', 'manual_slugs'];
     const updates = Object.fromEntries(Object.entries(req.body).filter(([k]) => allowed.includes(k)));
+    /* ⚠️ NORMALISED HERE, NOT IN THE SCREEN. `matchesTemplateSearch` lowercases the query and asks
+       whether a field CONTAINS each word, so "Teddy Bear" and "teddy bear" are two rows that behave
+       identically and only one of which a person can see they typed twice. Bounded because this is
+       a search index, not a notes field: 40 terms of 40 characters is already far more than any
+       cake needs, and an unbounded array on a row the browsing list downloads is a cost every
+       customer pays. */
+    if ('manual_slugs' in updates) {
+      const raw = Array.isArray(updates.manual_slugs) ? updates.manual_slugs : [];
+      updates.manual_slugs = [...new Set(
+        raw.map(v => String(v ?? '').trim().toLowerCase().replace(/\s+/g, ' '))
+           .filter(v => v && v.length <= 40),
+      )].sort().slice(0, 40);
+    }
 
     const { error } = await supabase
       .from('cake_templates')
