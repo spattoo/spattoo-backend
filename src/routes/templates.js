@@ -2,6 +2,7 @@ import { Router } from 'express';
 import { serverError } from '../lib/httpError.js';
 import { supabase } from '../services/supabase.js';
 import { requireAuth, attachBakerContext } from '../middleware/auth.js';
+import { searchTemplatesByStory } from '../services/storyMatch.js';
 import { requireCapability } from '../middleware/rbac.js';
 import { scopeCatalogRead } from '../lib/tenantScope.js';
 import { config } from '../config.js';
@@ -24,7 +25,11 @@ function toPublicUrl(key) {
    check constraint so the database refuses a pairing this route would. */
 const TEMPLATE_KINDS = ['basic', 'photo'];
 
-const TEMPLATE_FIELDS = 'id, name, shape, tier_count, type, offering, baker_id, parent_template_id, design, thumbnail_url, sort_order, is_active';
+/* ⚠️ ADMIN SEES THE TWO SLUG COLUMNS SEPARATELY, and the browsing list (lib/templateList.js) merges
+   them into one. That is deliberate: a searcher wants the union and should not care where a word
+   came from, while the screen that EDITS them has to show a person only the half they own —
+   `search_slugs` is rebuilt from the design on every save and typing into it would be pointless. */
+const TEMPLATE_FIELDS = 'id, name, shape, tier_count, type, offering, baker_id, parent_template_id, design, thumbnail_url, sort_order, is_active, search_slugs, manual_slugs';
 const TEMPLATE_FILTER_JOIN = 'template_tags(tags(slug)), cake_template_attrs(min_weight_kg, min_age, max_age)';
 
 function withTagsAndAttrs({ template_tags, cake_template_attrs, ...t }) {
@@ -36,6 +41,47 @@ function withTagsAndAttrs({ template_tags, cake_template_attrs, ...t }) {
     attrs,
   };
 }
+
+/* ── POST /templates/search-by-story ─────────────────────────────────────────────────────────────
+ *
+ * Sandeep: *"user will explain their story and we will make a cake based on that"* — and then the
+ * ordering: *"we should show the existing templates first (that match the query), then try to build
+ * a new one"*. This is the first half. It finds cakes that ALREADY EXIST; nothing is generated here.
+ *
+ * ⚠️ IT SEARCHES THE ELEMENTS A TEMPLATE CONTAINS, NOT ITS TAGS. *"cant we check the elements in a
+ * template? and there is every possibility we miss tagging a template. or mis-tag it."* The library
+ * proves the point: the three makeup cakes are tagged Birthday, Modern, **Princess** and **1st
+ * Birthday**, and only 27 of 79 templates carry a theme tag at all. Their elements — lipstick,
+ * eyeshadow palette, nail polish — describe them correctly. See services/storyMatch.js.
+ *
+ * ⚠️ NO GENERATIVE MODEL, AND SO NO CREDITS. One embedding call, `text-embedding-3-small`. The
+ * ledger starts mattering when a baker asks for a cake to be BUILT, which is the other half and is
+ * not this route.
+ *
+ * ⚠️ `design:create`, THE SAME CAPABILITY THE TEMPLATE LIST USES. Baker-facing first, by decision —
+ * a customer reaches this only after signing in, through whatever the storefront eventually
+ * forwards, and that surface does not exist yet.
+ */
+router.post('/templates/search-by-story', requireAuth, requireCapability('design:create'), attachBakerContext, async (req, res) => {
+  try {
+    const { story, limit } = req.body ?? {};
+    if (typeof story !== 'string' || !story.trim()) {
+      return res.status(400).json({ error: 'story is required' });
+    }
+    /* ⚠️ CAPPED, because the cost of this route is the embedding and the embedding is priced per
+       token. A story is a sentence or two; anything longer is a paste, and a paste would be
+       reduced to its subject anyway. */
+    const text = story.slice(0, 1000);
+    const n = Math.min(Math.max(parseInt(limit, 10) || 12, 1), 24);
+    const { templates, subject, ages } = await searchTemplatesByStory(text, { limit: n });
+    /* `subject` and `ages` go back deliberately: the caller can show what was actually searched
+       for, which is the only way a baker can tell "we have nothing like that" from "it misread
+       me". */
+    res.json({ ok: true, templates, subject, ages });
+  } catch (err) {
+    serverError(req, res, err);
+  }
+});
 
 router.get('/templates', requireAuth, requireCapability('design:create'), attachBakerContext, async (req, res) => {
   try {
@@ -559,8 +605,24 @@ router.post('/admin/templates', requireAuth, requireCapability('catalog:admin'),
 
 router.patch('/admin/templates/:id', requireAuth, requireCapability('catalog:admin'), async (req, res) => {
   try {
-    const allowed = ['name', 'shape', 'tier_count', 'type', 'offering', 'design', 'thumbnail_url', 'sort_order', 'is_active'];
+    /* ⚠️ `manual_slugs` IS HERE AND `search_slugs` IS NOT. The derived column has one writer,
+       `syncTemplateDerived`, and letting a request set it would put a value in that the next design
+       save silently overwrites — which is exactly the trap the two columns exist to avoid. */
+    const allowed = ['name', 'shape', 'tier_count', 'type', 'offering', 'design', 'thumbnail_url', 'sort_order', 'is_active', 'manual_slugs'];
     const updates = Object.fromEntries(Object.entries(req.body).filter(([k]) => allowed.includes(k)));
+    /* ⚠️ NORMALISED HERE, NOT IN THE SCREEN. `matchesTemplateSearch` lowercases the query and asks
+       whether a field CONTAINS each word, so "Teddy Bear" and "teddy bear" are two rows that behave
+       identically and only one of which a person can see they typed twice. Bounded because this is
+       a search index, not a notes field: 40 terms of 40 characters is already far more than any
+       cake needs, and an unbounded array on a row the browsing list downloads is a cost every
+       customer pays. */
+    if ('manual_slugs' in updates) {
+      const raw = Array.isArray(updates.manual_slugs) ? updates.manual_slugs : [];
+      updates.manual_slugs = [...new Set(
+        raw.map(v => String(v ?? '').trim().toLowerCase().replace(/\s+/g, ' '))
+           .filter(v => v && v.length <= 40),
+      )].sort().slice(0, 40);
+    }
 
     const { error } = await supabase
       .from('cake_templates')

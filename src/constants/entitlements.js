@@ -45,6 +45,19 @@ export const ENTITLEMENTS = {
   // cropping the video, so there is nothing here worth defending server-side. Do not let a later
   // reader mistake the absence of middleware for an oversight.
   reel_branding:          { type: 'bool', fallback: false, label: 'Reels carry the bakery\'s own name' },
+  /* Film the cake ASSEMBLING ITSELF — every decoration flying in and landing in its own place — and
+     save the result. Blaze+. See spattoo-docs/features/reel-capture.md.
+     ⚠️ DELIBERATELY NOT THE SAME BARGAIN AS `reel_capture`, and the contrast is the point. A reel is
+     given to every paid tier because a watermarked one markets us every time it is posted, and
+     because a locked feature generates no awareness. This one has no watermark rung: Sandeep,
+     asking for it, *"we have watermark optio for reel capture. but this one strictly for blaze."*
+     It is the showpiece — the thing a baker shows a customer to explain what the studio does — so
+     it is what the tier is FOR rather than a sample of it.
+     ⚠️ ADVISORY, LIKE `reel_branding`, AND FOR THE SAME REASON. There is no route to guard: the
+     build runs on the baker's own GPU and the MP4 is written by their own encoder, with nothing
+     uploaded. Hiding the button is the whole enforcement, exactly as it is for reel branding. Do
+     not let a later reader mistake the absence of middleware for an oversight. */
+  build_film:             { type: 'bool', fallback: false, label: 'Film the cake assembling itself' },
   // Storefront themes marked is_premium. Blaze+. Gates CHOOSING one, never RENDERING one: a
   // shop already published on a theme keeps working if that theme is later re-priced, because
   // taking away somebody's live storefront is not a thing a price change should do.

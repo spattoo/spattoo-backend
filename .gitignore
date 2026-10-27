@@ -5,3 +5,6 @@ dist/
 .claude/
 supabase/pending-migrations.sql
 tmp/
+
+# 10MB of embeddings the help eval caches so it need not re-embed 352 sections per run
+scripts/.help-eval-cache.json

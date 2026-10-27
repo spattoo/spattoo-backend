@@ -50,7 +50,11 @@ import { config } from '../config.js';
 // opens. `search_slugs` is the cheap half of what the design knows — element names, element tags,
 // and the words piped on the cake — derived once on save so the browser can search them without
 // the megabytes. Measured on dev: 53 bytes a row on average, 133 at worst.
-const FIELDS = 'id, name, shape, tier_count, type, offering, baker_id, parent_template_id, thumbnail_url, sort_order, is_active, search_slugs';
+/* ⚠️ BOTH SLUG COLUMNS, MERGED INTO ONE BEFORE IT LEAVES. `search_slugs` is derived from the design
+   and rebuilt on every save; `manual_slugs` is what a person typed and nothing recomputes. Clients
+   searching want the union and have no business knowing which word came from where — so the split
+   stops at this boundary, and `matchesTemplateSearch` in core needed no change at all. */
+const FIELDS = 'id, name, shape, tier_count, type, offering, baker_id, parent_template_id, thumbnail_url, sort_order, is_active, search_slugs, manual_slugs';
 const FILTER_JOIN = 'template_tags(tags(slug)), cake_template_attrs(min_weight_kg, min_age, max_age)';
 
 const toPublicUrl = (key) => (key ? `${config.r2.publicUrl}/${key}` : null);
@@ -65,7 +69,10 @@ const toPublicUrl = (key) => (key ? `${config.r2.publicUrl}/${key}` : null);
    `DELETE /baker/templates/:id` is scoped `.eq('baker_id', req.bakerId)` and 404s on a global). It is
    sent as a word because every client was otherwise re-deriving it from `baker_id`, and two of them
    had already done it differently. */
-function shape({ template_tags, cake_template_attrs, ...t }, offeredIds = null) {
+function shape({ template_tags, cake_template_attrs, manual_slugs, ...t }, offeredIds = null) {
+  /* The two sources become one list here. Deduped and sorted for the reason the derived half is
+     already sorted: a stable row makes a diff between two reads mean something. */
+  t.search_slugs = [...new Set([...(t.search_slugs ?? []), ...(manual_slugs ?? [])])].sort();
   /* ⚠️ A SET OR NOTHING. The caller is meant to pass a Set it resolved once, but anything else has
      to mean "no catalogue is known" rather than throw — a number arrived here from `.map(shape)`
      and took the whole route down with a 500. Checking the type is cheaper than trusting every

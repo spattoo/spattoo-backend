@@ -228,7 +228,7 @@ function validateOrderBody(body, { requireDesign = true } = {}) {
 // between them unguarded.
 const OCCASIONS  = ['birthday', 'anniversary', 'wedding', 'engagement', 'bridal_shower',
                     'baby_shower', 'new_home', 'graduation', 'new_job', 'festival',
-                    'farewell', 'corporate', 'love', 'other'];
+                    'farewell', 'welcome_home', 'corporate', 'love', 'other'];
 const RECIPIENTS = ['child', 'adult', 'couple', 'family', 'friends', 'colleagues'];
 // ⚠️ One of THREE lists that have to agree — this, cakeDraft.js CELEBRATIONS in spattoo-core, and
 // orders_celebration_valid in the database. Gated by `check:occasions`, which grew to cover this
