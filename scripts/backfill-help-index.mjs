@@ -130,7 +130,12 @@ for (const file of files) {
      at all straight in — INDEX.md and README.md, which are documents ABOUT the help set rather
      than help. INDEX alone contributed 14 "sections" of markdown tables that answer no question a
      baker would ask, and would have been retrievable forever. */
-  if (meta.audience !== 'baker') { skipped++; continue; }
+  /* ⚠️ TWO AUDIENCES, BOTH NAMED EXPLICITLY — never "anything that is not forbidden". `baker` is
+     the help articles; `faq` is the website's own questions, exported from
+     spattoo-web/apps/marketing/lib/faq.ts and written for somebody deciding whether to sign up.
+     Both are things we publish; everything else in this repo is not baker-safe (see
+     plans/support-automation.md), and the first cut of this filter let INDEX.md straight in. */
+  if (meta.audience !== 'baker' && meta.audience !== 'faq') { skipped++; continue; }
   if (meta.status && meta.status !== 'live') { skipped++; continue; }
   const slug = meta.id || file.replace(/\.md$/, '');
   const title = meta.title || slug;

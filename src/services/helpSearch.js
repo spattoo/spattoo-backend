@@ -17,7 +17,12 @@ import { supabase } from './supabase.js';
 import { embedText } from './openai.js';
 import { cosine, rankSections } from './helpRank.js';
 
-/* The whole corpus is 352 sections. Reading it per question is one query returning a few megabytes
+/* ⚠️ `audience` TRAVELS WITH THE SECTION. Two corpora are indexed: the help articles, and the
+   website's own FAQ (generated from spattoo-web's lib/faq.ts). The FAQ answers were written for
+   somebody deciding whether to SIGN UP, not for a baker mid-task, so the panel says where an
+   answer came from rather than passing a sales answer off as instructions.
+
+   The whole corpus is 364 sections. Reading it per question is one query returning a few megabytes
    of float, which is wasteful at scale and completely fine at this one — and it keeps the service
    working on an environment where the pgvector RPC was never created, which is the situation the
    element index is actually in on dev. If this grows, an RPC goes here and the ranking below does
@@ -29,7 +34,7 @@ export async function searchHelp(question, { limit = 4, perDoc = 2 } = {}) {
   const { embedding, usage } = await embedText(text);
   const { data, error } = await supabase
     .from('help_sections')
-    .select('id, doc_slug, doc_title, heading, body, position, checked_against_app, embedding');
+    .select('id, doc_slug, doc_title, heading, body, position, audience, checked_against_app, embedding');
   if (error) throw new Error(`help_sections read failed: ${error.message}`);
 
   const scored = (data ?? []).map((r) => {
