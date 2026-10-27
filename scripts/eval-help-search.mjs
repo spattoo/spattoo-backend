@@ -36,7 +36,24 @@ function parseFrontmatter(text) {
   }
   return { meta, body: text.slice(m[0].length) };
 }
-function sectionsOf(body) {
+/* Mirrors scripts/backfill-help-index.mjs — the trailing *"Checked against the app on …"* note is
+   addressed to us, not to a baker, and 54 of the 58 articles carry one. If these two chunkers
+   disagree, the eval measures a corpus the index does not contain. */
+function stripProvenance(body) {
+  const lines = body.split('\n');
+  let end = lines.length;
+  while (end > 0 && !lines[end - 1].trim()) end--;
+  let start = end;
+  while (start > 0 && lines[start - 1].trim()) start--;
+  const last = lines.slice(start, end).join(' ').trim();
+  if (!(last.startsWith('*') && /hecked against the app/.test(last))) return body;
+  let cut = start;
+  while (cut > 0 && !lines[cut - 1].trim()) cut--;
+  if (cut > 0 && lines[cut - 1].trim() === '---') cut--;
+  return lines.slice(0, cut).join('\n');
+}
+function sectionsOf(raw) {
+  const body = stripProvenance(raw);
   const out = []; let heading = null, buf = [];
   const flush = () => { const t = buf.join('\n').trim(); if (t) out.push({ heading, body: t }); buf = []; };
   for (const line of body.split('\n')) {

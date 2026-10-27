@@ -34,6 +34,16 @@ const { supabase } = await import('../src/services/supabase.js');
 const { embedText } = await import('../src/services/openai.js');
 
 const DRY = process.argv.includes('--dry');
+/* ⚠️ AN UNKNOWN FLAG STOPS THE RUN RATHER THAN BEING IGNORED. Typing `--dry-run` instead of
+   `--dry` silently meant "live": it embedded all 352 sections and went on to delete and rewrite
+   the table. A script whose safe mode is spelled slightly differently from the obvious guess must
+   not treat the guess as consent. */
+const KNOWN = new Set(['--dry']);
+const unknown = process.argv.slice(2).filter(a => a.startsWith('-') && !KNOWN.has(a));
+if (unknown.length) {
+  console.error(`unknown option(s): ${unknown.join(', ')} — did you mean --dry? Nothing was run.`);
+  process.exit(2);
+}
 const HELP_DIR = join(dirname(fileURLToPath(import.meta.url)), '..', '..', 'spattoo-docs', 'help');
 
 /** Frontmatter is a flat `key: value` block between the first two `---` lines. */
@@ -55,8 +65,34 @@ function parseFrontmatter(text) {
  * not a separate answer, and splitting there produces fragments that make no sense alone.
  * ⚠️ THE `#` TITLE LINE IS DROPPED — it repeats `doc_title`, which every row already carries.
  */
-function sectionsOf(body) {
+
+/* ── The article's own provenance note is not help ───────────────────────────────────────────────
+ *
+ * 54 of the 58 baker articles end with an italic paragraph addressed to US, not to a baker:
+ * *"Checked against the app on 26 October 2026 on a computer (1400px). Each of the three 'top of
+ * the app' choices was selected and the Name font row watched appear and disappear…"*. It is how
+ * the writer recorded that they drove the screen, and it is the reason `checked_against_app`
+ * exists — but indexed, it became a section the assistant could ANSWER WITH, printing our own
+ * verification notes to a baker who asked how to set up their shop.
+ *
+ * Found by looking at the rendered panel, not by reading the files. The preceding `---` goes with
+ * it, since it is the rule that separated the note from the article. */
+function stripProvenance(body) {
   const lines = body.split('\n');
+  let end = lines.length;
+  while (end > 0 && !lines[end - 1].trim()) end--;
+  let start = end;
+  while (start > 0 && lines[start - 1].trim()) start--;
+  const last = lines.slice(start, end).join(' ').trim();
+  if (!(last.startsWith('*') && /hecked against the app/.test(last))) return body;
+  let cut = start;
+  while (cut > 0 && !lines[cut - 1].trim()) cut--;
+  if (cut > 0 && lines[cut - 1].trim() === '---') cut--;
+  return lines.slice(0, cut).join('\n');
+}
+
+function sectionsOf(body) {
+  const lines = stripProvenance(body).split('\n');
   const out = [];
   let heading = null, buf = [];
   const flush = () => {
