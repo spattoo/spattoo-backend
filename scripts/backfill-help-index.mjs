@@ -26,7 +26,8 @@ for (const [k, v] of Object.entries({
   R2_ACCESS_KEY_ID: 'unused-by-backfill', R2_SECRET_ACCESS_KEY: 'unused-by-backfill',
 })) if (!process.env[k]) process.env[k] = v;
 
-import { readdirSync, readFileSync } from 'node:fs';
+import { readdirSync, readFileSync, writeFileSync, existsSync } from 'node:fs';
+import { createHash } from 'node:crypto';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -117,6 +118,9 @@ const embedTextFor = (docTitle, heading, body) =>
 
 const files = readdirSync(HELP_DIR).filter(f => f.endsWith('.md'));
 const rows = [];
+/* The files that actually made it in — what the manifest at the end records, so the docs gate
+   compares against the articles that are LIVE rather than every .md in the folder. */
+const indexedFiles = [];
 let skipped = 0;
 
 for (const file of files) {
@@ -130,6 +134,7 @@ for (const file of files) {
   if (meta.status && meta.status !== 'live') { skipped++; continue; }
   const slug = meta.id || file.replace(/\.md$/, '');
   const title = meta.title || slug;
+  indexedFiles.push(file);
   sectionsOf(body).forEach((sec, i) => {
     rows.push({
       doc_slug: slug,
@@ -178,3 +183,33 @@ for (let i = 0; i < rows.length; i += 100) {
   if (error) { console.error('insert failed:', error.message); process.exit(1); }
 }
 console.log(`✓ ${rows.length} sections indexed`);
+
+/* ── Say, in the docs repo, which environments were indexed from WHICH articles ──────────────────
+ *
+ * Sandeep: *"docs should live in docs repo. not on backend."* They do, and they stay there — the
+ * backend keeps no copy. The cost of that is this table being a copy that can go stale: edit an
+ * article, and the assistant keeps answering with the old words until somebody runs this script.
+ *
+ * ⚠️ SO THE RECORD OF WHAT WAS INDEXED LIVES BESIDE THE ARTICLES, not beside the database. It is
+ * a statement about the docs — "these are the words that are live" — and a gate in spattoo-docs
+ * reads it on push and refuses to let an article leave the machine while the index is behind it.
+ * Nothing is remembered by a person, and nothing is duplicated into another repo.
+ *
+ * ⚠️ THE PROJECT REF IS NOT A SECRET. It is `NEXT_PUBLIC_SUPABASE_URL` — it ships inside every
+ * browser bundle we serve. Writing it here names the environment in a way a human can read, which
+ * is the whole point of the file. */
+const MANIFEST = join(HELP_DIR, '.indexed.json');
+const projectRef = (process.env.SUPABASE_URL ?? '').replace(/^https?:\/\//, '').split('.')[0] || 'unknown';
+const manifest = existsSync(MANIFEST) ? JSON.parse(readFileSync(MANIFEST, 'utf8')) : {};
+manifest[projectRef] = {
+  indexed_at: new Date().toISOString(),
+  sections: rows.length,
+  /* The hash is of the FILE, not of the sections cut from it — the gate compares what is about to
+     be pushed, and that is a file. */
+  articles: Object.fromEntries(indexedFiles
+    .map(f => [f, createHash('sha256').update(readFileSync(join(HELP_DIR, f))).digest('hex').slice(0, 16)])
+    .sort(([a], [b]) => a.localeCompare(b))),
+};
+writeFileSync(MANIFEST, `${JSON.stringify(manifest, null, 2)}\n`);
+console.log(`  recorded in ${MANIFEST.replace(/.*spattoo-docs/, 'spattoo-docs')} under ${projectRef}`);
+console.log('  ⚠ commit that file — the docs gate reads it to tell you when the index is behind');
