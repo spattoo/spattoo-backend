@@ -65,10 +65,17 @@ export async function planHelpIndex(files, client) {
      the index one upload at a time. The caller decides; see `applyHelpIndex`. */
   for (const [slug, was] of before) if (!uploaded.has(slug)) removed.push(was);
 
+  /* ⚠️ "59 CHANGED" WHEN NOTHING CHANGED IS A LIE THE FIRST SCREEN TELLS. An index built before
+     migration 145 has no hashes at all, so every article compares as different — which is true in
+     the sense that we cannot prove otherwise, and false in the sense anybody reads it. One run
+     records the hashes and it never happens again, so it is worth naming rather than explaining. */
+  const unhashed = before.size > 0 && [...before.values()].every(a => !a.content_hash);
+
   return {
     rows: rows.length,
     articles: indexed.length,
     changed, added, unchanged, removed, skipped,
+    unhashed,
     /* An index that holds nothing yet is a first run, not a diff. Worth saying plainly, because
        "59 added" and "59 changed" mean very different things to whoever is about to press go. */
     firstRun: before.size === 0,

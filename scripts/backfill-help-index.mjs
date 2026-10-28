@@ -79,6 +79,7 @@ const show = (label, list, f = a => a.filename) => {
 const plan = await planHelpIndex(files, supabase);
 console.log(`${files.length} file(s) on disk → ${plan.articles} indexable article(s), ${plan.rows} section(s)`);
 if (plan.firstRun) console.log('⚠ the index is EMPTY here — this is a first run, not a diff\n');
+else if (plan.unhashed) console.log('⚠ this index predates hash tracking (migration 145), so every article reads as\n  changed. One run records the hashes; after that only real edits show here.\n');
 show('changed', plan.changed);
 show('new', plan.added);
 show('no longer live / removed', plan.removed, a => `${a.doc_slug} (${a.sections} sections)`);
