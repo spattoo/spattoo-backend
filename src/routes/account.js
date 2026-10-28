@@ -492,6 +492,61 @@ router.post('/baker/account/email/clear', requireAuth, requireRecentPassword(), 
   }
 });
 
+// ── GET /api/baker/account/studio-look ────────────────────────────────────────
+// The room this person designs in, or null if they have never chosen one.
+//
+// ⚠️ ONE FIELD, NOT THREE, AND THAT IS THE DIFFERENCE FROM THE RAIL SKIN BELOW. A rail skin needs
+// chosen/served/entitled because it is gated on a plan and a downgrade must not look like the
+// choice was deleted. This is open to every baker (asked for that way, 2026-10-28), so there is
+// nothing for `served` to disagree with — and inventing the split anyway would be three fields the
+// client has to reconcile for no reason.
+//
+// ⚠️ NOT VALIDATED HERE, AND SAID OUT LOUD. The shape is checked in core, field by field, on the
+// way in AND on the way out (`studioLook.js` `normaliseStudioLook`), because core is the only thing
+// that knows which backdrop keys exist and what the grid's floor is — they are its own constants.
+// Validating a copy of them here would be a second answer that drifts the day one is added. What
+// this route owes is that whatever it stores comes back unchanged.
+router.get('/baker/account/studio-look', requireAuth, async (req, res) => {
+  try {
+    const { data: me } = await supabase
+      .from('baker_appusers').select('studio_look').eq('auth_user_id', req.user.id).maybeSingle();
+    if (!me) return res.status(403).json({ error: 'Not a baker account' });
+    res.json({ look: me.studio_look ?? null });
+  } catch (err) {
+    serverError(req, res, err);
+  }
+});
+
+// ── PUT /api/baker/account/studio-look ────────────────────────────────────────
+// Body: the look object, or { look: null } / an empty body to go back to the plain studio.
+//
+// ⚠️ AN OBJECT OR NOTHING. Anything else — a string, an array, a number — is refused rather than
+// stored, because the column is jsonb and would take it happily; core would then normalise it away
+// on every read and the baker's screen would quietly disagree with what is saved. The FIELDS inside
+// are core's business (see above); the shape of the thing is this route's.
+router.put('/baker/account/studio-look', requireAuth, async (req, res) => {
+  try {
+    const body = req.body?.look !== undefined ? req.body.look : req.body;
+    const look = (body == null || (typeof body === 'object' && !Array.isArray(body) && Object.keys(body).length === 0))
+      ? null
+      : body;
+    if (look !== null && (typeof look !== 'object' || Array.isArray(look))) {
+      return res.status(400).json({ error: 'studio_look must be an object' });
+    }
+
+    const { data: me } = await supabase
+      .from('baker_appusers').select('id').eq('auth_user_id', req.user.id).maybeSingle();
+    if (!me) return res.status(403).json({ error: 'Not a baker account' });
+
+    const { error } = await supabase
+      .from('baker_appusers').update({ studio_look: look }).eq('id', me.id);
+    if (error) return serverError(req, res, error);
+    res.json({ look });
+  } catch (err) {
+    serverError(req, res, err);
+  }
+});
+
 // ── GET /api/baker/account/rail-skins ─────────────────────────────────────────
 // The skins this person may see, plus which one they are ON and which one is actually SERVED.
 //
