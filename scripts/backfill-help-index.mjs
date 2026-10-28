@@ -17,7 +17,18 @@
  * assistant answering a baker with an internal note is worse than answering nothing.
  *
  *   node scripts/backfill-help-index.mjs --dry     # parse and report, embed nothing, write nothing
- *   node scripts/backfill-help-index.mjs
+ *   node scripts/backfill-help-index.mjs            # writes to whatever SUPABASE_URL names (dev)
+ *   node scripts/backfill-help-index.mjs --prod     # writes to PROD_SUPABASE_URL
+ *
+ * ⚠️ THE INDEX IS PER ENVIRONMENT AND NO MIGRATION CARRIES IT. 141 creates the TABLE; the rows are
+ * embeddings computed here, so there is nothing to put in a .sql file and prod stays empty until
+ * this is run against it. An empty help_sections is not a visible failure — the assistant answers
+ * "nothing is written about that yet" to every question, which reads exactly like a gap in the
+ * articles.
+ *
+ * ⚠️ `--prod` RATHER THAN OVERRIDING SUPABASE_URL BY HAND, because this does a DELETE-then-insert
+ * over the whole table, and the hand-rolled version of that is how 364 rows land in the wrong
+ * database. Same PROD_* convention migrate-master-to-prod.mjs uses.
  */
 
 import 'dotenv/config';
@@ -31,7 +42,37 @@ import { createHash } from 'node:crypto';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-const { supabase } = await import('../src/services/supabase.js');
+const KNOWN = new Set(['--dry', '--prod']);
+const unknown = process.argv.slice(2).filter(a => a.startsWith('-') && !KNOWN.has(a));
+if (unknown.length) {
+  console.error(`unknown option(s): ${unknown.join(', ')} — did you mean --dry? Nothing was run.`);
+  process.exit(2);
+}
+
+/* ── Which database this writes to ──────────────────────────────────────────────────────────────
+ * Default is whatever SUPABASE_URL names — dev, normally. `--prod` switches to PROD_SUPABASE_URL,
+ * and REFUSES rather than falling back if those are not set: silently writing to dev when somebody
+ * asked for prod is the worst outcome available, because it looks like it worked. */
+const TO_PROD = process.argv.includes('--prod');
+let supabase;
+if (TO_PROD) {
+  const url = process.env.PROD_SUPABASE_URL;
+  const key = process.env.PROD_SUPABASE_SERVICE_KEY;
+  if (!url || !key) {
+    console.error('✗ --prod needs PROD_SUPABASE_URL and PROD_SUPABASE_SERVICE_KEY. Nothing was run.');
+    process.exit(2);
+  }
+  const { createClient } = await import('@supabase/supabase-js');
+  supabase = createClient(url, key);
+} else {
+  ({ supabase } = await import('../src/services/supabase.js'));
+}
+/* Named out loud before anything is written. The project ref is in every browser bundle we serve,
+   so printing it leaks nothing — and it is the only way to be sure which database is about to have
+   its help index replaced. */
+const TARGET = (TO_PROD ? process.env.PROD_SUPABASE_URL : process.env.SUPABASE_URL ?? '')
+  .replace(/^https?:\/\//, '').split('.')[0];
+console.log(`→ ${TO_PROD ? 'PRODUCTION' : 'dev'}: ${TARGET}\n`);
 const { embedText } = await import('../src/services/openai.js');
 
 const DRY = process.argv.includes('--dry');
@@ -39,12 +80,6 @@ const DRY = process.argv.includes('--dry');
    `--dry` silently meant "live": it embedded all 352 sections and went on to delete and rewrite
    the table. A script whose safe mode is spelled slightly differently from the obvious guess must
    not treat the guess as consent. */
-const KNOWN = new Set(['--dry']);
-const unknown = process.argv.slice(2).filter(a => a.startsWith('-') && !KNOWN.has(a));
-if (unknown.length) {
-  console.error(`unknown option(s): ${unknown.join(', ')} — did you mean --dry? Nothing was run.`);
-  process.exit(2);
-}
 const HELP_DIR = join(dirname(fileURLToPath(import.meta.url)), '..', '..', 'spattoo-docs', 'help');
 
 /** Frontmatter is a flat `key: value` block between the first two `---` lines. */
