@@ -50,6 +50,34 @@ async function post(body) {
   return data.data.task_id;
 }
 
+/* ── Keeping the model inside our own budget ────────────────────────────────────────────────────
+ *
+ * ⚠️ THE FIRST REAL RUN CAME BACK 20x OVER. Measured 2026-10-29, "a fondant bear sitting, with a
+ * small pink bow": 13 separate parts, zero textures — structurally perfect — and **501,326
+ * triangles in 12.2 MB**. Our decor cap is 25,000 triangles and 1 MB (`admin/lib/glb.js`), and
+ * those caps exist because load time is dominated by distinct assets. Half a million triangles for
+ * one decoration would undo a day's work on exactly that.
+ *
+ * ⚠️ `smart_low_poly` IS CAPPED AT 20,000 TRIANGLES BY TRIPO, which is the happy accident here: it
+ * lands under our 25,000 without us having to pick a number. Their documented range for
+ * `text_to_model` is 1,000–20,000.
+ *
+ * ⚠️ `quad` IS DELIBERATELY NOT OFFERED. It is listed beside these two and it FORCES THE OUTPUT TO
+ * FBX — we need GLB, so a quad mesh would arrive in a format the designer cannot load at all. It
+ * costs 5 credits to discover that.
+ *
+ * ⚠️ AND IT MAY NOT SURVIVE `generate_parts`. Tripo warn that low-poly "is best suited for simple,
+ * non-complex inputs" and "complex models may occasionally fail". Whether asking for parts AND low
+ * poly together works is unknown; if a run fails, that combination is the first suspect.
+ */
+function lowPolyFields({ lowPoly, faceLimit }) {
+  if (!lowPoly && faceLimit == null) return {};
+  return {
+    ...(lowPoly ? { smart_low_poly: true } : {}),
+    ...(faceLimit != null ? { face_limit: Math.max(500, Math.min(20000, Number(faceLimit))) } : {}),
+  };
+}
+
 /**
  * Text → model. `parts` asks Tripo to return the model already split.
  *
@@ -59,24 +87,28 @@ async function post(body) {
  * fused, read the response and correct it here — do not paper over it in the UI, because a silent
  * fused model is exactly the state RecomposeEditor was built to rescue by hand.
  */
-export async function createTextTo3D({ prompt, texture = false, parts = false, modelVersion }) {
+export async function createTextTo3D({ prompt, texture = false, parts = false, modelVersion,
+                                       lowPoly = false, faceLimit }) {
   return post({
     type: 'text_to_model',
     prompt,
     ...(modelVersion ? { model_version: modelVersion } : {}),
     texture,
     ...(parts ? { generate_parts: true } : {}),
+    ...lowPolyFields({ lowPoly, faceLimit }),
   });
 }
 
 /** Image → model. `imageUrl` must be publicly reachable — ours live on R2 under `meshy/source/`. */
-export async function createImageTo3D({ imageUrl, texture = false, parts = false, modelVersion }) {
+export async function createImageTo3D({ imageUrl, texture = false, parts = false, modelVersion,
+                                        lowPoly = false, faceLimit }) {
   return post({
     type: 'image_to_model',
     file: { type: 'url', url: imageUrl },
     ...(modelVersion ? { model_version: modelVersion } : {}),
     texture,
     ...(parts ? { generate_parts: true } : {}),
+    ...lowPolyFields({ lowPoly, faceLimit }),
   });
 }
 

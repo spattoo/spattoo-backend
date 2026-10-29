@@ -58,7 +58,8 @@ function poll(row) {
 // body: { provider, mode, prompt?, sourceImageKey?, parts?, texture? }
 router.post('/admin/ai3d/generate', requireAuth, requireCapability('catalog:admin'), async (req, res) => {
   try {
-    const { provider = 'tripo', mode = 'text', prompt, sourceImageKey, parts = true, texture = false } = req.body ?? {};
+    const { provider = 'tripo', mode = 'text', prompt, sourceImageKey, parts = true, texture = false,
+            lowPoly = false, faceLimit } = req.body ?? {};
     if (!['meshy', 'tripo'].includes(provider)) return res.status(400).json({ error: 'provider must be meshy or tripo' });
     if (mode === 'text' && !prompt?.trim()) return res.status(400).json({ error: 'prompt is required for text mode' });
     if (mode === 'image' && !sourceImageKey) return res.status(400).json({ error: 'sourceImageKey is required for image mode' });
@@ -74,14 +75,14 @@ router.post('/admin/ai3d/generate', requireAuth, requireCapability('catalog:admi
     let taskId;
     if (provider === 'tripo') {
       taskId = mode === 'text'
-        ? await tripo.createTextTo3D({ prompt, texture, parts })
-        : await tripo.createImageTo3D({ imageUrl, texture, parts });
+        ? await tripo.createTextTo3D({ prompt, texture, parts, lowPoly, faceLimit })
+        : await tripo.createImageTo3D({ imageUrl, texture, parts, lowPoly, faceLimit });
     } else {
       // Meshy splits as a SECOND task on a finished model, so `parts` is not passed here — the
       // studio asks for the split once this one succeeds. One vendor plans it, the other chains it.
       taskId = mode === 'text'
-        ? await meshy.createTextTo3DTask({ prompt })
-        : await meshy.createImageTo3DTask({ imageUrl, shouldTexture: texture });
+        ? await meshy.createTextTo3DTask({ prompt, targetPolycount: faceLimit })
+        : await meshy.createImageTo3DTask({ imageUrl, shouldTexture: texture, targetPolycount: faceLimit });
     }
 
     const { data, error } = await supabase
