@@ -19,6 +19,7 @@ import { searchHelp } from '../services/helpSearch.js';
 import { logQuestion, markAnswered } from '../services/helpLog.js';
 import { escalateQuestion } from '../services/helpEscalate.js';
 import { outOfScope } from '../services/helpScope.js';
+import { planHelpIndex, applyHelpIndex } from '../services/helpIndexBuild.js';
 
 const router = Router();
 
@@ -170,6 +171,52 @@ router.post('/help/escalate', requireAuth, attachBakerContext, async (req, res) 
       id: questionId, userId: req.user?.id, note, baker, bakerEmail,
     });
     res.json({ ok: true, recorded: ok, alreadySent, replyTo: bakerEmail });
+  } catch (err) {
+    serverError(req, res, err);
+  }
+});
+
+/* ── POST /api/admin/help/reindex — rebuild the index from uploaded articles ─────────────────────
+ *
+ * Sandeep: *"i dont prefer running such mjs manually … build it in admin, so we can run from
+ * there."*
+ *
+ * ⚠️ THE ARTICLES ARE UPLOADED, NOT FETCHED, and that follows from a decision already made. The
+ * help articles live in spattoo-docs and nowhere else — *"docs should live in docs repo. not on
+ * backend"* — so the deployed API has no checkout to read. The alternative was a GitHub token on
+ * the server; uploading from the browser needs no new credential and matches how element bundles
+ * already reach admin.
+ *
+ * ⚠️ `?dryRun=true` PARSES AND REPORTS WITHOUT EMBEDDING OR WRITING. It is the cheap half: it
+ * catches the wrong folder, a missing `audience:`, or a file that chunked to nothing, before a
+ * single embedding is paid for or a row is deleted.
+ */
+router.post('/admin/help/reindex', requireAuth, requireCapability('catalog:admin'), async (req, res) => {
+  try {
+    const { files, pruneMissing } = req.body ?? {};
+    if (!Array.isArray(files) || !files.length) {
+      return res.status(400).json({ error: 'files is required: [{ filename, text }]' });
+    }
+    /* A guard against an upload that is not the help folder at all. 61 files is the real corpus;
+       an order of magnitude more is a mistake worth refusing before it costs anything. */
+    if (files.length > 400) {
+      return res.status(400).json({ error: `${files.length} files is far more than the help folder holds — check the selection` });
+    }
+
+    /* ⚠️ THE DIFF IS ALWAYS AVAILABLE WITHOUT DOING ANYTHING. The screen shows it first, so
+       "3 changed, 1 new, 55 untouched" is read BEFORE an embedding is paid for or a row deleted. */
+    if (String(req.query.dryRun || '') === 'true') {
+      const plan = await planHelpIndex(files, supabase);
+      return res.json({ ok: true, dryRun: true, plan });
+    }
+
+    /* `pruneMissing` only when the caller says the upload was the WHOLE folder. An article absent
+       from a partial upload has not been removed, and deleting it would empty the index one
+       upload at a time. */
+    const result = await applyHelpIndex(files, supabase, { pruneMissing: pruneMissing === true });
+    /* 200 with ok:false for a refusal — "nothing indexable in that upload" is a fact about the
+       request, not a server fault, and the screen shows it as a message rather than a red error. */
+    res.json(result);
   } catch (err) {
     serverError(req, res, err);
   }
