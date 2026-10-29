@@ -159,6 +159,37 @@ router.get('/admin/ai3d/:id', requireAuth, requireCapability('catalog:admin'), a
   }
 });
 
+// GET /admin/ai3d/:id/model — stream the generated GLB through us.
+//
+// ⚠️ BECAUSE A VENDOR'S CDN DOES NOT OWE US A CORS HEADER. Tripo's does, Meshy's does not: the same
+// studio code read a Tripo model happily and got "Failed to fetch" on a Meshy one, so the verdict
+// panel went blank for exactly the vendor we were trying to compare. Proxying makes the studio
+// vendor-agnostic — it always fetches from its own origin, which it is already authenticated
+// against — and it costs one hop on a file nobody downloads twice.
+//
+// ⚠️ IT ALSO OUTLIVES THE SIGNED URL. Vendor links expire; a run reopened tomorrow would otherwise
+// show a status and nothing to draw, which is the fault `recall` was built to fix in the first
+// place. Here the server re-asks the vendor each time, so the link is always fresh.
+router.get('/admin/ai3d/:id/model', requireAuth, requireCapability('catalog:admin'), async (req, res) => {
+  try {
+    const { data: row, error } = await supabase
+      .from('meshy_generations').select('*').eq('id', req.params.id).single();
+    if (error || !row) return res.status(404).json({ error: 'Not found' });
+
+    const url = row.glb_key ? publicUrl(row.glb_key) : (await poll(row)).modelUrl;
+    if (!url) return res.status(409).json({ error: 'No model on this run yet' });
+
+    const upstream = await fetch(url);
+    if (!upstream.ok) return res.status(502).json({ error: `vendor returned ${upstream.status}` });
+    res.setHeader('Content-Type', 'model/gltf-binary');
+    const len = upstream.headers.get('content-length');
+    if (len) res.setHeader('Content-Length', len);
+    res.send(Buffer.from(await upstream.arrayBuffer()));
+  } catch (err) {
+    serverError(req, res, err);
+  }
+});
+
 // POST /admin/ai3d/:id/split — Meshy only, as a second task against a finished model.
 router.post('/admin/ai3d/:id/split', requireAuth, requireCapability('catalog:admin'), async (req, res) => {
   try {
