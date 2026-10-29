@@ -111,7 +111,21 @@ router.get('/admin/ai3d/:id', requireAuth, requireCapability('catalog:admin'), a
     const { data: row, error } = await supabase
       .from('meshy_generations').select('*').eq('id', req.params.id).single();
     if (error || !row) return res.status(404).json({ error: 'Not found' });
-    if (TERMINAL.includes(row.status)) return res.json(present(row));
+    /* ⚠️ A FINISHED ROW STILL HAS TO HAND BACK THE MODEL, and the first version did not — it
+       returned early here, so reopening yesterday's run showed a status and an empty canvas. The
+       model URL is the vendor's, not ours (see the note below on not mirroring every experiment
+       into R2), so the only place to get it is the vendor, and that means asking even when there is
+       nothing left to update. Cheap: one GET against a task that is already done. */
+    if (TERMINAL.includes(row.status)) {
+      if (row.glb_key) return res.json(present(row));
+      try {
+        const done = await poll(row);
+        return res.json({ ...present(row), vendorModelUrl: done.modelUrl ?? null });
+      } catch (e) {
+        console.error(`ai3d recall poll error (${row.provider}):`, e.message);
+        return res.json(present(row));
+      }
+    }
 
     let task;
     try {
