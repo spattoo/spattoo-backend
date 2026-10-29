@@ -2,7 +2,11 @@ import { config } from '../config.js';
 
 const BASE = 'https://api.meshy.ai/openapi/v1/image-to-3d';
 const TEXT_BASE = 'https://api.meshy.ai/openapi/v2/text-to-3d';
-const SPLIT_BASE = 'https://api.meshy.ai/openapi/v1/auto-split';
+/* ⚠️ `/print/split`, NOT `/auto-split`. The feature is called Auto Split and the endpoint is not —
+   it lives under `print` because Meshy ship it for 3D printing. Guessing the obvious URL returned a
+   500 that surfaced as "Internal server error", which is why the route below now hands the vendor's
+   own message back to the studio. */
+const SPLIT_BASE = 'https://api.meshy.ai/openapi/v1/print/split';
 
 function apiKey() {
   if (!config.meshy.apiKey) {
@@ -91,7 +95,9 @@ export async function createTextTo3DTask({ prompt, artStyle = 'realistic', targe
  * if the first run 400s, read the error and fix it here rather than in the caller.
  */
 export async function createAutoSplitTask({ taskId, mode = 'auto', prompt }) {
-  const body = { input_task_id: taskId, mode };
+  /* `layout: assembled` is the default and the one we want — `on_plate` lays the parts out flat for
+     a printer bed, which would hand back a decoration in pieces on the floor. */
+  const body = { input_task_id: taskId, mode, target_formats: ['glb'], layout: 'assembled' };
   if (prompt) body.prompt = prompt;
   const res = await fetch(SPLIT_BASE, {
     method: 'POST',

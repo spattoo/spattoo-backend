@@ -202,7 +202,16 @@ router.post('/admin/ai3d/:id/split', requireAuth, requireCapability('catalog:adm
     }
     if (row.status !== 'SUCCEEDED') return res.status(400).json({ error: 'Model is not finished yet' });
 
-    const taskId = await meshy.createAutoSplitTask({ taskId: row.meshy_task_id, mode, prompt });
+    /* ⚠️ THE VENDOR'S MESSAGE REACHES THE SCREEN HERE, unlike everywhere else in this API. This is
+       a staff diagnostic behind `catalog:admin`, and its entire job is to find out what a vendor
+       does with a request — a generic "Internal server error" hides the one fact being looked for.
+       It cost a round trip to learn that the Auto Split endpoint is `/print/split`. */
+    let taskId;
+    try {
+      taskId = await meshy.createAutoSplitTask({ taskId: row.meshy_task_id, mode, prompt });
+    } catch (vendorErr) {
+      return res.status(502).json({ error: vendorErr.message });
+    }
     const { data } = await supabase
       .from('meshy_generations')
       .insert({
