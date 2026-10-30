@@ -171,6 +171,187 @@ router.get('/decoration-mediums', requireAuth, requireCapability('design:create'
   } catch (err) { serverError(req, res, err); }
 });
 
+// ── Authoring the prompt questions ──────────────────────────────────────────────────────────────
+// Root CLAUDE.md rule 3: every value an admin would tune must be authorable without a deploy. These
+// are exactly that — the questions came out of guesswork and will keep moving as real generations
+// come back wrong. `catalog:admin`, matching element-categories and the rest of the catalogue
+// master data beside it.
+//
+// ⚠️ THE MATERIAL LIST IS NOT EDITABLE HERE, deliberately. A `source: 'mediums'` question has no
+// options to author — it reads decoration_mediums, which is the one home for that vocabulary. What
+// IS authorable is how each material reads to a generator, which is why prompt_phrase gets its own
+// route below rather than being folded in as option rows.
+router.get('/admin/decoration-prompt-questions', requireAuth, requireCapability('catalog:admin'), async (req, res) => {
+  try {
+    const { data: questions, error } = await supabase
+      .from('decoration_prompt_questions')
+      .select('id, category_id, key, label, help, source, required, sort_order, is_active, placeholder')
+      .order('sort_order');
+    if (error) return serverError(req, res, error);
+    const { data: options, error: optErr } = await supabase
+      .from('decoration_prompt_options')
+      .select('id, question_id, key, label, phrase, is_default, sort_order, is_active')
+      .order('sort_order');
+    if (optErr) return serverError(req, res, optErr);
+    const by = (options ?? []).reduce((a, o) => { (a[o.question_id] ??= []).push(o); return a; }, {});
+    res.json((questions ?? []).map(q => ({ ...q, options: by[q.id] ?? [] })));
+  } catch (err) { serverError(req, res, err); }
+});
+
+router.post('/admin/decoration-prompt-questions', requireAuth, requireCapability('catalog:admin'), async (req, res) => {
+  try {
+    const label = String(req.body?.label ?? '').trim();
+    if (!label) return res.status(400).json({ error: 'A label is required.' });
+    const source = String(req.body?.source ?? 'options');
+    // 'mediums' is excluded on purpose: there is exactly one material question and it already
+    // exists. A second would be two chip rows reading the same table, which is a confusing screen
+    // rather than a useful one.
+    if (!['options', 'free_text'].includes(source)) {
+      return res.status(400).json({ error: 'source must be options or free_text.' });
+    }
+    const key = String(req.body?.key ?? label).trim().toLowerCase()
+      .replace(/[^a-z0-9]+/g, '_').replace(/^_|_$/g, '');
+    if (!key) return res.status(400).json({ error: 'Could not derive a key from that label.' });
+
+    const { data: last } = await supabase.from('decoration_prompt_questions')
+      .select('sort_order').order('sort_order', { ascending: false }).limit(1);
+    const sort_order = (last?.[0]?.sort_order ?? 0) + 10;
+
+    const { data, error } = await supabase.from('decoration_prompt_questions')
+      .insert({ category_id: null, key, label, source, sort_order,
+                help: String(req.body?.help ?? '').trim() || null,
+                placeholder: String(req.body?.placeholder ?? '').trim() || null })
+      .select().single();
+    // A duplicate key is a real answer, not a server fault: the question already exists.
+    if (error) {
+      if (String(error.code) === '23505') return res.status(409).json({ error: `A question with key "${key}" already exists.` });
+      return serverError(req, res, error);
+    }
+    res.status(201).json(data);
+  } catch (err) { serverError(req, res, err); }
+});
+
+router.patch('/admin/decoration-prompt-questions/:id', requireAuth, requireCapability('catalog:admin'), async (req, res) => {
+  try {
+    const { id } = req.params;
+    if (!UUID_RE.test(id)) return res.status(400).json({ error: 'Invalid id.' });
+    const updates = {};
+    for (const f of ['label', 'help', 'placeholder']) if (f in req.body) updates[f] = req.body[f] || null;
+    if ('sort_order' in req.body) updates.sort_order = Number(req.body.sort_order) || 0;
+    if ('is_active' in req.body)  updates.is_active  = !!req.body.is_active;
+    if (!Object.keys(updates).length) return res.status(400).json({ error: 'Nothing to update.' });
+    updates.updated_at = new Date().toISOString();
+    const { data, error } = await supabase.from('decoration_prompt_questions')
+      .update(updates).eq('id', id).select().single();
+    if (error) return serverError(req, res, error);
+    res.json(data);
+  } catch (err) { serverError(req, res, err); }
+});
+
+// ⚠️ ADDING AN OPTION IS THE ONE WRITE THE STUDIO ITSELF MAKES. Sandeep asked for it inline: when
+// none of the chips fit, the gap is noticed WHILE generating, and a trip to another screen is how
+// it never gets fixed. Same route, same capability — the studio is just another caller.
+router.post('/admin/decoration-prompt-questions/:id/options', requireAuth, requireCapability('catalog:admin'), async (req, res) => {
+  try {
+    const { id } = req.params;
+    if (!UUID_RE.test(id)) return res.status(400).json({ error: 'Invalid id.' });
+    const label = String(req.body?.label ?? '').trim();
+    if (!label) return res.status(400).json({ error: 'A label is required.' });
+
+    const { data: question, error: qErr } = await supabase
+      .from('decoration_prompt_questions').select('id, source').eq('id', id).single();
+    if (qErr) return serverError(req, res, qErr);
+    // Refusing is the honest answer: a 'mediums' question's answers live in decoration_mediums and
+    // a 'free_text' one has none by definition. Silently accepting would create a row nothing reads.
+    if (question?.source !== 'options') {
+      return res.status(400).json({ error: `This question takes no stored options (source: ${question?.source}).` });
+    }
+
+    // The phrase defaults to the label. It is what reaches the generator, and a blank one would add
+    // a chip that changes nothing — which looks like the feature is broken rather than empty.
+    const phrase = String(req.body?.phrase ?? label).trim();
+    const key = String(req.body?.key ?? label).trim().toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_|_$/g, '');
+    if (!key) return res.status(400).json({ error: 'Could not derive a key from that label.' });
+
+    const { data: siblings } = await supabase.from('decoration_prompt_options')
+      .select('sort_order').eq('question_id', id).order('sort_order', { ascending: false }).limit(1);
+    const sort_order = (siblings?.[0]?.sort_order ?? 0) + 10;
+
+    const { data, error } = await supabase.from('decoration_prompt_options')
+      .insert({ question_id: id, key, label, phrase, sort_order }).select().single();
+    if (error) return serverError(req, res, error);
+    res.status(201).json(data);
+  } catch (err) { serverError(req, res, err); }
+});
+
+router.patch('/admin/decoration-prompt-options/:id', requireAuth, requireCapability('catalog:admin'), async (req, res) => {
+  try {
+    const { id } = req.params;
+    if (!UUID_RE.test(id)) return res.status(400).json({ error: 'Invalid id.' });
+    const updates = {};
+    for (const f of ['label', 'phrase']) if (f in req.body) updates[f] = String(req.body[f] ?? '');
+    if ('is_default' in req.body) updates.is_default = !!req.body.is_default;
+    if ('is_active'  in req.body) updates.is_active  = !!req.body.is_active;
+    if ('sort_order' in req.body) updates.sort_order = Number(req.body.sort_order) || 0;
+    if (!Object.keys(updates).length) return res.status(400).json({ error: 'Nothing to update.' });
+
+    /* ⚠️ ONE DEFAULT PER QUESTION. Two rows marked default means the chip that lights up depends on
+       sort order, and the prompt silently changes when somebody reorders them. Cleared first,
+       in the same request, rather than left to a constraint that does not exist. */
+    if (updates.is_default === true) {
+      const { data: row } = await supabase.from('decoration_prompt_options')
+        .select('question_id').eq('id', id).single();
+      if (row?.question_id) {
+        await supabase.from('decoration_prompt_options')
+          .update({ is_default: false }).eq('question_id', row.question_id);
+      }
+    }
+    const { data, error } = await supabase.from('decoration_prompt_options')
+      .update(updates).eq('id', id).select().single();
+    if (error) return serverError(req, res, error);
+    res.json(data);
+  } catch (err) { serverError(req, res, err); }
+});
+
+router.delete('/admin/decoration-prompt-options/:id', requireAuth, requireCapability('catalog:admin'), async (req, res) => {
+  try {
+    const { id } = req.params;
+    if (!UUID_RE.test(id)) return res.status(400).json({ error: 'Invalid id.' });
+    const { error } = await supabase.from('decoration_prompt_options').delete().eq('id', id);
+    if (error) return serverError(req, res, error);
+    res.status(204).end();
+  } catch (err) { serverError(req, res, err); }
+});
+
+// ── GET/PATCH the material prompt phrases ───────────────────────────────────────────────────────
+// How each material reads TO A GENERATOR (migration 150). Authored, never derived — deriving it
+// from the human label produced "wafer paper (shaped) finish" and leaked an em dash. This is the
+// only place it can be edited without SQL, which is what rule 3 asks for.
+router.get('/admin/decoration-mediums', requireAuth, requireCapability('catalog:admin'), async (req, res) => {
+  try {
+    const { data, error } = await supabase.from('decoration_mediums')
+      .select('key, label, can_model, prompt_phrase, sort_order, is_active').order('sort_order');
+    if (error) return serverError(req, res, error);
+    res.json(data ?? []);
+  } catch (err) { serverError(req, res, err); }
+});
+
+router.patch('/admin/decoration-mediums/:key', requireAuth, requireCapability('catalog:admin'), async (req, res) => {
+  try {
+    const key = String(req.params.key ?? '').trim();
+    if (!/^[a-z0-9_]+$/.test(key)) return res.status(400).json({ error: 'Invalid key.' });
+    if (!('prompt_phrase' in req.body)) return res.status(400).json({ error: 'Nothing to update.' });
+    // Empty string means "stop offering this for generation" and is stored as NULL, because that is
+    // what the route filters on. Storing '' would leave it offered with nothing to say.
+    const phrase = String(req.body.prompt_phrase ?? '').trim() || null;
+    const { data, error } = await supabase.from('decoration_mediums')
+      .update({ prompt_phrase: phrase, updated_at: new Date().toISOString() })
+      .eq('key', key).select().single();
+    if (error) return serverError(req, res, error);
+    res.json(data);
+  } catch (err) { serverError(req, res, err); }
+});
+
 // ── GET /api/decoration-prompt-questions ────────────────────────────────────────────────────────
 // What to ask before generating a 3D decoration, for ONE element category (migration 149).
 //
@@ -201,7 +382,7 @@ router.get('/decoration-prompt-questions', requireAuth, requireCapability('desig
     // what this is yet" rather than an empty one.
     let q = supabase
       .from('decoration_prompt_questions')
-      .select('id, category_id, key, label, help, source, required, sort_order')
+      .select('id, category_id, key, label, help, source, required, sort_order, placeholder')
       .eq('is_active', true)
       .order('sort_order');
     q = categoryId ? q.or(`category_id.is.null,category_id.eq.${categoryId}`) : q.is('category_id', null);
@@ -209,7 +390,7 @@ router.get('/decoration-prompt-questions', requireAuth, requireCapability('desig
     const { data: questions, error } = await q;
     if (error) return serverError(req, res, error);
 
-    const ids = (questions ?? []).filter(x => x.source === 'options').map(x => x.id);
+    const ids = (questions ?? []).filter(x => x.source === 'options').map(x => x.id);  // not 'mediums' (resolved below) nor 'free_text' (no options by definition)
     let options = [];
     if (ids.length) {
       const { data, error: optErr } = await supabase
@@ -254,13 +435,24 @@ router.get('/decoration-prompt-questions', requireAuth, requireCapability('desig
       return acc;
     }, {});
 
+    /* `kind` rather than the raw `source`, because the client renders by SHAPE: chips or a box.
+       It must not learn that 'mediums' means "go and fetch the material list" — the way a client
+       learns that is by holding its own copy, which is the drift this whole design exists to stop.
+       Both 'options' and 'mediums' arrive here as the same thing: a list of options. */
     res.json((questions ?? []).map(x => ({
-      key:      x.key,
-      label:    x.label,
-      help:     x.help,
-      required: x.required,
-      universal: x.category_id === null,
-      options:  x.source === 'mediums' ? mediumOptions : (byQuestion[x.id] ?? []),
+      /* The id is here so the studio can add an option inline, where the gap is noticed. It is not
+         sensitive — this route already requires design:create — and the alternative (resolving by
+         key on write) would mean a second lookup on every save for no gain. */
+      id:          x.id,
+      key:         x.key,
+      label:       x.label,
+      help:        x.help,
+      required:    x.required,
+      kind:        x.source === 'free_text' ? 'text' : 'choice',
+      placeholder: x.placeholder ?? null,
+      options:     x.source === 'mediums' ? mediumOptions
+                 : x.source === 'free_text' ? []
+                 : (byQuestion[x.id] ?? []),
     })));
   } catch (err) { serverError(req, res, err); }
 });
