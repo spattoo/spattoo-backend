@@ -169,3 +169,16 @@ on conflict do nothing;
 -- check:migration-grants asked for this to be stated; stating it changed the answer.
 grant all on decoration_prompt_questions to service_role;
 grant all on decoration_prompt_options   to service_role;
+
+-- ⚠️ AND REVOKE WHAT SUPABASE GRANTS BY DEFAULT, which is everything. A new table in `public` is
+-- born with DELETE/INSERT/UPDATE/TRUNCATE/REFERENCES/TRIGGER for anon and authenticated — so
+-- "I did not grant it" is not the same as "it is not granted", and a `revoke select` alone (which
+-- is what was run first) leaves six privileges behind.
+--
+-- Nothing is reachable today: RLS is on for these tables and there are no policies, so every
+-- anon/authenticated statement is denied whatever the grant says, and service_role bypasses RLS.
+-- The revoke is therefore not a fix, it is the privilege list agreeing with the intent — the next
+-- person reading `information_schema.role_table_grants` should not see write access that only RLS
+-- is quietly preventing, and should not have to check for a policy to know the answer.
+revoke all on decoration_prompt_questions from anon, authenticated;
+revoke all on decoration_prompt_options   from anon, authenticated;
