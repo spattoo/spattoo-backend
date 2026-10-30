@@ -112,9 +112,46 @@ export async function createImageTo3D({ imageUrl, texture = false, parts = false
   });
 }
 
-/** Split a finished model into parts after the fact — Tripo's own segmentation task. */
+/** Split a finished model into parts after the fact — Tripo's plain segmentation task. */
 export async function createSegmentation({ taskId }) {
   return post({ type: 'mesh_segmentation', original_model_task_id: taskId });
+}
+
+/* ── Named parts, which is the thing `generate_parts` does not give ──────────────────────────────
+ *
+ * ⚠️ THE GAP THIS CLOSES WAS NEARLY MISSED. `generate_parts` returns a beautifully carved model
+ * whose pieces are called `tripo_part_0 … tripo_part_10` — correct geometry, useless labels — and
+ * the conclusion drawn from that was "naming is manual work we have to do in RecomposeEditor".
+ * Sandeep asked whether Tripo could be told the names. It can, and this is where:
+ *
+ *   `hint`        a sentence describing the parts, e.g. "a bear with a bow, ears and feet"
+ *   `granularity` coarse (2-3 parts) / medium (4-8) / fine (9-52)
+ *   → `part_names` comes BACK in the response, comma separated
+ *
+ * ⚠️ GRANULARITY MATTERS AS MUCH AS NAMING. `generate_parts` gave 13 pieces for one bear — an eye,
+ * an ear and a foot each separately — which is far finer than a baker wants to colour. `coarse`
+ * and `medium` are the cake-decoration settings; `fine` is for game assets.
+ *
+ * ⚠️ AND IT COSTS ROUGHLY DOUBLE: smart segmentation on a model is 55 credits against
+ * `generate_parts` at 20, so a named element is about $0.65 where an unnamed one is $0.30. Whether
+ * that is worth it is a judgement about how much the manual naming step costs us, not a technical
+ * question — which is exactly why the studio offers both rather than choosing.
+ *
+ * ⚠️ THE TASK TYPE IS THE ONE FIELD NOT CONFIRMED AGAINST A LIVE CALL. Tripo's published task list
+ * names `mesh_segmentation`; their Smart Segmentation is documented by its PARAMETERS everywhere
+ * (source / model_task_id / granularity / hint) and by its type string nowhere public. So this
+ * sends the documented parameters under that type, and the route hands Tripo's own refusal back to
+ * the studio rather than swallowing it — one call settles it, and the error will name the field.
+ */
+export async function createSmartSegmentation({ taskId, granularity = 'medium', hint }) {
+  return post({
+    type: 'mesh_segmentation',
+    source: 'model',
+    model_task_id: taskId,
+    original_model_task_id: taskId,   // the plain task names it this way; sent for both spellings
+    granularity,
+    ...(hint ? { hint } : {}),
+  });
 }
 
 /**
@@ -144,6 +181,8 @@ export async function getTask(taskId) {
     modelUrl: t.output?.pbr_model ?? t.output?.model ?? t.result?.pbr_model?.url ?? t.result?.model?.url ?? null,
     thumbnailUrl: t.output?.rendered_image ?? t.result?.rendered_image?.url ?? null,
     credits: typeof t.consumed_credits === 'number' ? t.consumed_credits : null,
+    /* Smart segmentation answers with the names it gave the parts — the whole reason to pay for it. */
+    partNames: t.output?.part_names ?? t.result?.part_names ?? t.part_names ?? null,
     error: t.status === 'failed' || t.status === 'banned' ? (t.error_msg ?? 'Tripo reported failure') : null,
   };
 }

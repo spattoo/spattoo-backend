@@ -120,7 +120,8 @@ router.get('/admin/ai3d/:id', requireAuth, requireCapability('catalog:admin'), a
       if (row.glb_key) return res.json(present(row));
       try {
         const done = await poll(row);
-        return res.json({ ...present(row), vendorModelUrl: done.modelUrl ?? null });
+        return res.json({ ...present(row), vendorModelUrl: done.modelUrl ?? null,
+                          partNames: done.partNames ?? null });
       } catch (e) {
         console.error(`ai3d recall poll error (${row.provider}):`, e.message);
         return res.json(present(row));
@@ -153,7 +154,8 @@ router.get('/admin/ai3d/:id', requireAuth, requireCapability('catalog:admin'), a
     // runs are experiments that get looked at once and thrown away; copying every one into R2 would
     // fill the bucket with rejects. Anything worth keeping goes through Save-as-Element, which does
     // the copy properly.
-    res.json({ ...present(saved ?? { ...row, ...update }), vendorModelUrl: task.modelUrl ?? null });
+    res.json({ ...present(saved ?? { ...row, ...update }), vendorModelUrl: task.modelUrl ?? null,
+               partNames: task.partNames ?? null });
   } catch (err) {
     serverError(req, res, err);
   }
@@ -185,6 +187,48 @@ router.get('/admin/ai3d/:id/model', requireAuth, requireCapability('catalog:admi
     const len = upstream.headers.get('content-length');
     if (len) res.setHeader('Content-Length', len);
     res.send(Buffer.from(await upstream.arrayBuffer()));
+  } catch (err) {
+    serverError(req, res, err);
+  }
+});
+
+// POST /admin/ai3d/:id/segment — Tripo smart segmentation: parts WITH names.
+//
+// ⚠️ SEPARATE FROM `/split` BECAUSE THE TWO VENDORS DO DIFFERENT THINGS. Meshy cuts a finished
+// model into printable pieces; Tripo re-segments it and tells you what the pieces ARE. Collapsing
+// them into one endpoint would have meant a body where half the fields are ignored depending on a
+// provider flag, which is the type-branching rule 2 exists to stop.
+router.post('/admin/ai3d/:id/segment', requireAuth, requireCapability('catalog:admin'), async (req, res) => {
+  try {
+    const { granularity = 'medium', hint } = req.body ?? {};
+    const { data: row, error } = await supabase
+      .from('meshy_generations').select('*').eq('id', req.params.id).single();
+    if (error || !row) return res.status(404).json({ error: 'Not found' });
+    if (row.provider !== 'tripo') return res.status(400).json({ error: 'Smart segmentation is Tripo only' });
+    if (row.status !== 'SUCCEEDED') return res.status(400).json({ error: 'Model is not finished yet' });
+
+    let taskId;
+    try {
+      taskId = await tripo.createSmartSegmentation({ taskId: row.meshy_task_id, granularity, hint });
+    } catch (vendorErr) {
+      /* Same reasoning as the split route: this is a diagnostic, and the vendor's sentence is the
+         answer being looked for. The task type here is the one field not confirmed live. */
+      return res.status(502).json({ error: vendorErr.message });
+    }
+
+    const { data } = await supabase
+      .from('meshy_generations')
+      .insert({
+        created_by: req.user.id,
+        provider: 'tripo', mode: row.mode,
+        prompt: hint ?? row.prompt,
+        source_image_key: row.source_image_key,
+        wants_parts: true,
+        meshy_task_id: taskId,
+        status: 'PENDING',
+      })
+      .select('*').single();
+    res.json({ ok: true, ...present(data) });
   } catch (err) {
     serverError(req, res, err);
   }
