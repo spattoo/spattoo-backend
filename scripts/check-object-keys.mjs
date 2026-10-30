@@ -52,6 +52,12 @@ const REVIEWED = new Map([
   // Derived keys. Safe because the key they are built FROM is minted once, so the derivation is too.
   // Each is written when its source object is first processed and not again.
   ['jobs/processors/removeLogoBg.js','derived: <logoKey>-nobg.webp'],
+  // Reviewed 2026-10-30. A logo RE-ENCODE is a rebuild, so it cannot reuse `<logoKey>-nobg.webp`
+  // above — that object is immutable, and rewriting it would leave Cloudflare serving the old
+  // bytes for a month and every browser that has them for a year, which is the precise failure
+  // this list exists to prevent. Same answer as the craft guide below: a generation in the key
+  // (`-nobg-<ts>.webp`), the baker row repointed at it, and the previous object deleted.
+  ['routes/bakerLogos.js',           'derived + generation: <logoKey>-nobg-<timestamp>.webp; caller deletes the previous object'],
   ['services/thumbnails.js',         'derived: <thumbnailKey>-<maxDim>.webp'],
   ['services/imageOptimize.js',      'derived: <key>.webp'],
   // Reviewed 2026-09-16. WhatsApp headers accept only JPEG/PNG and our thumbnails are WebP, so the

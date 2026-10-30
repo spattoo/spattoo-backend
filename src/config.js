@@ -134,6 +134,11 @@ export const config = {
   // The completion webhook URL is configured once in the Meshy dashboard (account-global),
   // pointing at `https://<api-host>/api/webhooks/meshy`.
   meshy:    { apiKey: process.env.MESHY_API_KEY },
+  /* Tripo (tripo3d.ai) — the second 3D generator, switchable against Meshy in admin's 3D Element
+     Studio. Optional for exactly the reason the REMOVE_BG note above gives: a vendor key is never a
+     boot condition, so a bad rotation breaks one studio rather than 502-ing the API.
+     `services/tripo.js` refuses by name at call time. */
+  tripo:    { apiKey: process.env.TRIPO_API_KEY },
   // AI metering. `usdInr` converts a provider's USD token cost into the provider_cost_inr stamped
   // on every debit — the MARGIN GUARDRAIL only. It is never a customer-facing price: retail is
   // credits, and those live in the credit_costs table (data, admin-editable, no deploy). So this
