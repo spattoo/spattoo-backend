@@ -1,5 +1,6 @@
 import { Router } from 'express';
 import { serverError } from '../lib/httpError.js';
+import { UUID_RE } from '../lib/uuid.js';
 import express from 'express';
 import { supabase } from '../services/supabase.js';
 import { requireAuth } from '../middleware/auth.js';
@@ -167,6 +168,100 @@ router.get('/decoration-mediums', requireAuth, requireCapability('design:create'
       .order('sort_order');
     if (error) return serverError(req, res, error);
     res.json(data ?? []);
+  } catch (err) { serverError(req, res, err); }
+});
+
+// ── GET /api/decoration-prompt-questions ────────────────────────────────────────────────────────
+// What to ask before generating a 3D decoration, for ONE element category (migration 149).
+//
+// Sandeep: *"if a baker asks for a lion, it might give a real lion 3d. but baker usually wants is a
+// fondant lion, and that too in seating position... the questions we ask are based on what element
+// baker asks - for flowers it could be different."* A flower is never "sitting"; it is a bud or
+// open, one bloom or a spray. So the question SET is per category, and it is data.
+//
+// ⚠️ THE OPTIONS ARE RESOLVED HERE, INCLUDING THE MATERIALS. A question with `source: 'mediums'`
+// carries no option rows — it is answered from `decoration_mediums` where `can_model`. Resolving it
+// server-side is the point: a client that received a bare `source` flag would have to know what
+// "mediums" means, and the way it would find out is by holding its own list. That is exactly the
+// drift migration 101 made the vocabulary a table to stop, and the admin prompt builder had already
+// done it — offering "Buttercream", which maps to `cream`, which has `can_model = false`.
+// Returned shape is identical for both kinds, so the renderer cannot tell them apart.
+//
+// `design:create` like element-types and decoration-mediums beside it: catalogue vocabulary, not
+// privileged data, and the baker-facing studio will need it too.
+router.get('/decoration-prompt-questions', requireAuth, requireCapability('design:create'), async (req, res) => {
+  try {
+    const categoryId = String(req.query.category_id ?? '').trim() || null;
+    if (categoryId && !UUID_RE.test(categoryId)) {
+      return res.status(400).json({ error: 'Invalid category_id.' });
+    }
+
+    // Universal questions (category_id null) ALWAYS come back, plus this category's own. A caller
+    // that names no category gets the universal set, which is the honest answer to "I do not know
+    // what this is yet" rather than an empty one.
+    let q = supabase
+      .from('decoration_prompt_questions')
+      .select('id, category_id, key, label, help, source, required, sort_order')
+      .eq('is_active', true)
+      .order('sort_order');
+    q = categoryId ? q.or(`category_id.is.null,category_id.eq.${categoryId}`) : q.is('category_id', null);
+
+    const { data: questions, error } = await q;
+    if (error) return serverError(req, res, error);
+
+    const ids = (questions ?? []).filter(x => x.source === 'options').map(x => x.id);
+    let options = [];
+    if (ids.length) {
+      const { data, error: optErr } = await supabase
+        .from('decoration_prompt_options')
+        .select('question_id, key, label, phrase, is_default, sort_order')
+        .in('question_id', ids)
+        .eq('is_active', true)
+        .order('sort_order');
+      if (optErr) return serverError(req, res, optErr);
+      options = data ?? [];
+    }
+
+    const wantsMediums = (questions ?? []).some(x => x.source === 'mediums');
+    let mediumOptions = [];
+    if (wantsMediums) {
+      const { data, error: medErr } = await supabase
+        .from('decoration_mediums')
+        .select('key, label, prompt_phrase')
+        .eq('is_active', true)
+        .eq('can_model', true)        // ⚠️ you cannot model a ganache lion, or a printed sheet
+        .not('prompt_phrase', 'is', null)
+        .order('sort_order');
+      if (medErr) return serverError(req, res, medErr);
+      /* ⚠️ THE PHRASE IS AUTHORED, NOT DERIVED (migration 150). It was built from the label here,
+         and the labels are written for humans: "Wafer paper (shaped)" became "wafer paper (shaped)
+         finish" and "Cream — palette knife" leaked an em dash into a generator prompt. A label
+         answers "what do I pick"; a phrase answers "what do I say to the model".
+         `prompt_phrase is null` is how a material says it should not be offered for generation at
+         all — a separate claim from can_model, which is about whether a HUMAN can make it. "Other"
+         is hand-modellable and has no sentence that means anything to a generator. */
+      mediumOptions = (data ?? []).map((m, i) => ({
+        key: m.key,
+        label: m.label,
+        phrase: m.prompt_phrase,
+        is_default: m.key === 'fondant',
+        sort_order: i,
+      }));
+    }
+
+    const byQuestion = options.reduce((acc, o) => {
+      (acc[o.question_id] ??= []).push({ key: o.key, label: o.label, phrase: o.phrase, is_default: o.is_default });
+      return acc;
+    }, {});
+
+    res.json((questions ?? []).map(x => ({
+      key:      x.key,
+      label:    x.label,
+      help:     x.help,
+      required: x.required,
+      universal: x.category_id === null,
+      options:  x.source === 'mediums' ? mediumOptions : (byQuestion[x.id] ?? []),
+    })));
   } catch (err) { serverError(req, res, err); }
 });
 
