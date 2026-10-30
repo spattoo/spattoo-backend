@@ -1,6 +1,8 @@
-import sharp from 'sharp';
 import { getObjectBuffer, putObject } from '../../services/r2.js';
 import { cutOutSubject } from '../../services/backgroundRemoval.js';
+// ONE encoder, shared with scripts/backfill-logo-webp.mjs — see the note in that file for why a
+// lossless-only encode made one baker's logo 23% of a cold template load on a phone.
+import { encodeLogoWebp } from '../../services/logoImage.js';
 // NOT metered, deliberately (see migration 036, which meters the baker-facing cut-out route). This
 // fires ONCE, on the logo a baker uploads while setting up their bakery — before they have used the
 // product, and quite possibly before they understand what a credit is. Charging for onboarding is
@@ -30,12 +32,7 @@ export async function removeLogoBg({ bakerId, logoKey }) {
   try {
     const input = await getObjectBuffer(logoKey);
     const { png: cutout } = await cutOutSubject(input);   // whichever provider is configured
-    // Re-encode as lossless WebP (smaller than PNG, keeps alpha + crisp logo edges) and bound the
-    // size — a logo never needs to be huge (displays ~30px tall, so 640px covers retina).
-    const webp = await sharp(cutout)
-      .resize({ width: 640, height: 640, fit: 'inside', withoutEnlargement: true })
-      .webp({ lossless: true })
-      .toBuffer();
+    const webp = await encodeLogoWebp(cutout);
     const transparentKey = `${logoKey.replace(/\.[^./]+$/, '')}-nobg.webp`;
     await putObject(transparentKey, webp, 'image/webp');
     const { error } = await supabase
