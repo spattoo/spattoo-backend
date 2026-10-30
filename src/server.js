@@ -20,6 +20,7 @@ import craftGuideRouter from './routes/craftGuide.js';
 import nozzlesRouter from './routes/nozzles.js';
 import rbacRouter from './routes/rbac.js';
 import storefrontRouter from './routes/storefront.js';
+import bakerLogosRouter from './routes/bakerLogos.js';
 import meshyRouter from './routes/meshy.js';
 import ai3dRouter from './routes/ai3d.js';
 import webhooksRouter from './routes/webhooks.js';
@@ -97,6 +98,7 @@ app.use('/api', craftGuideRouter);
 app.use('/api', nozzlesRouter);
 app.use('/api', rbacRouter);
 app.use('/api', storefrontRouter);
+app.use('/api', bakerLogosRouter);  // baker logos: what they weigh, and re-encoding the heavy ones
 app.use('/api', meshyRouter);
 app.use('/api', ai3dRouter);
 app.use('/api', printSheetsRouter);

@@ -65,6 +65,28 @@ export async function objectExists(key) {
   }
 }
 
+// What an object WEIGHS, without downloading it. HeadObject is one round trip and no bytes, which
+// is what makes an admin screen able to list every baker's logo size at once. `objectExists` above
+// throws the same answer away; this returns it, and both keep their own shape because a caller
+// asking "is it there" should not have to care what came back.
+//
+// null on anything that is not a clean hit — a missing object and an unreadable one are the same
+// answer to "how big is it", and a screen that renders "—" is better than one that 500s because a
+// row points at a key somebody deleted by hand.
+export async function objectStat(key) {
+  try {
+    const out = await r2.send(new HeadObjectCommand({ Bucket: config.r2.bucket, Key: key }));
+    return {
+      size:         out.ContentLength ?? null,
+      contentType:  out.ContentType ?? null,
+      lastModified: out.LastModified ?? null,
+      cacheControl: out.CacheControl ?? null,
+    };
+  } catch {
+    return null;
+  }
+}
+
 // Downloads an object's bytes as a Buffer (server-side).
 export async function getObjectBuffer(key) {
   const out = await r2.send(new GetObjectCommand({ Bucket: config.r2.bucket, Key: key }));
