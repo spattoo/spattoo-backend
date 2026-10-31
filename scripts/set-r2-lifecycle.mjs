@@ -49,9 +49,31 @@ const config = { r2: {
   bucket:          process.env.R2_BUCKET,
 } };
 
-const RULE_ID = 'expire-whatsapp-media-copies';
-const PREFIX  = 'notifications/whatsapp-media/';
-const DAYS    = 90;
+/* ── The rules this script owns ──────────────────────────────────────────────────────────────────
+ * Each is replaced by ID on every run and every OTHER rule in the bucket is kept untouched, so
+ * adding one here is safe. Both prefixes hold data that can be regenerated or that nobody promised
+ * to keep — never anything a baker's cake points at.
+ */
+const RULES = [
+  {
+    id: 'expire-whatsapp-media-copies',
+    prefix: 'notifications/whatsapp-media/',
+    days: 90,
+    why: 'derived JPEG copies of cake pictures for WhatsApp headers; deleting one makes the next send regenerate it',
+  },
+  {
+    /* ⚠️ EVERY GENERATION IS KEPT, BUT NOT FOREVER. A baker pays credits for a 3D generation and
+       the vendor's own URL expires, so the model MUST be mirrored here or the money buys something
+       that evaporates — 7 of 8 runs had no copy at all when this was found. But most generations
+       are rejects, and keeping every one forever fills the bucket with models nobody chose.
+       So: mirror all of them, expire the ones nobody promoted. Promotion COPIES the file to the
+       permanent element path, so an element is never left pointing at an expiring object. */
+    id: 'expire-unpromoted-3d-generations',
+    prefix: 'ai3d/runs/',
+    days: 30,
+    why: 'generated models nobody turned into an element; promotion copies the file out of this prefix first',
+  },
+];
 
 const apply = process.argv.includes('--apply');
 
@@ -61,16 +83,17 @@ const r2 = new S3Client({
   credentials: { accessKeyId: config.r2.accessKeyId, secretAccessKey: config.r2.secretAccessKey },
 });
 
-const ours = {
-  ID: RULE_ID,
+const ours = RULES.map(r => ({
+  ID: r.id,
   Status: 'Enabled',
-  Filter: { Prefix: PREFIX },
-  Expiration: { Days: DAYS },
+  Filter: { Prefix: r.prefix },
+  Expiration: { Days: r.days },
   // A multipart upload that never completed is invisible and billable. Nothing here writes one today
   // (the copies are small single PUTs), but the rule costs nothing and a future large upload into
-  // this prefix would otherwise leak.
+  // these prefixes would otherwise leak.
   AbortIncompleteMultipartUpload: { DaysAfterInitiation: 7 },
-};
+}));
+const OUR_IDS = new Set(RULES.map(r => r.id));
 
 let existing = [];
 try {
@@ -86,14 +109,14 @@ try {
   }
 }
 
-const kept = existing.filter(r => r.ID !== RULE_ID);
-const Rules = [...kept, ours];
+const kept = existing.filter(r => !OUR_IDS.has(r.ID));
+const Rules = [...kept, ...ours];
 
 console.log(`bucket   ${config.r2.bucket}`);
 console.log(`endpoint ${config.r2.endpoint}`);
 console.log(`\nrules already present: ${existing.length}`);
 for (const r of existing) {
-  const mark = r.ID === RULE_ID ? '(ours — will be replaced)' : '(kept untouched)';
+  const mark = OUR_IDS.has(r.ID) ? '(ours — will be replaced)' : '(kept untouched)';
   console.log(`  · ${r.ID} ${mark}`);
 }
 console.log(`\nwriting: ${RULE_ID} — delete ${PREFIX}* after ${DAYS} days`);

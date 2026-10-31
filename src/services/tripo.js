@@ -110,12 +110,14 @@ function lowPolyFields({ lowPoly, faceLimit }) {
  * fused model is exactly the state RecomposeEditor was built to rescue by hand.
  */
 export async function createTextTo3D({ prompt, texture = false, pbr = false, parts = false,
-                                       modelVersion, lowPoly = false, faceLimit }) {
+                                       modelVersion, lowPoly = false, faceLimit,
+                                       modelSeed, textureSeed }) {
   return post({
     type: 'text_to_model',
     prompt,
     ...(modelVersion ? { model_version: modelVersion } : {}),
     ...appearance({ texture, pbr, parts }),
+    ...seeds({ modelSeed, textureSeed }),
     ...lowPolyFields({ lowPoly, faceLimit }),
   });
 }
@@ -129,6 +131,16 @@ export async function createTextTo3D({ prompt, texture = false, pbr = false, par
  * along from a form that remembered it. Dropping the one that was defaulted is the kinder guess.
  * `check:tripo-appearance` asserts the combination never leaves here.
  */
+/* Omitted entirely when absent — Tripo picks a random seed, which is what a first attempt wants.
+   Sent only to REPEAT a model: same prompt + same seed = same mesh, so one answer can be changed
+   and the rest held still. */
+function seeds({ modelSeed, textureSeed }) {
+  return {
+    ...(modelSeed   != null ? { model_seed:   Number(modelSeed) }   : {}),
+    ...(textureSeed != null ? { texture_seed: Number(textureSeed) } : {}),
+  };
+}
+
 function appearance({ texture, pbr, parts }) {
   if (parts) return { generate_parts: true, texture: false, pbr: false };
   // Their docs: pbr=true forces texture=true regardless. Sent explicitly so the request says what
@@ -139,12 +151,14 @@ function appearance({ texture, pbr, parts }) {
 
 /** Image → model. `imageUrl` must be publicly reachable — ours live on R2 under `meshy/source/`. */
 export async function createImageTo3D({ imageUrl, texture = false, pbr = false, parts = false,
-                                        modelVersion, lowPoly = false, faceLimit }) {
+                                        modelVersion, lowPoly = false, faceLimit,
+                                        modelSeed, textureSeed }) {
   return post({
     type: 'image_to_model',
     file: { type: 'url', url: imageUrl },
     ...(modelVersion ? { model_version: modelVersion } : {}),
     ...appearance({ texture, pbr, parts }),
+    ...seeds({ modelSeed, textureSeed }),
     ...lowPolyFields({ lowPoly, faceLimit }),
   });
 }
@@ -220,6 +234,15 @@ export async function getTask(taskId) {
     credits: typeof t.consumed_credits === 'number' ? t.consumed_credits : null,
     /* Smart segmentation answers with the names it gave the parts — the whole reason to pay for it. */
     partNames: t.output?.part_names ?? t.result?.part_names ?? t.part_names ?? null,
+    /* ⚠️ READ BACK, BECAUSE THERE IS NO WAY TO EDIT A MODEL. Tripo's `refine_model` refuses
+       anything newer than v2.0-20240919, so "the same bear, but sitting" is not a request that can
+       be made — a second attempt is a fresh roll. The seeds are the substitute: their docs say
+       "using the same seed with the same input will produce an identical 3D mesh", so storing them
+       turns a retry into a controlled variation of ONE thing rather than an unrelated object.
+       Read from several shapes because a seed we asked for comes back on the input, while one the
+       vendor chose for us comes back on the output — and the second is the case that matters. */
+    modelSeed:   t.input?.model_seed   ?? t.output?.model_seed   ?? t.model_seed   ?? null,
+    textureSeed: t.input?.texture_seed ?? t.output?.texture_seed ?? t.texture_seed ?? null,
     error: t.status === 'failed' || t.status === 'banned' ? (t.error_msg ?? 'Tripo reported failure') : null,
   };
 }

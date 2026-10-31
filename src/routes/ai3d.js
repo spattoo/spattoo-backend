@@ -1,5 +1,6 @@
 import { Router } from 'express';
 import { serverError } from '../lib/httpError.js';
+import { putObject } from '../services/r2.js';
 import { supabase } from '../services/supabase.js';
 import { requireAuth } from '../middleware/auth.js';
 import { requireCapability } from '../middleware/rbac.js';
@@ -44,6 +45,13 @@ const present = (row) => ({
   credits: row.consumed_credits,
   thumbnailUrl: row.thumbnail_url,
   glbUrl: row.glb_key ? publicUrl(row.glb_key) : null,
+  // Our own copy exists — the vendor URL is no longer the only way to this model.
+  mirrored: !!row.glb_key,
+  modelSeed: row.model_seed ?? null,
+  textureSeed: row.texture_seed ?? null,
+  // A generation is NOT an element until somebody says so. Null means "generated, yours, not in the
+  // catalogue" — which is a state the maker must still be able to see.
+  promotedElementId: row.promoted_element_id ?? null,
   sourceImageUrl: row.source_image_key ? publicUrl(row.source_image_key) : null,
   createdAt: row.created_at,
 });
@@ -152,15 +160,45 @@ router.get('/admin/ai3d/:id', requireAuth, requireCapability('catalog:admin'), a
       ...(task.credits != null ? { consumed_credits: task.credits } : {}),
       ...(task.thumbnailUrl ? { thumbnail_url: task.thumbnailUrl } : {}),
       ...(task.error ? { error: task.error } : {}),
+      // Stored on the first poll that sees them. Without the seed a second attempt is an unrelated
+      // model; with it, one answer can change and the rest hold still — the only form of "edit"
+      // Tripo offers, since refine_model refuses anything current.
+      ...(task.modelSeed   != null && row.model_seed   == null ? { model_seed:   task.modelSeed }   : {}),
+      ...(task.textureSeed != null && row.texture_seed == null ? { texture_seed: task.textureSeed } : {}),
     };
+
+    /* ⚠️ MIRROR THE MODEL THE MOMENT IT EXISTS. This used to hand the vendor URL straight back and
+       keep no copy, on the argument that "studio runs are experiments that get looked at once and
+       thrown away". That is true of STAFF measuring a vendor, and false of a baker who paid credits
+       to put something on a cake tomorrow — and the vendor's URL expires either way. Measured on
+       dev 2026-10-31: 8 successful runs, ONE with a copy, and that one came through the older
+       routes/meshy.js which mirrors and says why.
+
+       Into `ai3d/runs/`, which a lifecycle rule expires after 30 days
+       (scripts/set-r2-lifecycle.mjs) — so nothing is lost while it matters and rejects do not
+       accumulate for ever. Promotion to an element COPIES the file out of this prefix, so an
+       element is never left pointing at an object with an expiry on it.
+
+       ⚠️ A FAILED MIRROR MUST NOT FAIL THE POLL. The generation succeeded, the baker's credits are
+       already spent, and the vendor URL still works right now — reporting failure here would turn a
+       storage hiccup into a lost model. Logged, left unmirrored, and retried on the next poll
+       because `glb_key` is still null. */
+    if (task.status === 'SUCCEEDED' && task.modelUrl && !row.glb_key) {
+      try {
+        const upstream = await fetch(task.modelUrl);
+        if (!upstream.ok) throw new Error(`vendor returned ${upstream.status}`);
+        const buf = Buffer.from(await upstream.arrayBuffer());
+        const glbKey = `ai3d/runs/${row.id}.glb`;
+        await putObject(glbKey, buf, 'model/gltf-binary');
+        update.glb_key = glbKey;
+      } catch (mirrorErr) {
+        console.error(`ai3d mirror failed for ${row.id}:`, mirrorErr.message);
+      }
+    }
+
     const { data: saved } = await supabase
       .from('meshy_generations').update(update).eq('id', row.id).select('*').single();
 
-    // ⚠️ THE VENDOR URL IS HANDED STRAIGHT BACK, NOT MIRRORED TO R2 — unlike the shipped wizard,
-    // which keeps a copy because a baker's element must outlive a vendor's temporary link. Studio
-    // runs are experiments that get looked at once and thrown away; copying every one into R2 would
-    // fill the bucket with rejects. Anything worth keeping goes through Save-as-Element, which does
-    // the copy properly.
     res.json({ ...present(saved ?? { ...row, ...update }), vendorModelUrl: task.modelUrl ?? null,
                partNames: task.partNames ?? null });
   } catch (err) {
@@ -197,6 +235,39 @@ router.get('/admin/ai3d/:id/model', requireAuth, requireCapability('catalog:admi
   } catch (err) {
     serverError(req, res, err);
   }
+});
+
+// ── GET /admin/ai3d/mine — what this person has generated ───────────────────────────────────────
+// Sandeep: *"generated but not made a element yet- we should still be showing this to baker (may be
+// in my decorations?)."* A generation they paid for must be findable whether or not they promoted
+// it — otherwise the only record of it is a browser tab, and closing that loses the money.
+//
+// ⚠️ SCOPED TO THE MAKER, NOT THE BAKERY. `created_by` is who pressed the button, and a generation
+// is a draft rather than a catalogue entry — a half-finished idea does not belong in front of a
+// colleague until its maker promotes it.
+router.get('/admin/ai3d/mine', requireAuth, requireCapability('element:manage'), async (req, res) => {
+  try {
+    const limit = Math.min(Math.max(Number.parseInt(req.query.limit, 10) || 30, 1), 100);
+    const { data, error } = await supabase
+      .from('meshy_generations')
+      .select('*')
+      .eq('created_by', req.user.id)
+      .eq('status', 'SUCCEEDED')
+      .order('created_at', { ascending: false })
+      .limit(limit);
+    if (error) return serverError(req, res, error);
+    const rows = (data ?? []).map(present);
+    res.json({
+      rows,
+      summary: {
+        total: rows.length,
+        // The two numbers worth seeing: how many are safe from vendor expiry, and how many are
+        // still only drafts.
+        mirrored:  rows.filter(r => r.mirrored).length,
+        unpromoted: rows.filter(r => !r.promotedElementId).length,
+      },
+    });
+  } catch (err) { serverError(req, res, err); }
 });
 
 // POST /admin/ai3d/:id/segment — Tripo smart segmentation: parts WITH names.

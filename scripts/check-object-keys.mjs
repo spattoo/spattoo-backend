@@ -57,7 +57,16 @@ const REVIEWED = new Map([
   // bytes for a month and every browser that has them for a year, which is the precise failure
   // this list exists to prevent. Same answer as the craft guide below: a generation in the key
   // (`-nobg-<ts>.webp`), the baker row repointed at it, and the previous object deleted.
+  // Reviewed 2026-10-31. `ai3d/runs/<generation id>.glb` — the row's own uuid, minted once by the
+  // insert, so the key is written once per generation. The guard is `!row.glb_key`, so a re-poll of
+  // an already-mirrored run does not write again; a FAILED mirror leaves the key null and the next
+  // poll retries, which overwrites nothing because nothing was written.
+  // ⚠️ AND THE IMMUTABLE HEADER IS CORRECT HERE DESPITE THE 30-DAY LIFECYCLE RULE. The bytes at
+  // this key never change — expiry deletes the object, it does not replace it — so a cached copy
+  // can never be stale. Promotion COPIES the file to the permanent element path rather than moving
+  // it, so an element never points at an object with an expiry on it.
   ['routes/bakerLogos.js',           'derived + generation: <logoKey>-nobg-<timestamp>.webp; caller deletes the previous object'],
+  ['routes/ai3d.js',                 'derived: ai3d/runs/<generation uuid>.glb, guarded by !row.glb_key'],
   ['services/thumbnails.js',         'derived: <thumbnailKey>-<maxDim>.webp'],
   ['services/imageOptimize.js',      'derived: <key>.webp'],
   // Reviewed 2026-09-16. WhatsApp headers accept only JPEG/PNG and our thumbnails are WebP, so the
