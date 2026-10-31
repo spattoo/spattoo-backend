@@ -207,11 +207,17 @@ export function specFromModel(out, rows = [], { brief = {} } = {}) {
 /** The arrangement vocabulary, mirroring `designer/idea/arrange.js`. */
 export const ARRANGEMENTS = Object.freeze(['single', 'ring', 'arc', 'pair', 'cluster', 'scatter']);
 
-export function placePrompt({ instruction, lines }) {
+export function placePrompt({ instruction, lines, confident = true }) {
   return `You are placing decorations on a cake. Someone asked for exactly this:
 
 "${instruction}"
-
+${confident ? '' : `
+⚠️ NOTHING IN THE LIST BELOW CLEARLY MATCHES THAT. The search found no confident match, so these
+are only the closest guesses. If none of them IS the thing that was asked for, return an empty
+"i" list — that is the correct answer here, and far better than placing something that is merely
+nearby. Only if one of them really is the thing (allow for a misspelling in the request) should
+you place it.
+`}
 THE PARTS YOU MAY USE — one per line, as:
 index|name|type|zones it can go on|description
 ${lines}
@@ -223,14 +229,19 @@ RULES
    made, and the same row repeated looks stamped.
 3. Ignore any index that is not the thing that was asked for. Returning nothing is a fine answer.
 4. "zone" must be one that EVERY index you chose lists on its own line.
-5. "arrangement" is one of: ${ARRANGEMENTS.join(', ')}. Choose what suits the thing and the surface
+5. NEVER swap the decoration to satisfy a surface. If the thing that was asked for cannot go on the
+   surface that was asked for, put it on a surface it DOES allow and set "askedZone" to the one
+   that was requested. A dinosaur on a surface dinosaurs allow is the right answer; a tiger on the
+   requested surface is the wrong one.
+6. "arrangement" is one of: ${ARRANGEMENTS.join(', ')}. Choose what suits the thing and the surface
    — a ring runs all the way round, an arc only across the front, a cluster is one tight group.
-6. "count" is how many PIECES in total, 1 to ${MAX_COUNT}. One is a perfectly good answer.
+7. "count" is how many PIECES in total, 1 to ${MAX_COUNT}. One is a perfectly good answer.
 
 Return ONLY a JSON object, no prose, no code fence:
 {
   "i": [<index>, ...],
-  "zone": "<zone>",
+  "zone": "<zone you are actually placing on>",
+  "askedZone": "<the zone the sentence asked for, or null if it named none>",
   "arrangement": "<arrangement>",
   "count": <integer>,
   "why": "<one short sentence>"
@@ -273,9 +284,70 @@ export function groupFromModel(out, rows = []) {
      has thrown away three of them; the point of choosing a set is that the set gets used. */
   const count = Math.min(MAX_COUNT, Math.max(ids.length, Math.round(Number(out?.count) || ids.length)));
 
+  /* ⚠️ "RIGHT THING, WRONG SURFACE" IS AN ANSWER, AND IT HAD NO WAY TO BE GIVEN. Measured: "add a
+     dinosaur on the board" — we stock three dinosaurs, all side-only, and they were the top three
+     hits. With only "place something" or "place nothing" available, the model obeyed rule 4 and
+     placed a Tiger and an Elephant, which DO allow the board. Silently swapping the animal is the
+     worst thing this can do. `askedZone` is reported only when it actually differs, so a caller
+     can say "dinosaurs cannot go on the board — side instead" rather than quietly relocating. */
+  const askedRaw = out?.askedZone == null ? null : seatZone(out.askedZone);
+  const askedZone = ZONES.includes(askedRaw) && askedRaw !== zone ? askedRaw : null;
+
   return {
-    group: { elementIds: ids, zone, arrangement, count: arrangement === 'single' ? 1 : count,
+    group: { elementIds: ids, zone, askedZone, arrangement,
+             count: arrangement === 'single' ? 1 : count,
              why: typeof out?.why === 'string' ? out.why.slice(0, 200) : '' },
     rejected,
   };
+}
+
+/* ⚠️ IT LIVES IN THIS FILE BECAUSE THIS FILE IS PURE. `ideaCompose.js` imports `config.js`,
+ * which refuses to load without the environment, so anything the gate must exercise has to
+ * sit here — the same reason every other guardrail does. Proven by putting it there first and
+ * watching `check:idea-compose` fail to even import.
+ */
+/* ── Cutting the irrelevant tail ─────────────────────────────────────────────────────────────────
+ *
+ * ⚠️ RELATIVE TO THE BEST HIT, NOT AN ABSOLUTE LINE, and that is a measured decision. Similarity
+ * does not mean the same number across questions: a noun scores far higher than a mood. Measured
+ * on the live dev catalogue — "add a dinosaur on the board" tops out at 0.630, "make the board
+ * look like the sea floor" at 0.476. A flat 0.40 looked right on the first of those and HALVED the
+ * second, which was the best answer the whole eval produced. So: keep what is close to the best
+ * answer this question got.
+ *
+ * ⚠️ AND IT IS GENEROUS ON PURPOSE. Curating is the model's job — this exists to stop the obvious
+ * junk being offered at all. At 0.60 the dinosaur question goes from 60 candidates to exactly the
+ * three dinosaurs, so a Tiger (0.318) cannot be reached for; the sea-floor question still keeps 19
+ * and its breadth survives. Tightening it further trades mood queries for nothing.
+ *
+ * ⚠️ WHEN THERE IS NO CLEAR LEADER IT DOES NOT FILTER AT ALL — it hands over a short list and lets
+ * the model judge. This is the correction to my own first version, which cut below 0.30 absolutely
+ * and broke the misspelling case. Measured: "add a pecock on the side" tops out at **Fox 0.258**,
+ * with Peacock third at 0.236 — the embedding never recognised the typo at all. The MODEL did,
+ * off the names in the parts list, and cutting at retrieval took that away. Cosine is the worse
+ * judge of a misspelling, so where cosine has no opinion it should not get the casting vote.
+ *
+ * The cost is one small call on genuine nonsense: "asdf qwerty" also tops out at 0.256, so it
+ * reaches the model — which returns nothing, as it already did. A ~950-token call to keep typo
+ * tolerance is the right trade.
+ */
+const FLOOR_REL = 0.60;
+/* Below this, no hit is convincing enough for the tail to be worth trusting. */
+const FLOOR_ABS = 0.30;
+/* How many to hand over when cosine has no opinion — enough for the model to spot a misspelling
+   (Peacock was rank 3 for "pecock"), small enough that nonsense stays cheap. */
+const FLOOR_FALLBACK = 12;
+
+export function aboveFloor(hits) {
+  const top = hits[0]?.similarity ?? 0;
+  if (top < FLOOR_ABS) return hits.slice(0, FLOOR_FALLBACK);
+  return hits.filter(h => (h.similarity ?? 0) >= top * FLOOR_REL);
+}
+
+/* Did retrieval actually recognise anything? The prompt is told when it did NOT, because a model
+   handed a shelf assumes the shelf is an answer: "asdf qwerty" came back as one piece scattered on
+   the top the first time the fallback existed. Saying "none of these may be it" is the difference
+   between a shortlist and a suggestion. */
+export function hasConfidentMatch(hits) {
+  return (hits?.[0]?.similarity ?? 0) >= FLOOR_ABS;
 }

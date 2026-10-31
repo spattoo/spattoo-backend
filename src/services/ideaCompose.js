@@ -34,7 +34,7 @@ import { toPublicUrl } from '../lib/publicUrl.js';
 import { retrieve } from './inspirationMatch.js';
 import { subjectOf, genderOf } from './storyRank.js';
 import { elementLines, composePrompt, parseJson, specFromModel,
-         placePrompt, groupFromModel } from './ideaComposeMap.js';
+         placePrompt, groupFromModel, aboveFloor, hasConfidentMatch } from './ideaComposeMap.js';
 
 /** How much of the library the model gets to choose from. See the note above on why it is wide. */
 export const COMPOSE_POOL = 160;
@@ -52,6 +52,7 @@ export function briefFrom(text, extra = {}) {
   return { subject, ages, gender: genderOf(text ?? ''), occasion: null, weightKg: null, ...extra };
 }
 
+
 /**
  * The parts this baker could actually use, nearest the brief.
  *
@@ -61,9 +62,11 @@ export function briefFrom(text, extra = {}) {
  * library into another's if it is done casually. Left alone here deliberately: the composer works
  * on the global catalogue, and the gap is named rather than quietly half-fixed.
  */
-export async function shortlistFor(brief, { k = COMPOSE_POOL } = {}) {
+export async function shortlistFor(brief, { k = COMPOSE_POOL, floor = false } = {}) {
   const { embedding } = await embedText(brief.subject || 'cake decoration');
-  const hits = await retrieve(embedding, k);
+  let hits = await retrieve(embedding, k);
+  if (!hits.length) return [];
+  if (floor) hits = aboveFloor(hits);
   if (!hits.length) return [];
 
   /* `retrieve` selects a fixed field list that does not carry `description`, and the description is
@@ -159,10 +162,11 @@ export async function placeFromInstruction(instruction, { k = PLACE_POOL } = {})
   /* The SUBJECT, not the sentence — the same parser the composer uses, for the same reason:
      embedding "add a coral on the board" ranks on "add" and "board" as much as on "coral". */
   const brief = briefFrom(text);
-  const rows = await shortlistFor({ ...brief, subject: brief.subject || text }, { k });
+  const rows = await shortlistFor({ ...brief, subject: brief.subject || text }, { k, floor: true });
   if (!rows.length) return { group: null, rejected: [], reason: 'nothing in the catalogue matched that' };
 
-  const prompt = placePrompt({ instruction: text, lines: elementLines(rows) });
+  const prompt = placePrompt({ instruction: text, lines: elementLines(rows),
+                               confident: hasConfidentMatch(rows) });
   const { raw, usage, model } = await callModel(prompt);
 
   const parsed = parseJson(raw);

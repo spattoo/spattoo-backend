@@ -16,7 +16,7 @@
 import {
   elementLines, composePrompt, parseJson, specFromModel, seatableZones, seatZone,
   ZONES, MAX_COUNT, MAX_KINDS,
-  placePrompt, groupFromModel, ARRANGEMENTS,
+  placePrompt, groupFromModel, ARRANGEMENTS, aboveFloor, hasConfidentMatch,
 } from '../src/services/ideaComposeMap.js';
 
 let failed = 0;
@@ -207,6 +207,51 @@ const sane = {
   for (const a of ARRANGEMENTS) ok(txt.includes(a), `the prompt names "${a}"`);
   ok(txt.includes('add a coral on the board'), 'the prompt carries the instruction verbatim');
   ok(/EVERY index/.test(txt), 'the prompt asks for every matching row, not the single best');
+}
+
+/* ── "Right thing, wrong surface" is an answer ───────────────────────────────
+ * ⚠️ CAUGHT BY A REAL RUN, not here. "add a dinosaur on the board": we stock three dinosaurs, all
+ * side-only, and they were the top three hits. The model could only place something or nothing, so
+ * it obeyed the zone rule and put a Tiger and an Elephant on the board instead. `askedZone` makes
+ * the honest answer expressible.
+ */
+{
+  const DINO = [{ id: 'd1', name: 'Dinosaur', allowed_zones: ['side'] }];
+  const { group } = groupFromModel(
+    { i: [0], zone: 'side', askedZone: 'board', arrangement: 'arc', count: 3 }, DINO);
+  ok(group.zone === 'side' && group.askedZone === 'board',
+     'a different surface is reported, never quietly substituted');
+
+  const same = groupFromModel({ i: [0], zone: 'side', askedZone: 'side' }, DINO).group;
+  ok(same.askedZone === null, 'and askedZone is silent when it did not actually change');
+
+  const junk = groupFromModel({ i: [0], zone: 'side', askedZone: 'the moon' }, DINO).group;
+  ok(junk.askedZone === null, 'an invented askedZone is dropped, not shown to a person');
+
+  const txt = placePrompt({ instruction: 'x', lines: '0|Dinosaur|topper|side|x' });
+  ok(/NEVER swap the decoration/.test(txt), 'and the prompt forbids swapping the decoration');
+}
+{
+  /* The floor is measured against the live catalogue, so the gate pins the SHAPE of the rule
+     rather than the numbers: nearest-to-best survives, the far tail does not. */
+  const hits = [{ similarity: 0.630 }, { similarity: 0.613 }, { similarity: 0.579 }, { similarity: 0.323 }];
+  ok(aboveFloor(hits).length === 3, 'the relevance floor keeps the cluster and drops the tail');
+  /* ⚠️ NOT "CLEARS THE SHELF" — that was my first version and it broke the misspelling case.
+     "pecock" tops out at Fox 0.258 with Peacock third; cosine never saw the typo and the model
+     did. Where no hit is convincing, hand over a short list and let the model judge. */
+  ok(aboveFloor(Array.from({ length: 40 }, (_, i) => ({ similarity: 0.256 - i * 0.001 }))).length === 12,
+     'where cosine has no opinion it does not get the casting vote — a short list goes to the model');
+  ok(aboveFloor([{ similarity: 0.476 }, { similarity: 0.40 }, { similarity: 0.31 }]).length === 3,
+     'a low-scoring MOOD question keeps its breadth — the floor is relative, not absolute');
+}
+{
+  ok(hasConfidentMatch([{ similarity: 0.42 }]) === true, 'a real hit is a confident match');
+  ok(hasConfidentMatch([{ similarity: 0.256 }]) === false, 'and nonsense is not');
+  const unsure = placePrompt({ instruction: 'asdf', lines: '0|Fox|topper|side|x', confident: false });
+  ok(/return an empty\s*\n?"i" list|empty\s+"i"/.test(unsure.replace(/\n/g, ' ')),
+     'an unconfident shelf is labelled as guesses, with leave-it-empty spelled out');
+  ok(!/NOTHING IN THE LIST BELOW/.test(placePrompt({ instruction: 'x', lines: '0|a|b|side|c' })),
+     'and a confident shelf carries no such warning');
 }
 
 if (failed) { console.error(`\n✗ check:idea-compose — ${failed} guardrail(s) broken\n`); process.exit(1); }

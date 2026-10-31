@@ -75,7 +75,8 @@ for (const [i, c] of cases.entries()) {
     continue;
   }
   const names = (out.elements ?? []).map(r => r.name);
-  console.log(`        ${out.group.count}x ${out.group.arrangement} on ${out.group.zone}  ← ${names.join(', ')}`);
+  const moved = out.group.askedZone ? `  (asked for ${out.group.askedZone})` : '';
+  console.log(`        ${out.group.count}x ${out.group.arrangement} on ${out.group.zone}${moved}  ← ${names.join(', ')}`);
   if (out.group.why) console.log(`        "${out.group.why}"`);
   rows.push({ ...c, g: out.group, names, refused: (out.rejected ?? []).length });
 }
@@ -86,7 +87,7 @@ console.log(`\n${L}\n${'what was typed'.padEnd(42)}${'→ what it did'.padEnd(40
 for (const r of rows) {
   const did = r.err  ? `ERROR ${r.err.slice(0, 26)}`
             : r.none ? '(nothing placed)'
-            : `${r.g.count}x ${r.g.arrangement} on ${r.g.zone} · ${r.names.length} row(s)`;
+            : `${r.g.count}x ${r.g.arrangement} on ${r.g.zone}${r.g.askedZone ? ` (asked ${r.g.askedZone})` : ''} · ${r.names.length} row`;
   console.log(`${r.t.slice(0, 40).padEnd(42)}${did.padEnd(40)}${r.e}`);
 }
 console.log(L);
