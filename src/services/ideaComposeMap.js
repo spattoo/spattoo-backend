@@ -186,3 +186,96 @@ export function specFromModel(out, rows = [], { brief = {} } = {}) {
     rejected,
   };
 }
+
+/* ── Placing ONE thing, from one sentence ────────────────────────────────────────────────────────
+ *
+ * "add a coral on the board". A whole cake is the hard problem and the arrangement is the half it
+ * was losing, so this is that half on its own: one instruction, one group of pieces, laid out.
+ * Sandeep: *"i want to first check if we build this capability"* — and a capability is easier to
+ * trust when the only thing it is being asked to do is the thing under test.
+ *
+ * ⚠️ IT ASKS FOR SEVERAL INDICES, NOT ONE. The catalogue holds four coral rows, two of them named
+ * identically with character-identical descriptions, so a model asked for "a coral" can only pick
+ * one and repeat it — which is exactly how six copies of one coral happened. Asking for the whole
+ * MATCHING SET turns the duplicate names from a trap into the variety a band wants.
+ *
+ * ⚠️ AND THE ARRANGEMENT IS A WORD FROM A CLOSED LIST, NEVER COORDINATES. The model does not know
+ * how wide this cake is; `arrangeOnSlot` in the designer does. Same rule as the spec's zones, and
+ * the vocabulary is the one the catalogue already uses on its piping rows.
+ */
+
+/** The arrangement vocabulary, mirroring `designer/idea/arrange.js`. */
+export const ARRANGEMENTS = Object.freeze(['single', 'ring', 'arc', 'pair', 'cluster', 'scatter']);
+
+export function placePrompt({ instruction, lines }) {
+  return `You are placing decorations on a cake. Someone asked for exactly this:
+
+"${instruction}"
+
+THE PARTS YOU MAY USE — one per line, as:
+index|name|type|zones it can go on|description
+${lines}
+
+RULES
+1. Choose ONLY by index from the list above. Never invent a part.
+2. Choose EVERY index that matches what was asked for, not just the best one. Several rows often
+   describe the same thing with different artwork — a group built from four of them looks hand
+   made, and the same row repeated looks stamped.
+3. Ignore any index that is not the thing that was asked for. Returning nothing is a fine answer.
+4. "zone" must be one that EVERY index you chose lists on its own line.
+5. "arrangement" is one of: ${ARRANGEMENTS.join(', ')}. Choose what suits the thing and the surface
+   — a ring runs all the way round, an arc only across the front, a cluster is one tight group.
+6. "count" is how many PIECES in total, 1 to ${MAX_COUNT}. One is a perfectly good answer.
+
+Return ONLY a JSON object, no prose, no code fence:
+{
+  "i": [<index>, ...],
+  "zone": "<zone>",
+  "arrangement": "<arrangement>",
+  "count": <integer>,
+  "why": "<one short sentence>"
+}`;
+}
+
+/**
+ * What the model said → one placeable group, keeping only what is TRUE.
+ *
+ * Returns `{ group, rejected }`. `group` is null when nothing survived — a real answer when the
+ * catalogue has none of what was asked for, and the caller reports it rather than inventing a
+ * substitute.
+ */
+export function groupFromModel(out, rows = []) {
+  const rejected = [];
+  const zone = seatZone(out?.zone);
+  if (!ZONES.includes(zone)) {
+    return { group: null, rejected: [{ why: `invented zone ${JSON.stringify(out?.zone)}` }] };
+  }
+
+  const ids = [];
+  const seen = new Set();
+  const asked = Array.isArray(out?.i) ? out.i : [out?.i];
+  for (const raw of asked) {
+    const row = rows[Number(raw)];
+    if (!row) { rejected.push({ i: raw, why: 'no such index in the parts list' }); continue; }
+    const allows = seatableZones(row);
+    if (!allows.includes(zone)) {
+      rejected.push({ name: row.name, why: `${zone} is not one of ${allows.join(', ')}` });
+      continue;
+    }
+    if (seen.has(row.id)) { rejected.push({ name: row.name, why: 'named twice' }); continue; }
+    seen.add(row.id);
+    ids.push(row.id);
+  }
+  if (!ids.length) return { group: null, rejected };
+
+  const arrangement = ARRANGEMENTS.includes(out?.arrangement) ? out.arrangement : 'cluster';
+  /* ⚠️ COUNT IS AT LEAST ONE PER CHOSEN ROW. A model that picks four corals and then says count:1
+     has thrown away three of them; the point of choosing a set is that the set gets used. */
+  const count = Math.min(MAX_COUNT, Math.max(ids.length, Math.round(Number(out?.count) || ids.length)));
+
+  return {
+    group: { elementIds: ids, zone, arrangement, count: arrangement === 'single' ? 1 : count,
+             why: typeof out?.why === 'string' ? out.why.slice(0, 200) : '' },
+    rejected,
+  };
+}

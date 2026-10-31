@@ -33,7 +33,8 @@ import { config } from '../config.js';
 import { toPublicUrl } from '../lib/publicUrl.js';
 import { retrieve } from './inspirationMatch.js';
 import { subjectOf, genderOf } from './storyRank.js';
-import { elementLines, composePrompt, parseJson, specFromModel } from './ideaComposeMap.js';
+import { elementLines, composePrompt, parseJson, specFromModel,
+         placePrompt, groupFromModel } from './ideaComposeMap.js';
 
 /** How much of the library the model gets to choose from. See the note above on why it is wide. */
 export const COMPOSE_POOL = 160;
@@ -135,4 +136,48 @@ export async function composeIdea(briefText, { k = COMPOSE_POOL, extra = {} } = 
 
   const { spec, rejected } = specFromModel(parsed.value, rows, { brief });
   return { spec, rejected, shortlist: rows, usage, model, promptChars: prompt.length };
+}
+
+/** How much of the library one PLACE instruction gets to choose from. */
+export const PLACE_POOL = 60;
+
+/**
+ * One sentence → one placeable group.
+ *
+ * "add a coral on the board" → the coral rows, the board, an arrangement and a count. The cake's
+ * geometry is nowhere in here: the designer's `arrangeOnSlot` turns the arrangement into positions,
+ * because it is the only side that knows how wide this cake is.
+ *
+ * ⚠️ A NARROWER SHELF THAN COMPOSING, ON PURPOSE. `composeIdea` wants 160 so the model has room to
+ * compose; this is a lookup — "which rows are coral" — and the answer is at the top of the ranking
+ * or not there at all. 60 keeps the call small and keeps a cricket badge out of a coral question.
+ */
+export async function placeFromInstruction(instruction, { k = PLACE_POOL } = {}) {
+  const text = String(instruction ?? '').trim();
+  if (!text) return { group: null, rejected: [], reason: 'say what to place' };
+
+  /* The SUBJECT, not the sentence — the same parser the composer uses, for the same reason:
+     embedding "add a coral on the board" ranks on "add" and "board" as much as on "coral". */
+  const brief = briefFrom(text);
+  const rows = await shortlistFor({ ...brief, subject: brief.subject || text }, { k });
+  if (!rows.length) return { group: null, rejected: [], reason: 'nothing in the catalogue matched that' };
+
+  const prompt = placePrompt({ instruction: text, lines: elementLines(rows) });
+  const { raw, usage, model } = await callModel(prompt);
+
+  const parsed = parseJson(raw);
+  if (!parsed.ok) {
+    return { group: null, rejected: [], shortlist: rows, usage, model,
+             reason: `the model did not return JSON: ${parsed.error}`, raw: parsed.raw };
+  }
+
+  const { group, rejected } = groupFromModel(parsed.value, rows);
+  if (!group) {
+    return { group: null, rejected, shortlist: rows, usage, model,
+             reason: 'none of the parts it named can go there' };
+  }
+  /* Only the rows the group actually uses travel back — the caller draws them, and shipping 60
+     when it needs four is the same mistake the eval bundles made. */
+  const used = new Set(group.elementIds);
+  return { group, rejected, elements: rows.filter(r => used.has(r.id)), usage, model, pool: rows.length };
 }

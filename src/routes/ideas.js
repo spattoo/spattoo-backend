@@ -2,7 +2,7 @@ import { Router } from 'express';
 import { serverError } from '../lib/httpError.js';
 import { requireAuth } from '../middleware/auth.js';
 import { requireCapability } from '../middleware/rbac.js';
-import { composeIdea, COMPOSE_POOL } from '../services/ideaCompose.js';
+import { composeIdea, COMPOSE_POOL, placeFromInstruction, PLACE_POOL } from '../services/ideaCompose.js';
 
 const router = Router();
 
@@ -50,6 +50,41 @@ router.post('/admin/ideas/compose', requireAuth, requireCapability('catalog:admi
       ...(includeShortlist === true
         ? { shortlist: out.shortlist.map(r => ({ id: r.id, name: r.name, similarity: r.similarity })) }
         : {}),
+    });
+  } catch (err) {
+    serverError(req, res, err);
+  }
+});
+
+/* ── Placing ONE thing, from one sentence ────────────────────────────────────────────────────────
+ *
+ * "add a coral on the board". Sandeep: *"i want to first check if we build this capability"* — the
+ * whole-cake composer was losing the cake in the ARRANGEMENT, so this is the arrangement on its
+ * own, where it can be judged without a composition around it.
+ *
+ * ⚠️ IT RETURNS A GROUP, NOT POSITIONS. `{ elementIds, zone, arrangement, count }` — the designer's
+ * `arrangeOnSlot` turns that into coordinates, because it is the only side that knows how wide this
+ * cake is and which clamps the drag will honour. A route that answered with x/z would be a second
+ * opinion that loses the argument the moment a baker moves the piece.
+ */
+router.post('/admin/ideas/place', requireAuth, requireCapability('catalog:admin'), async (req, res) => {
+  try {
+    const { instruction, pool } = req.body ?? {};
+    const text = String(instruction ?? '').trim();
+    if (!text) return res.status(400).json({ error: 'instruction is required' });
+    const k = Math.min(200, Math.max(10, Number(pool) || PLACE_POOL));
+
+    const out = await placeFromInstruction(text, { k });
+    if (!out.group) {
+      return res.json({ ok: false, reason: out.reason, rejected: out.rejected ?? [], raw: out.raw ?? null });
+    }
+    res.json({
+      ok: true,
+      group: out.group,
+      elements: out.elements,
+      rejected: out.rejected,
+      usage: out.usage,
+      pool: out.pool,
     });
   } catch (err) {
     serverError(req, res, err);

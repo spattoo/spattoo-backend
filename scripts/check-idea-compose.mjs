@@ -16,6 +16,7 @@
 import {
   elementLines, composePrompt, parseJson, specFromModel, seatableZones, seatZone,
   ZONES, MAX_COUNT, MAX_KINDS,
+  placePrompt, groupFromModel, ARRANGEMENTS,
 } from '../src/services/ideaComposeMap.js';
 
 let failed = 0;
@@ -155,6 +156,57 @@ const sane = {
 {
   const NONE = { id: 'x', name: 'Odd', allowed_zones: [] };
   ok(seatableZones(NONE).join(',') === 'top_surface', 'a row naming no zone still has somewhere to go');
+}
+
+/* ── Placing ONE thing, from one sentence ────────────────────────────────────
+ * "add a coral on the board". The arrangement is the half the whole-cake composer was losing, so
+ * these guard the narrow door where it can be judged on its own. Same rule as above: every line of
+ * `placePrompt` is a request, every line here is enforced.
+ */
+{
+  const CORALS = [
+    { id: 'c1', name: 'Sea Coral',    allowed_zones: ['top_surface', 'board'], element_types: { name: 'sticker' } },
+    { id: 'c2', name: 'Sea Coral',    allowed_zones: ['top_surface', 'middle_tier', 'board'], element_types: { name: 'sticker' } },
+    { id: 'c3', name: 'Coral Branch', allowed_zones: ['side'], element_types: { name: 'sticker' } },
+  ];
+  const { group, rejected } = groupFromModel(
+    { i: [0, 1, 2], zone: 'board', arrangement: 'ring', count: 6 }, CORALS);
+
+  ok(group !== null, 'a group survives when the rows allow the zone');
+  ok(group.elementIds.join(',') === 'c1,c2', 'rows that do not allow the zone are dropped, not placed');
+  ok(rejected.some(r => r.name === 'Coral Branch'), 'and the drop is reported, never swallowed');
+  ok(group.arrangement === 'ring' && group.count === 6, 'the arrangement and count come back intact');
+}
+{
+  /* ⚠️ THE WHOLE POINT OF ASKING FOR SEVERAL INDICES. Four coral rows exist and two share a name
+     character for character; a group that collapses to one row is six copies of one coral, which
+     is the render Sandeep rejected. */
+  const { group } = groupFromModel({ i: [0, 1], zone: 'top_surface', arrangement: 'ring', count: 1 },
+    [{ id: 'a', name: 'A', allowed_zones: ['top_surface'] }, { id: 'b', name: 'B', allowed_zones: ['top_surface'] }]);
+  ok(group.count >= 2, 'count is never below the number of rows chosen — a chosen row gets used');
+}
+{
+  const ROW = [{ id: 'a', name: 'A', allowed_zones: ['top_surface'] }];
+  ok(groupFromModel({ i: [0], zone: 'top_surface', arrangement: 'ring', count: 99 }, ROW).group.count === MAX_COUNT,
+     `count is capped at ${MAX_COUNT}, the same ceiling the composer has`);
+  ok(groupFromModel({ i: [0], zone: 'top_surface', arrangement: 'helix', count: 4 }, ROW).group.arrangement === 'cluster',
+     'an invented arrangement falls back rather than reaching the designer');
+  ok(groupFromModel({ i: [0], zone: 'top_surface', arrangement: 'single', count: 9 }, ROW).group.count === 1,
+     '"single" means one, whatever count says');
+  ok(groupFromModel({ i: [9], zone: 'top_surface' }, ROW).group === null,
+     'a hallucinated index places nothing at all');
+  ok(groupFromModel({ i: [0], zone: 'the moon' }, ROW).group === null,
+     'an invented zone places nothing at all');
+  ok(groupFromModel({ i: [0, 0], zone: 'top_surface', count: 4 }, ROW).group.elementIds.length === 1,
+     'the same row named twice is one row');
+}
+{
+  /* A prompt that does not name the vocabulary cannot be obeyed, and the parser would then coerce
+     every answer to the default — a silent collapse to one arrangement. */
+  const txt = placePrompt({ instruction: 'add a coral on the board', lines: '0|Sea Coral|sticker|board|x' });
+  for (const a of ARRANGEMENTS) ok(txt.includes(a), `the prompt names "${a}"`);
+  ok(txt.includes('add a coral on the board'), 'the prompt carries the instruction verbatim');
+  ok(/EVERY index/.test(txt), 'the prompt asks for every matching row, not the single best');
 }
 
 if (failed) { console.error(`\n✗ check:idea-compose — ${failed} guardrail(s) broken\n`); process.exit(1); }
