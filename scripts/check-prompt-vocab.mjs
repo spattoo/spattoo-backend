@@ -82,6 +82,22 @@ if (!/questions\s*=\s*\[\]/.test(code) || !/answers\s*=\s*\{\}/.test(code)) {
   failures.push('buildDecorationPrompt no longer takes `questions` and `answers` — the server-supplied question set is how this stays config-driven.');
 }
 
+// 5. ⚠️ THE FRAME MUST SPLIT BY PATH, and this guards a contradiction that actually shipped. The
+//    frame was one constant appended to EVERY prompt — including the ready-to-use path, which asks
+//    Tripo for `texture: true, pbr: true`. So a request paid for a textured model and told it
+//    "untextured" in the same breath. Nothing failed; the vendor just picked one.
+if (!/output\s*=\s*'recolourable'/.test(code)) {
+  failures.push("buildDecorationPrompt no longer takes `output` — without it the frame cannot split, and a textured generation gets told 'untextured'.");
+}
+if (!/applies_to\s*===\s*'always'/.test(code)) {
+  failures.push('the frame is no longer filtered by applies_to — every clause would reach every path again.');
+}
+// The fallback exists so a failed fetch degrades to a stale frame rather than NO frame. A bare
+// noun is what returned a turned baluster for "flute".
+if (!/FALLBACK_FRAME/.test(code)) {
+  failures.push('FALLBACK_FRAME is gone — a failed fetch would send a prompt with no frame at all.');
+}
+
 if (failures.length) {
   console.error('✗ check:prompt-vocab — the decoration vocabulary is being kept in two places:\n');
   for (const f of failures) console.error(`    • ${f}`);

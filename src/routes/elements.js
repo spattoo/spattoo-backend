@@ -323,6 +323,47 @@ router.delete('/admin/decoration-prompt-options/:id', requireAuth, requireCapabi
   } catch (err) { serverError(req, res, err); }
 });
 
+// ── The always-appended frame ───────────────────────────────────────────────────────────────────
+// Editable because most of it is judgement, not measurement — "hand-modelled sugarcraft" is a
+// decision about how a decoration should read, and decisions get revised the moment a generation
+// comes back wrong. The three that WERE measured carry a `note` saying so, which is what an admin
+// about to delete one needs to see.
+router.get('/admin/decoration-prompt-frame', requireAuth, requireCapability('catalog:admin'), async (req, res) => {
+  try {
+    const { data, error } = await supabase.from('decoration_prompt_frame')
+      .select('id, key, phrase, applies_to, position, note, sort_order, is_active')
+      .order('sort_order');
+    if (error) return serverError(req, res, error);
+    res.json(data ?? []);
+  } catch (err) { serverError(req, res, err); }
+});
+
+router.patch('/admin/decoration-prompt-frame/:id', requireAuth, requireCapability('catalog:admin'), async (req, res) => {
+  try {
+    const { id } = req.params;
+    if (!UUID_RE.test(id)) return res.status(400).json({ error: 'Invalid id.' });
+    const updates = {};
+    if ('phrase'     in req.body) updates.phrase = String(req.body.phrase ?? '').trim();
+    if ('is_active'  in req.body) updates.is_active = !!req.body.is_active;
+    if ('sort_order' in req.body) updates.sort_order = Number(req.body.sort_order) || 0;
+    if ('applies_to' in req.body) {
+      if (!['always', 'recolourable', 'ready'].includes(req.body.applies_to)) {
+        return res.status(400).json({ error: 'applies_to must be always, recolourable or ready.' });
+      }
+      updates.applies_to = req.body.applies_to;
+    }
+    // An empty phrase is a clause that contributes nothing while still looking present on the
+    // screen — the shape of bug where somebody "turned it off" and it quietly stayed on.
+    if (updates.phrase === '') return res.status(400).json({ error: 'A phrase cannot be empty. Switch the clause off instead.' });
+    if (!Object.keys(updates).length) return res.status(400).json({ error: 'Nothing to update.' });
+    updates.updated_at = new Date().toISOString();
+    const { data, error } = await supabase.from('decoration_prompt_frame')
+      .update(updates).eq('id', id).select().single();
+    if (error) return serverError(req, res, error);
+    res.json(data);
+  } catch (err) { serverError(req, res, err); }
+});
+
 // ── GET/PATCH the material prompt phrases ───────────────────────────────────────────────────────
 // How each material reads TO A GENERATOR (migration 150). Authored, never derived — deriving it
 // from the human label produced "wafer paper (shaped) finish" and leaked an em dash. This is the
@@ -439,7 +480,19 @@ router.get('/decoration-prompt-questions', requireAuth, requireCapability('desig
        It must not learn that 'mediums' means "go and fetch the material list" — the way a client
        learns that is by holding its own copy, which is the drift this whole design exists to stop.
        Both 'options' and 'mediums' arrive here as the same thing: a list of options. */
-    res.json((questions ?? []).map(x => ({
+    /* ⚠️ THE FRAME SHIPS WITH THE QUESTIONS, not separately. It is what goes in EVERY prompt
+       whatever the baker answered — Sandeep: *"there could be few things that we always have to
+       append in the prompt to narrow it... and we dont rely on bakers answers alone."* A client
+       that had to fetch it in a second call is a client that will one day forget to, and ship a
+       prompt with no frame at all. */
+    const { data: frame, error: frameErr } = await supabase
+      .from('decoration_prompt_frame')
+      .select('key, phrase, applies_to, position, note, sort_order')
+      .eq('is_active', true)
+      .order('sort_order');
+    if (frameErr) return serverError(req, res, frameErr);
+
+    res.json({ frame: frame ?? [], questions: (questions ?? []).map(x => ({
       /* The id is here so the studio can add an option inline, where the gap is noticed. It is not
          sensitive — this route already requires design:create — and the alternative (resolving by
          key on write) would mean a second lookup on every save for no gain. */
@@ -453,7 +506,7 @@ router.get('/decoration-prompt-questions', requireAuth, requireCapability('desig
       options:     x.source === 'mediums' ? mediumOptions
                  : x.source === 'free_text' ? []
                  : (byQuestion[x.id] ?? []),
-    })));
+    })) });
   } catch (err) { serverError(req, res, err); }
 });
 
