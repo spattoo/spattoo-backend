@@ -224,26 +224,36 @@ ${lines}
 
 RULES
 1. Choose ONLY by index from the list above. Never invent a part.
-2. Choose EVERY index that matches what was asked for, not just the best one. Several rows often
-   describe the same thing with different artwork — a group built from four of them looks hand
-   made, and the same row repeated looks stamped.
-3. Ignore any index that is not the thing that was asked for. Returning nothing is a fine answer.
-4. "zone" must be one that EVERY index you chose lists on its own line.
-5. NEVER swap the decoration to satisfy a surface. If the thing that was asked for cannot go on the
+2. "i" is a PALETTE, not a shopping list. List every index that matches what was asked for, best
+   first — several rows often describe the same thing with different artwork, and drawing from a
+   few of them looks hand made where one repeated looks stamped. Listing an index does NOT mean a
+   piece of it gets placed.
+3. "count" is decided by the SENTENCE ALONE, never by how long the palette is. "a coral" is ONE
+   piece even if the palette holds four. "a few" is two or three. "some" is a handful. "cover",
+   "line", "all around" are many. If no quantity is implied at all, one.
+4. A GENERAL WORD IS ANSWERED BY SPECIFIC THINGS. "animals" means the Lion, the Zebra, the
+   Monkey — not a row that merely has the word "animal" in its name. "flowers" means the Rose and
+   the Daisy; "sea creatures" means the Seahorse and the Starfish. A row named after the category
+   is usually the WORST answer to the category, because it is a label rather than a thing. Prefer
+   several different specific things; that is what the person is picturing.
+5. Ignore any index that is not the thing that was asked for. Returning nothing is a fine answer.
+6. "zone" must be one that EVERY index you chose lists on its own line.
+7. NEVER swap the decoration to satisfy a surface. If the thing that was asked for cannot go on the
    surface that was asked for, put it on a surface it DOES allow and set "askedZone" to the one
    that was requested. A dinosaur on a surface dinosaurs allow is the right answer; a tiger on the
    requested surface is the wrong one.
-6. "arrangement" is one of: ${ARRANGEMENTS.join(', ')}. Choose what suits the thing and the surface
+8. "arrangement" is one of: ${ARRANGEMENTS.join(', ')}. Choose what suits the thing and the surface
    — a ring runs all the way round, an arc only across the front, a cluster is one tight group.
-7. "count" is how many PIECES in total, 1 to ${MAX_COUNT}. One is a perfectly good answer.
+   With a count of one, use "single".
+9. "count" is a whole number from 1 to ${MAX_COUNT}.
 
 Return ONLY a JSON object, no prose, no code fence:
 {
-  "i": [<index>, ...],
+  "i": [<index>, ...],        // the palette, best first — NOT one piece per entry
   "zone": "<zone you are actually placing on>",
   "askedZone": "<the zone the sentence asked for, or null if it named none>",
   "arrangement": "<arrangement>",
-  "count": <integer>,
+  "count": <integer>,         // pieces to place, from the sentence alone
   "why": "<one short sentence>"
 }`;
 }
@@ -280,9 +290,16 @@ export function groupFromModel(out, rows = []) {
   if (!ids.length) return { group: null, rejected };
 
   const arrangement = ARRANGEMENTS.includes(out?.arrangement) ? out.arrangement : 'cluster';
-  /* ⚠️ COUNT IS AT LEAST ONE PER CHOSEN ROW. A model that picks four corals and then says count:1
-     has thrown away three of them; the point of choosing a set is that the set gets used. */
-  const count = Math.min(MAX_COUNT, Math.max(ids.length, Math.round(Number(out?.count) || ids.length)));
+  /* ⚠️ THE PALETTE DOES NOT SET THE COUNT, AND MY FIRST VERSION SAID IT DID. It floored count at
+     the number of rows chosen — "a model that picks four corals and then says count:1 has thrown
+     away three of them". That is backwards: asking for every matching row is how a group gets
+     VARIETY, and it says nothing about QUANTITY. Sandeep, of "add a coral on the board" coming
+     back as four pieces: *"thats my question- why 4, count was never asked."* Singular means one
+     piece, drawn from a palette of four — the other three are alternatives, not extras. */
+  const count = Math.min(MAX_COUNT, Math.max(1, Math.round(Number(out?.count) || 1)));
+  /* Fewer pieces than rows: keep the BEST rows. The palette arrives ranked by similarity because
+     `retrieve` sorts it, so the head of the list is the closest match to what was asked for. */
+  const palette = ids.slice(0, Math.max(1, Math.min(ids.length, count)));
 
   /* ⚠️ "RIGHT THING, WRONG SURFACE" IS AN ANSWER, AND IT HAD NO WAY TO BE GIVEN. Measured: "add a
      dinosaur on the board" — we stock three dinosaurs, all side-only, and they were the top three
@@ -294,7 +311,7 @@ export function groupFromModel(out, rows = []) {
   const askedZone = ZONES.includes(askedRaw) && askedRaw !== zone ? askedRaw : null;
 
   return {
-    group: { elementIds: ids, zone, askedZone, arrangement,
+    group: { elementIds: palette, zone, askedZone, arrangement,
              count: arrangement === 'single' ? 1 : count,
              why: typeof out?.why === 'string' ? out.why.slice(0, 200) : '' },
     rejected,

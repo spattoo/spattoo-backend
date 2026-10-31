@@ -178,12 +178,23 @@ const sane = {
   ok(group.arrangement === 'ring' && group.count === 6, 'the arrangement and count come back intact');
 }
 {
-  /* ⚠️ THE WHOLE POINT OF ASKING FOR SEVERAL INDICES. Four coral rows exist and two share a name
-     character for character; a group that collapses to one row is six copies of one coral, which
-     is the render Sandeep rejected. */
-  const { group } = groupFromModel({ i: [0, 1], zone: 'top_surface', arrangement: 'ring', count: 1 },
-    [{ id: 'a', name: 'A', allowed_zones: ['top_surface'] }, { id: 'b', name: 'B', allowed_zones: ['top_surface'] }]);
-  ok(group.count >= 2, 'count is never below the number of rows chosen — a chosen row gets used');
+  /* ⚠️ THIS ASSERTION USED TO SAY THE OPPOSITE, AND THE OPPOSITE WAS A BUG. It read "count is
+     never below the number of rows chosen", which turned "add a coral on the board" — singular —
+     into four pieces, because the palette had four corals in it. Sandeep: *"thats my question-
+     why 4, count was never asked."* The palette is which rows MAY be drawn from; the count comes
+     from the sentence. They are independent, and only the sentence knows the quantity. */
+  const TWO = [{ id: 'a', name: 'A', allowed_zones: ['top_surface'] },
+               { id: 'b', name: 'B', allowed_zones: ['top_surface'] }];
+  const one = groupFromModel({ i: [0, 1], zone: 'top_surface', arrangement: 'single', count: 1 }, TWO).group;
+  ok(one.count === 1, 'a palette of two does not make a singular request into two pieces');
+  ok(one.elementIds.length === 1, 'and the surplus palette entries are alternatives, not extras');
+
+  const many = groupFromModel({ i: [0, 1], zone: 'top_surface', arrangement: 'ring', count: 6 }, TWO).group;
+  ok(many.count === 6 && many.elementIds.length === 2,
+     'but six pieces still draw on both rows — the applier cycles the palette');
+
+  ok(groupFromModel({ i: [0, 1], zone: 'top_surface' }, TWO).group.count === 1,
+     'and no count at all means one piece, not one per row');
 }
 {
   const ROW = [{ id: 'a', name: 'A', allowed_zones: ['top_surface'] }];
@@ -252,6 +263,18 @@ const sane = {
      'an unconfident shelf is labelled as guesses, with leave-it-empty spelled out');
   ok(!/NOTHING IN THE LIST BELOW/.test(placePrompt({ instruction: 'x', lines: '0|a|b|side|c' })),
      'and a confident shelf carries no such warning');
+}
+{
+  /* ⚠️ "add few animals on top" CAME BACK AS "Animal number topper, Animal topper, Animal topper".
+     Sandeep: *"i asked for animals... this is not really language processing- this is a simple
+     text search."* Measured: retrieval was fine — 22 real animals on the 36-row shelf, Zebra at
+     rank 5, Lion at rank 10. The MODEL did the lexical match, picking the rows with the word
+     "Animal" in the name. A row named after a category is a label, not a thing. */
+  const txt = placePrompt({ instruction: 'add few animals on top', lines: '0|Lion|topper|top_surface|x' });
+  ok(/A GENERAL WORD IS ANSWERED BY SPECIFIC THINGS/.test(txt),
+     'the prompt says a category is answered by instances');
+  ok(/WORST answer to the category/i.test(txt),
+     'and that a row named after the category is the weakest answer to it');
 }
 
 if (failed) { console.error(`\n✗ check:idea-compose — ${failed} guardrail(s) broken\n`); process.exit(1); }
