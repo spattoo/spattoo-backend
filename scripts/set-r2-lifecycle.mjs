@@ -88,7 +88,18 @@ const r2 = new S3Client({
   credentials: { accessKeyId: config.r2.accessKeyId, secretAccessKey: config.r2.secretAccessKey },
 });
 
-const ours = RULES.map(r => ({
+/* ⚠️ A NULL `days` MEANS "NOT YET", AND IT IS SKIPPED RATHER THAN SENT. The number and the rule
+   have to agree: the API dates every stored object from FOLDER_RETENTION_DAYS and stops serving it
+   past that, so a rule applied without a number — or a number with no rule — makes one of the two
+   lie about what still exists. Reading both from the same place and skipping the nulls means they
+   cannot drift apart. `ai3d/runs` is null today: nothing is being deleted while there are no users
+   on the system. */
+const active = RULES.filter(r => Number.isFinite(r.days) && r.days > 0);
+for (const r of RULES) {
+  if (!active.includes(r)) console.log(`  · skipping ${r.id} — no retention set for ${r.prefix}`);
+}
+
+const ours = active.map(r => ({
   ID: r.id,
   Status: 'Enabled',
   Filter: { Prefix: r.prefix },

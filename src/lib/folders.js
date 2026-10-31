@@ -96,7 +96,26 @@ export const FOLDER_RETENTION_DAYS = {
      uniform rule is enough, and why no exception mechanism is needed for the ones that were kept.
      The ROW outlives the file either way, with its prompt and both seeds — so an expired generation
      is one regeneration away, which costs credits but not the idea. */
-  'ai3d/runs': 90,
+  /* ⚠️ NULL MEANS NOTHING SWEEPS THIS YET, AND THAT IS THE CURRENT DECISION. Sandeep: *"lets not
+     worry about 90 days thing right now. there is a long time still to think of removal of things.
+     we dont have any users in system yet :) ... as long as we can differentiate what elements are
+     not used, we should be good."*
+
+     ⚠️ IT IS NULL RATHER THAN 90-BUT-UNAPPLIED BECAUSE A NUMBER HERE IS A CLAIM THE API MAKES. The
+     route dates every stored model from this value and stops serving one past it. Leaving 90 here
+     while no lifecycle rule exists would, in 90 days, hide files that are still sitting in the
+     bucket — the exact fault just fixed for `meshy/outputs/`, where a model had "expired" six weeks
+     earlier and a GET still returned all 49.72 MB of it. An expiry asserted over a prefix nobody
+     sweeps hides what we still have. So: no rule, no number, nothing hidden.
+
+     The intended value when deletion is turned on is 90 days, and the reasoning is measured rather
+     than guessed: a raw generation is ~49.7 MB, about 2 cents a year to store, against 40 cents to
+     regenerate. Set it back to 90 and run `npm run r2:lifecycle -- --apply` together — the script
+     skips a null, so the number and the rule can never disagree.
+
+     What this does NOT affect is telling used from unused: that is
+     `promoted_element_id is null` on the row, which has nothing to do with retention. */
+  'ai3d/runs': null,
 };
 
 export const ALLOWED_FOLDERS = Object.keys(FOLDER_KIND);

@@ -72,9 +72,15 @@ const RUN_RETENTION_DAYS = FOLDER_RETENTION_DAYS['ai3d/runs'];
    gone and handing back a null URL. Found on dev 2026-10-31: the one row with a file had "expired"
    six weeks earlier while a GET still returned all 49.72 MB of it. An expiry asserted over a
    prefix nobody sweeps is a promise in the wrong direction — it hides what we still have. */
-const fileExpiresAt = (row) => (row.glb_key?.startsWith(RUN_PREFIX) && row.created_at
-  ? new Date(Date.parse(row.created_at) + RUN_RETENTION_DAYS * 86400000).toISOString()
-  : null);
+/* ⚠️ NO RETENTION SET MEANS NO EXPIRY, AND THE ARITHMETIC MAKES THIS LOAD-BEARING. A null
+   RUN_RETENTION_DAYS multiplies to 0, which would date every model's expiry at the moment it was
+   created and report the whole library as gone. The guard is the difference between "nothing is
+   being deleted" and "nothing is visible". */
+const fileExpiresAt = (row) => (
+  Number.isFinite(RUN_RETENTION_DAYS) && RUN_RETENTION_DAYS > 0
+  && row.glb_key?.startsWith(RUN_PREFIX) && row.created_at
+    ? new Date(Date.parse(row.created_at) + RUN_RETENTION_DAYS * 86400000).toISOString()
+    : null);
 const fileExpired = (row) => {
   const at = fileExpiresAt(row);
   return !!at && Date.parse(at) < Date.now();
