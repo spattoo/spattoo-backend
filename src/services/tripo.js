@@ -20,9 +20,31 @@ import { config } from '../config.js';
 // text→3D preview 20 + refine 10, image→3D 20–35, Auto Split 10. So Tripo is around half per
 // element — which matters far less than whether the parts come back usable.
 //
-// ⚠️ UNTEXTURED IS THE CHEAPER *AND* THE BETTER OPTION FOR US, which is the opposite of the usual
-// trade. Our recolour path refuses a mesh carrying a map, so a texture we would have to strip costs
-// credits to make and work to remove.
+// ⚠️ THERE ARE TWO KINDS OF ELEMENT AND THEY WANT OPPOSITE THINGS. This file used to say flatly
+// that "untextured is the cheaper AND the better option for us" — true for a fondant lion a baker
+// recolours, and wrong for a peacock feather, where the colour IS the decoration and nobody
+// recolours it. Sandeep, on a Krishna-theme peacock: *"if we only get the mesh and not the
+// colors/texture its not practical for user to do that... if have to choose between parts vs
+// colored output, i would choose colored output than just mesh with parts. something that bakers
+// can use directly."*
+//
+//   ready to use   texture + pbr, one fused mesh   — the BAKER default. A customer is waiting.
+//   recolourable   parts, no maps                  — the catalogue path, finished by staff.
+//
+// ⚠️ AND YOU CANNOT HAVE BOTH IN ONE REQUEST. Tripo's own docs: *"generate_parts is not compatible
+// with texture=true or pbr=true. If you want to generate parts, please set texture=false and
+// pbr=false."* So this is a fork, not a pair of knobs — which is why `readyToUse()` below sets all
+// three together rather than leaving three booleans for a caller to get into an impossible state.
+//
+// ⚠️ TRIPO DEFAULTS BOTH TO **true**; the `false` defaults here are OURS. Worth knowing when
+// reading their docs against this file — we are switching their behaviour off, not leaving it
+// alone, and for the baker path we should not be.
+//
+// ⚠️ `pbr` IS WHAT MAKES IT NOT LOOK MATTE. Plain `texture` returns a baseColor map only — right
+// colours, flat surface. `pbr` adds the metallic-roughness map, which is what carries a peacock's
+// iridescence and a flute's sheen. Their docs: if `pbr` is true, `texture` is ignored and treated
+// as true. Measured on a real Meshy asset, that map is 1 of the 3 that make it read as metal and
+// feather rather than painted plastic.
 
 const BASE = 'https://api.tripo3d.ai/v2/openapi';
 
@@ -87,27 +109,42 @@ function lowPolyFields({ lowPoly, faceLimit }) {
  * fused, read the response and correct it here — do not paper over it in the UI, because a silent
  * fused model is exactly the state RecomposeEditor was built to rescue by hand.
  */
-export async function createTextTo3D({ prompt, texture = false, parts = false, modelVersion,
-                                       lowPoly = false, faceLimit }) {
+export async function createTextTo3D({ prompt, texture = false, pbr = false, parts = false,
+                                       modelVersion, lowPoly = false, faceLimit }) {
   return post({
     type: 'text_to_model',
     prompt,
     ...(modelVersion ? { model_version: modelVersion } : {}),
-    texture,
-    ...(parts ? { generate_parts: true } : {}),
+    ...appearance({ texture, pbr, parts }),
     ...lowPolyFields({ lowPoly, faceLimit }),
   });
 }
 
+/**
+ * The fork, resolved in ONE place so no caller can ask for an impossible model.
+ *
+ * ⚠️ PARTS WINS WHEN BOTH ARE ASKED FOR, and it is silent on purpose. Tripo rejects
+ * parts+texture outright, so honouring both is not an option — and the caller that set `parts`
+ * did so deliberately (it is never the default for a baker), while `texture` may have ridden
+ * along from a form that remembered it. Dropping the one that was defaulted is the kinder guess.
+ * `check:tripo-appearance` asserts the combination never leaves here.
+ */
+function appearance({ texture, pbr, parts }) {
+  if (parts) return { generate_parts: true, texture: false, pbr: false };
+  // Their docs: pbr=true forces texture=true regardless. Sent explicitly so the request says what
+  // it means rather than relying on a vendor-side coercion we would have to remember.
+  if (pbr) return { texture: true, pbr: true };
+  return { texture: !!texture, pbr: false };
+}
+
 /** Image → model. `imageUrl` must be publicly reachable — ours live on R2 under `meshy/source/`. */
-export async function createImageTo3D({ imageUrl, texture = false, parts = false, modelVersion,
-                                        lowPoly = false, faceLimit }) {
+export async function createImageTo3D({ imageUrl, texture = false, pbr = false, parts = false,
+                                        modelVersion, lowPoly = false, faceLimit }) {
   return post({
     type: 'image_to_model',
     file: { type: 'url', url: imageUrl },
     ...(modelVersion ? { model_version: modelVersion } : {}),
-    texture,
-    ...(parts ? { generate_parts: true } : {}),
+    ...appearance({ texture, pbr, parts }),
     ...lowPolyFields({ lowPoly, faceLimit }),
   });
 }

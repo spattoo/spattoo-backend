@@ -58,8 +58,14 @@ function poll(row) {
 // body: { provider, mode, prompt?, sourceImageKey?, parts?, texture? }
 router.post('/admin/ai3d/generate', requireAuth, requireCapability('catalog:admin'), async (req, res) => {
   try {
+    /* ⚠️ `parts` DEFAULTS TRUE HERE BECAUSE THE ONLY CALLER TODAY IS THE ADMIN STUDIO, which is
+       building catalogue elements that staff finish by hand. The BAKER path, when it exists, sends
+       `{ parts: false, texture: true, pbr: true }` — Sandeep: *"if have to choose between parts vs
+       colored output, i would choose colored output... something that bakers can use directly."* A
+       baker has a customer waiting and cannot sit colouring parts. The two cannot be combined
+       (Tripo refuses it); `services/tripo.js` → `appearance()` resolves the fork. */
     const { provider = 'tripo', mode = 'text', prompt, sourceImageKey, parts = true, texture = false,
-            lowPoly = false, faceLimit } = req.body ?? {};
+            pbr = false, lowPoly = false, faceLimit } = req.body ?? {};
     if (!['meshy', 'tripo'].includes(provider)) return res.status(400).json({ error: 'provider must be meshy or tripo' });
     if (mode === 'text' && !prompt?.trim()) return res.status(400).json({ error: 'prompt is required for text mode' });
     if (mode === 'image' && !sourceImageKey) return res.status(400).json({ error: 'sourceImageKey is required for image mode' });
@@ -75,14 +81,15 @@ router.post('/admin/ai3d/generate', requireAuth, requireCapability('catalog:admi
     let taskId;
     if (provider === 'tripo') {
       taskId = mode === 'text'
-        ? await tripo.createTextTo3D({ prompt, texture, parts, lowPoly, faceLimit })
-        : await tripo.createImageTo3D({ imageUrl, texture, parts, lowPoly, faceLimit });
+        ? await tripo.createTextTo3D({ prompt, texture, pbr, parts, lowPoly, faceLimit })
+        : await tripo.createImageTo3D({ imageUrl, texture, pbr, parts, lowPoly, faceLimit });
     } else {
       // Meshy splits as a SECOND task on a finished model, so `parts` is not passed here — the
       // studio asks for the split once this one succeeds. One vendor plans it, the other chains it.
       taskId = mode === 'text'
         ? await meshy.createTextTo3DTask({ prompt, targetPolycount: faceLimit })
-        : await meshy.createImageTo3DTask({ imageUrl, shouldTexture: texture, targetPolycount: faceLimit });
+        // Meshy has no pbr flag of its own — `shouldTexture` covers it, and pbr implies texture.
+        : await meshy.createImageTo3DTask({ imageUrl, shouldTexture: texture || pbr, targetPolycount: faceLimit });
     }
 
     const { data, error } = await supabase
