@@ -21,7 +21,7 @@ router.post('/webhooks/meshy', async (req, res) => {
     if (!taskId) return res.json({ ok: true });
 
     const { data: row } = await supabase
-      .from('meshy_generations').select('*').eq('meshy_task_id', taskId).maybeSingle();
+      .from('ai3d_generations').select('*').eq('vendor_task_id', taskId).maybeSingle();
     if (!row) return res.json({ ok: true });
 
     // Verify by re-fetching — don't act on the unsigned webhook body directly.

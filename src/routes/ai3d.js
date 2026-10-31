@@ -15,7 +15,7 @@ import * as tripo from '../services/tripo.js';
 //
 // ⚠️ THIS DOES NOT REPLACE `routes/meshy.js`, AND THAT IS DELIBERATE. That route serves the shipped
 // Image → 3D Cake wizard, which bakers are meant to get next; breaking it to add a comparison tool
-// for staff would be trading a live path for an experiment. The two share the `meshy_generations`
+// for staff would be trading a live path for an experiment. The two share the `ai3d_generations`
 // table (148 gave it `provider` / `mode` / `prompt`) and nothing else.
 //
 // ⚠️ NO GPT-4o GATE HERE, UNLIKE THE WIZARD. That gate exists to stop a baker spending credits on a
@@ -79,8 +79,8 @@ const present = (row) => ({
 
 /** Ask whichever vendor owns this row. Both services normalise to one shape. */
 function poll(row) {
-  if (row.provider === 'tripo') return tripo.getTask(row.meshy_task_id);
-  return meshy.getAnyTask(row.meshy_task_id, row.mode === 'text' ? 'text' : 'image');
+  if (row.provider === 'tripo') return tripo.getTask(row.vendor_task_id);
+  return meshy.getAnyTask(row.vendor_task_id, row.mode === 'text' ? 'text' : 'image');
 }
 
 // POST /admin/ai3d/generate
@@ -122,14 +122,14 @@ router.post('/admin/ai3d/generate', requireAuth, requireCapability('catalog:admi
     }
 
     const { data, error } = await supabase
-      .from('meshy_generations')
+      .from('ai3d_generations')
       .insert({
         created_by: req.user.id,
         provider, mode,
         prompt: prompt ?? null,
         source_image_key: sourceImageKey ?? null,
         wants_parts: !!parts,
-        meshy_task_id: taskId,
+        vendor_task_id: taskId,
         status: 'PENDING',
       })
       .select('*').single();
@@ -145,7 +145,7 @@ router.post('/admin/ai3d/generate', requireAuth, requireCapability('catalog:admi
 router.get('/admin/ai3d/:id', requireAuth, requireCapability('catalog:admin'), async (req, res) => {
   try {
     const { data: row, error } = await supabase
-      .from('meshy_generations').select('*').eq('id', req.params.id).single();
+      .from('ai3d_generations').select('*').eq('id', req.params.id).single();
     if (error || !row) return res.status(404).json({ error: 'Not found' });
     /* ⚠️ A FINISHED ROW STILL HAS TO HAND BACK THE MODEL, and the first version did not — it
        returned early here, so reopening yesterday's run showed a status and an empty canvas. The
@@ -218,7 +218,7 @@ router.get('/admin/ai3d/:id', requireAuth, requireCapability('catalog:admin'), a
     }
 
     const { data: saved } = await supabase
-      .from('meshy_generations').update(update).eq('id', row.id).select('*').single();
+      .from('ai3d_generations').update(update).eq('id', row.id).select('*').single();
 
     res.json({ ...present(saved ?? { ...row, ...update }), vendorModelUrl: task.modelUrl ?? null,
                partNames: task.partNames ?? null });
@@ -241,7 +241,7 @@ router.get('/admin/ai3d/:id', requireAuth, requireCapability('catalog:admin'), a
 router.get('/admin/ai3d/:id/model', requireAuth, requireCapability('catalog:admin'), async (req, res) => {
   try {
     const { data: row, error } = await supabase
-      .from('meshy_generations').select('*').eq('id', req.params.id).single();
+      .from('ai3d_generations').select('*').eq('id', req.params.id).single();
     if (error || !row) return res.status(404).json({ error: 'Not found' });
 
     const url = row.glb_key ? publicUrl(row.glb_key) : (await poll(row)).modelUrl;
@@ -270,7 +270,7 @@ router.get('/admin/ai3d/mine', requireAuth, requireCapability('element:manage'),
   try {
     const limit = Math.min(Math.max(Number.parseInt(req.query.limit, 10) || 30, 1), 100);
     const { data, error } = await supabase
-      .from('meshy_generations')
+      .from('ai3d_generations')
       .select('*')
       .eq('created_by', req.user.id)
       .eq('status', 'SUCCEEDED')
@@ -301,14 +301,14 @@ router.post('/admin/ai3d/:id/segment', requireAuth, requireCapability('catalog:a
   try {
     const { granularity = 'medium', hint } = req.body ?? {};
     const { data: row, error } = await supabase
-      .from('meshy_generations').select('*').eq('id', req.params.id).single();
+      .from('ai3d_generations').select('*').eq('id', req.params.id).single();
     if (error || !row) return res.status(404).json({ error: 'Not found' });
     if (row.provider !== 'tripo') return res.status(400).json({ error: 'Smart segmentation is Tripo only' });
     if (row.status !== 'SUCCEEDED') return res.status(400).json({ error: 'Model is not finished yet' });
 
     let taskId;
     try {
-      taskId = await tripo.createSmartSegmentation({ taskId: row.meshy_task_id, granularity, hint });
+      taskId = await tripo.createSmartSegmentation({ taskId: row.vendor_task_id, granularity, hint });
     } catch (vendorErr) {
       /* Same reasoning as the split route: this is a diagnostic, and the vendor's sentence is the
          answer being looked for. The task type here is the one field not confirmed live. */
@@ -316,14 +316,14 @@ router.post('/admin/ai3d/:id/segment', requireAuth, requireCapability('catalog:a
     }
 
     const { data } = await supabase
-      .from('meshy_generations')
+      .from('ai3d_generations')
       .insert({
         created_by: req.user.id,
         provider: 'tripo', mode: row.mode,
         prompt: hint ?? row.prompt,
         source_image_key: row.source_image_key,
         wants_parts: true,
-        meshy_task_id: taskId,
+        vendor_task_id: taskId,
         status: 'PENDING',
       })
       .select('*').single();
@@ -338,7 +338,7 @@ router.post('/admin/ai3d/:id/split', requireAuth, requireCapability('catalog:adm
   try {
     const { mode = 'auto', prompt } = req.body ?? {};
     const { data: row, error } = await supabase
-      .from('meshy_generations').select('*').eq('id', req.params.id).single();
+      .from('ai3d_generations').select('*').eq('id', req.params.id).single();
     if (error || !row) return res.status(404).json({ error: 'Not found' });
     if (row.provider !== 'meshy') {
       return res.status(400).json({ error: 'Tripo splits at generation time — re-run with parts on' });
@@ -351,19 +351,19 @@ router.post('/admin/ai3d/:id/split', requireAuth, requireCapability('catalog:adm
        It cost a round trip to learn that the Auto Split endpoint is `/print/split`. */
     let taskId;
     try {
-      taskId = await meshy.createAutoSplitTask({ taskId: row.meshy_task_id, mode, prompt });
+      taskId = await meshy.createAutoSplitTask({ taskId: row.vendor_task_id, mode, prompt });
     } catch (vendorErr) {
       return res.status(502).json({ error: vendorErr.message });
     }
     const { data } = await supabase
-      .from('meshy_generations')
+      .from('ai3d_generations')
       .insert({
         created_by: req.user.id,
         provider: 'meshy', mode: row.mode,
         prompt: prompt ?? row.prompt,
         source_image_key: row.source_image_key,
         wants_parts: true,
-        meshy_task_id: taskId,
+        vendor_task_id: taskId,
         status: 'PENDING',
       })
       .select('*').single();

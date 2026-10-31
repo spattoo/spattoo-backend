@@ -33,7 +33,7 @@ export async function finalizeOrUpdate(row, task) {
 
   if (status === 'SUCCEEDED') {
     const glbSrc = task.model_urls?.glb;
-    if (!glbSrc) throw new Error(`Meshy task ${row.meshy_task_id} SUCCEEDED but has no glb url`);
+    if (!glbSrc) throw new Error(`Meshy task ${row.vendor_task_id} SUCCEEDED but has no glb url`);
     // Copy the Meshy GLB into our own R2 (Meshy URLs expire) so the editor can fetch it.
     const buf = Buffer.from(await (await fetch(glbSrc)).arrayBuffer());
     const glbKey = `meshy/outputs/${randomUUID()}.glb`;
@@ -47,7 +47,7 @@ export async function finalizeOrUpdate(row, task) {
       updated_at:       new Date().toISOString(),
     };
     const { data } = await supabase
-      .from('meshy_generations').update(update).eq('id', row.id).select('*').single();
+      .from('ai3d_generations').update(update).eq('id', row.id).select('*').single();
     return data ?? { ...row, ...update };
   }
 
@@ -58,7 +58,7 @@ export async function finalizeOrUpdate(row, task) {
       updated_at: new Date().toISOString(),
     };
     const { data } = await supabase
-      .from('meshy_generations').update(update).eq('id', row.id).select('*').single();
+      .from('ai3d_generations').update(update).eq('id', row.id).select('*').single();
     return data ?? { ...row, ...update };
   }
 
@@ -69,7 +69,7 @@ export async function finalizeOrUpdate(row, task) {
     updated_at: new Date().toISOString(),
   };
   const { data } = await supabase
-    .from('meshy_generations').update(update).eq('id', row.id).select('*').single();
+    .from('ai3d_generations').update(update).eq('id', row.id).select('*').single();
   return data ?? { ...row, ...update };
 }
 
@@ -93,11 +93,11 @@ router.post('/admin/meshy/generate', requireAuth, requireCapability('catalog:adm
     const taskId = await createImageTo3DTask({ imageUrl });
 
     const { data, error } = await supabase
-      .from('meshy_generations')
+      .from('ai3d_generations')
       .insert({
         created_by:       req.user.id,
         source_image_key: sourceImageKey,
-        meshy_task_id:    taskId,
+        vendor_task_id:    taskId,
         status:           'PENDING',
       })
       .select('*')
@@ -116,12 +116,12 @@ router.post('/admin/meshy/generate', requireAuth, requireCapability('catalog:adm
 router.get('/admin/meshy/:id', requireAuth, requireCapability('catalog:admin'), async (req, res) => {
   try {
     const { data: row, error } = await supabase
-      .from('meshy_generations').select('*').eq('id', req.params.id).single();
+      .from('ai3d_generations').select('*').eq('id', req.params.id).single();
     if (error || !row) return res.status(404).json({ error: 'Not found' });
 
     if (!TERMINAL.includes(row.status)) {
       try {
-        const task = await getTask(row.meshy_task_id);
+        const task = await getTask(row.vendor_task_id);
         const updated = await finalizeOrUpdate(row, task);
         return res.json(present(updated));
       } catch (pollErr) {
