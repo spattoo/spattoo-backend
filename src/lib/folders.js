@@ -56,6 +56,11 @@ export const FOLDER_KIND = {
   'customer/photos':      'image',   // customer-uploaded photo for a photo-cake frame (public → designer textures it)
   'meshy/source':         'image',   // uploaded 2D image for the image→3D wizard (public so Meshy can fetch it)
   'meshy/outputs':        'model',   // our copy of the Meshy-generated GLB (written server-side via putObject)
+  // Our copy of a 3D generation, mirrored server-side the moment the vendor says SUCCEEDED — a
+  // baker paid credits for it and the vendor's own URL expires. ⚠️ THE ONLY FOLDER WITH A RETENTION
+  // WINDOW (see below): most generations are rejects, so they are kept while they matter and swept
+  // after. Promotion to an element COPIES the file out of here first.
+  'ai3d/runs':            'model',
   // "Extract Elements": the uploaded cake photo we identify decorations in. Public so GPT-4o vision
   // can fetch it by URL. Crops + regenerated outputs are written SERVER-side via putObject (no signed
   // upload needed for those), but they share this folder tree — see routes/elementExtract.js.
@@ -63,6 +68,24 @@ export const FOLDER_KIND = {
   // The typeface a text_styles row shapes its placeholder glyphs with. The face is DATA, not a
   // hardcoded family — a new art style is a new font + config row, never a code change.
   'elements/fonts':       'font',
+};
+
+/* ── Folders a lifecycle rule sweeps ─────────────────────────────────────────────────────────────
+ *
+ * ⚠️ ONE NUMBER, READ BY BOTH SIDES. `scripts/set-r2-lifecycle.mjs` writes the R2 rule and
+ * `routes/ai3d.js` has to know when a stored key stops being true — and if those two numbers are
+ * typed separately they drift, at which point a row claims `mirrored: true` for an object R2 has
+ * already deleted. That is the same failure `check:medium-vocab` exists to prevent, one folder
+ * wide. This module is dependency-free on purpose (see the header), so both can import it.
+ *
+ * Absent from this map = kept for ever, which is the right default for everything a cake points at.
+ */
+export const FOLDER_RETENTION_DAYS = {
+  // Derived JPEG copies for WhatsApp headers — delete one and the next send regenerates it.
+  'notifications/whatsapp-media': 90,
+  // Generated models nobody turned into an element. The ROW survives expiry with its prompt and
+  // seeds intact, so the model can be regenerated identically — expiry costs credits, not the idea.
+  'ai3d/runs': 30,
 };
 
 export const ALLOWED_FOLDERS = Object.keys(FOLDER_KIND);

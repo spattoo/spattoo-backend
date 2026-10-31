@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import { serverError } from '../lib/httpError.js';
 import { putObject } from '../services/r2.js';
+import { FOLDER_RETENTION_DAYS } from '../lib/folders.js';
 import { supabase } from '../services/supabase.js';
 import { requireAuth } from '../middleware/auth.js';
 import { requireCapability } from '../middleware/rbac.js';
@@ -33,6 +34,17 @@ const router = Router();
 const TERMINAL = ['SUCCEEDED', 'FAILED', 'CANCELED'];
 const publicUrl = (key) => `${config.r2.publicUrl}/${key}`;
 
+/* When our copy is swept. Dated from the ROW rather than the object, which is a few minutes early —
+   the safe direction: we would call it gone just before R2 does, never just after. */
+const RUN_RETENTION_DAYS = FOLDER_RETENTION_DAYS['ai3d/runs'];
+const mirrorExpiresAt = (row) => (row.glb_key && row.created_at
+  ? new Date(Date.parse(row.created_at) + RUN_RETENTION_DAYS * 86400000).toISOString()
+  : null);
+const mirrorExpired = (row) => {
+  const at = mirrorExpiresAt(row);
+  return !!at && Date.parse(at) < Date.now();
+};
+
 const present = (row) => ({
   id: row.id,
   provider: row.provider,
@@ -44,9 +56,18 @@ const present = (row) => ({
   error: row.error,
   credits: row.consumed_credits,
   thumbnailUrl: row.thumbnail_url,
-  glbUrl: row.glb_key ? publicUrl(row.glb_key) : null,
-  // Our own copy exists — the vendor URL is no longer the only way to this model.
-  mirrored: !!row.glb_key,
+  glbUrl: row.glb_key && !mirrorExpired(row) ? publicUrl(row.glb_key) : null,
+  /* ⚠️ A STORED KEY IS NOT THE SAME AS A LIVE OBJECT. `ai3d/runs/` is swept after
+     FOLDER_RETENTION_DAYS, and the ROW keeps its glb_key — so reporting `mirrored` straight off the
+     column would promise a model R2 deleted, and hand out a URL that 404s with no explanation.
+     Computed from the one shared number instead. */
+  mirrored: !!row.glb_key && !mirrorExpired(row),
+  mirrorExpiresAt: mirrorExpiresAt(row),
+  /* Even after the file goes, the row keeps the prompt and both seeds — and the same prompt with
+     the same seed returns the same mesh. So an expired generation is not lost, it is one
+     regeneration away. Worth saying out loud, because the alternative reading is "your work is
+     gone". */
+  regeneratable: !!row.prompt && row.model_seed != null,
   modelSeed: row.model_seed ?? null,
   textureSeed: row.texture_seed ?? null,
   // A generation is NOT an element until somebody says so. Null means "generated, yours, not in the

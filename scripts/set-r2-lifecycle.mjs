@@ -28,6 +28,11 @@
 import {
   S3Client, GetBucketLifecycleConfigurationCommand, PutBucketLifecycleConfigurationCommand,
 } from '@aws-sdk/client-s3';
+/* ⚠️ THE RETENTION WINDOWS COME FROM lib/folders.js, not from numbers typed here. The route that
+   reports whether a stored key is still live reads the same map — typed separately they drift, and
+   a row then promises a model R2 has already deleted. folders.js is dependency-free on purpose, so
+   importing it does not drag config.js (and its ten env vars) into this script. */
+import { FOLDER_RETENTION_DAYS } from '../src/lib/folders.js';
 
 /* ⚠️ Reads the four R2 values from the environment directly, and deliberately does NOT import
    src/config.js. That module asserts EVERY required key at import — OPENAI_API_KEY, REMOVE_BG_API_KEY,
@@ -58,7 +63,7 @@ const RULES = [
   {
     id: 'expire-whatsapp-media-copies',
     prefix: 'notifications/whatsapp-media/',
-    days: 90,
+    days: FOLDER_RETENTION_DAYS['notifications/whatsapp-media'],
     why: 'derived JPEG copies of cake pictures for WhatsApp headers; deleting one makes the next send regenerate it',
   },
   {
@@ -70,7 +75,7 @@ const RULES = [
        permanent element path, so an element is never left pointing at an expiring object. */
     id: 'expire-unpromoted-3d-generations',
     prefix: 'ai3d/runs/',
-    days: 30,
+    days: FOLDER_RETENTION_DAYS['ai3d/runs'],
     why: 'generated models nobody turned into an element; promotion copies the file out of this prefix first',
   },
 ];
