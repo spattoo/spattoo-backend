@@ -47,13 +47,26 @@ const TERMINAL = ['SUCCEEDED', 'FAILED', 'CANCELED'];
 const publicUrl = (key) => `${config.r2.publicUrl}/${key}`;
 
 /* When our copy is swept. Dated from the ROW rather than the object, which is a few minutes early —
-   the safe direction: we would call it gone just before R2 does, never just after. */
+   the safe direction: we would call it gone just before R2 does, never just after.
+
+   ⚠️ IT WAS CALLED A MIRROR AND IT IS NOT ONE. A mirror implies two copies kept in sync; nothing
+   here is synced. We fetch the vendor's file once, store it, and never look at theirs again.
+   Sandeep: *"are we having 2 copies of generated one?"* — no: one copy, ours. (After conversion
+   there are two of OUR files, but they are different things: this raw output, and the finished
+   build GlbStudio writes to `elements/files/3D/`.) */
+const RUN_PREFIX = 'ai3d/runs/';
 const RUN_RETENTION_DAYS = FOLDER_RETENTION_DAYS['ai3d/runs'];
-const mirrorExpiresAt = (row) => (row.glb_key && row.created_at
+/* ⚠️ ONLY KEYS UNDER THE SWEPT PREFIX HAVE AN EXPIRY, and the first version of this missed it:
+   it dated EVERY glb_key, including the ones the older routes/meshy.js wrote to `meshy/outputs/`.
+   No lifecycle rule touches that prefix, so those files live for ever — and we were calling them
+   gone and handing back a null URL. Found on dev 2026-10-31: the one row with a file had "expired"
+   six weeks earlier while a GET still returned all 49.72 MB of it. An expiry asserted over a
+   prefix nobody sweeps is a promise in the wrong direction — it hides what we still have. */
+const fileExpiresAt = (row) => (row.glb_key?.startsWith(RUN_PREFIX) && row.created_at
   ? new Date(Date.parse(row.created_at) + RUN_RETENTION_DAYS * 86400000).toISOString()
   : null);
-const mirrorExpired = (row) => {
-  const at = mirrorExpiresAt(row);
+const fileExpired = (row) => {
+  const at = fileExpiresAt(row);
   return !!at && Date.parse(at) < Date.now();
 };
 
@@ -68,13 +81,13 @@ const present = (row) => ({
   error: row.error,
   credits: row.consumed_credits,
   thumbnailUrl: row.thumbnail_url,
-  glbUrl: row.glb_key && !mirrorExpired(row) ? publicUrl(row.glb_key) : null,
+  glbUrl: row.glb_key && !fileExpired(row) ? publicUrl(row.glb_key) : null,
   /* ⚠️ A STORED KEY IS NOT THE SAME AS A LIVE OBJECT. `ai3d/runs/` is swept after
-     FOLDER_RETENTION_DAYS, and the ROW keeps its glb_key — so reporting `mirrored` straight off the
+     FOLDER_RETENTION_DAYS, and the ROW keeps its glb_key — so reporting `saved` straight off the
      column would promise a model R2 deleted, and hand out a URL that 404s with no explanation.
      Computed from the one shared number instead. */
-  mirrored: !!row.glb_key && !mirrorExpired(row),
-  mirrorExpiresAt: mirrorExpiresAt(row),
+  saved: !!row.glb_key && !fileExpired(row),
+  expiresAt: fileExpiresAt(row),
   /* Even after the file goes, the row keeps the prompt and both seeds — and the same prompt with
      the same seed returns the same mesh. So an expired generation is not lost, it is one
      regeneration away. Worth saying out loud, because the alternative reading is "your work is
@@ -161,9 +174,9 @@ router.get('/admin/ai3d/:id', requireAuth, requireCapability('catalog:admin'), a
     if (error || !row) return res.status(404).json({ error: 'Not found' });
     /* ⚠️ A FINISHED ROW STILL HAS TO HAND BACK THE MODEL, and the first version did not — it
        returned early here, so reopening yesterday's run showed a status and an empty canvas. The
-       model URL is the vendor's, not ours (see the note below on not mirroring every experiment
-       into R2), so the only place to get it is the vendor, and that means asking even when there is
-       nothing left to update. Cheap: one GET against a task that is already done. */
+       model URL is the vendor's, not ours, and a row that predates the store-on-success block below
+       has no copy at all — so the only place to get it is the vendor, and that means asking even
+       when there is nothing left to update. Cheap: one GET against a task that is already done. */
     if (TERMINAL.includes(row.status)) {
       if (row.glb_key) return res.json(present(row));
       try {
@@ -203,18 +216,27 @@ router.get('/admin/ai3d/:id', requireAuth, requireCapability('catalog:admin'), a
     /* ⚠️ MIRROR THE MODEL THE MOMENT IT EXISTS. This used to hand the vendor URL straight back and
        keep no copy, on the argument that "studio runs are experiments that get looked at once and
        thrown away". That is true of STAFF measuring a vendor, and false of a baker who paid credits
-       to put something on a cake tomorrow — and the vendor's URL expires either way. Measured on
+       to put something on a cake tomorrow. ⚠️ AND THE REASON IS NOT THAT THE VENDOR'S LINK DIES.
+       Sandeep: *"we are nothing to do with meshy or tripo url expiry. we anyways need to store them
+       and cahe them in cloudflair."* We serve our own assets from our own bucket behind our own
+       CDN; we would copy the file in even if the vendor kept theirs for ever. Measured on
        dev 2026-10-31: 8 successful runs, ONE with a copy, and that one came through the older
        routes/meshy.js which mirrors and says why.
 
-       Into `ai3d/runs/`, which a lifecycle rule expires after 30 days
-       (scripts/set-r2-lifecycle.mjs) — so nothing is lost while it matters and rejects do not
-       accumulate for ever. Promotion to an element COPIES the file out of this prefix, so an
-       element is never left pointing at an object with an expiry on it.
+       Into `ai3d/runs/`, expired by a lifecycle rule at FOLDER_RETENTION_DAYS['ai3d/runs']
+       (lib/folders.js, applied by scripts/set-r2-lifecycle.mjs). The number is NOT repeated here —
+       a comment that restates it is a second answer waiting to go stale, and this one already did,
+       saying 30 after the value moved to 90.
 
-       ⚠️ A FAILED MIRROR MUST NOT FAIL THE POLL. The generation succeeded, the baker's credits are
+       ⚠️ IT GOVERNS ONE POPULATION ONLY: generations nobody turned into a decoration
+       (`promoted_element_id is null`). A converted model is NOT at risk and needs no copy-out — the
+       element carries its own finished build at `elements/files/3D/`, written by GlbStudio, which
+       nothing here expires. (An earlier version of this note claimed promotion copies the file out
+       of this prefix. It does not, and it does not need to.)
+
+       ⚠️ A FAILED STORE MUST NOT FAIL THE POLL. The generation succeeded, the baker's credits are
        already spent, and the vendor URL still works right now — reporting failure here would turn a
-       storage hiccup into a lost model. Logged, left unmirrored, and retried on the next poll
+       storage hiccup into a lost model. Logged, left unstored, and retried on the next poll
        because `glb_key` is still null. */
     if (task.status === 'SUCCEEDED' && task.modelUrl && !row.glb_key) {
       try {
@@ -224,8 +246,8 @@ router.get('/admin/ai3d/:id', requireAuth, requireCapability('catalog:admin'), a
         const glbKey = `ai3d/runs/${row.id}.glb`;
         await putObject(glbKey, buf, 'model/gltf-binary');
         update.glb_key = glbKey;
-      } catch (mirrorErr) {
-        console.error(`ai3d mirror failed for ${row.id}:`, mirrorErr.message);
+      } catch (copyErr) {
+        console.error(`ai3d store failed for ${row.id}:`, copyErr.message);
       }
     }
 
@@ -296,7 +318,7 @@ router.get('/admin/ai3d/mine', requireAuth, requireCapability('element:manage'),
         total: rows.length,
         // The two numbers worth seeing: how many are safe from vendor expiry, and how many are
         // still only drafts.
-        mirrored:  rows.filter(r => r.mirrored).length,
+        saved:     rows.filter(r => r.saved).length,
         unpromoted: rows.filter(r => !r.promotedElementId).length,
       },
     });

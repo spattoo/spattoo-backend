@@ -83,9 +83,20 @@ export const FOLDER_KIND = {
 export const FOLDER_RETENTION_DAYS = {
   // Derived JPEG copies for WhatsApp headers — delete one and the next send regenerates it.
   'notifications/whatsapp-media': 90,
-  // Generated models nobody turned into an element. The ROW survives expiry with its prompt and
-  // seeds intact, so the model can be regenerated identically — expiry costs credits, not the idea.
-  'ai3d/runs': 30,
+  /* Generated models. 90 days — Sandeep: *"we will keep them for 90 days."*
+     ⚠️ WE STORE THESE BECAUSE THEY ARE OURS TO SERVE, NOT BECAUSE A VENDOR LINK EXPIRES. The
+     original note here reasoned from Meshy's URLs timing out, and that is the wrong reason for the
+     right behaviour: we serve our own assets from our own bucket behind our own CDN, so we would
+     copy the file in even if the vendor kept theirs for ever. Sandeep: *"we are nothing to do with
+     meshy or tripo url expiry. we anyways need to store them and cahe them in cloudflair."*
+     ⚠️ AND SWEEPING THIS PREFIX NEVER TOUCHES A CONVERTED MODEL. An element does not reference the
+     run file — GlbStudio uploads its own finished build to `elements/files/3D/`, a different object
+     in a different prefix that nothing here expires. So this number governs exactly one population:
+     generations nobody turned into a decoration (`promoted_element_id is null`). That is why one
+     uniform rule is enough, and why no exception mechanism is needed for the ones that were kept.
+     The ROW outlives the file either way, with its prompt and both seeds — so an expired generation
+     is one regeneration away, which costs credits but not the idea. */
+  'ai3d/runs': 90,
 };
 
 export const ALLOWED_FOLDERS = Object.keys(FOLDER_KIND);
