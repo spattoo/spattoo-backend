@@ -29,6 +29,7 @@ import deviceTokensRouter from './routes/deviceTokens.js';
 import notificationsRouter from './routes/notifications.js';
 import helpRouter from './routes/help.js';
 import inspirationRouter from './routes/inspiration.js';
+import ideasRouter from './routes/ideas.js';
 import elementExtractRouter from './routes/elementExtract.js';
 import texturesRouter from './routes/textures.js';
 import textStylesRouter from './routes/textStyles.js';
@@ -108,6 +109,7 @@ app.use('/api', adminNotificationChannelsRouter);   // which channels each notif
 app.use('/api', webhooksRouter);
 app.use('/api', helpRouter);          // help: answering "how do I …" out of the articles' own words
 app.use('/api', inspirationRouter);
+app.use('/api', ideasRouter);
 app.use('/api', elementExtractRouter);
 app.use('/api', texturesRouter);
 app.use('/api', textStylesRouter);
