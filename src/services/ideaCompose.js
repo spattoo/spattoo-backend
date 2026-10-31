@@ -30,6 +30,7 @@
 import { supabase } from './supabase.js';
 import { embedText } from './openai.js';
 import { config } from '../config.js';
+import { toPublicUrl } from '../lib/publicUrl.js';
 import { retrieve } from './inspirationMatch.js';
 import { subjectOf, genderOf } from './storyRank.js';
 import { elementLines, composePrompt, parseJson, specFromModel } from './ideaComposeMap.js';
@@ -72,7 +73,19 @@ export async function shortlistFor(brief, { k = COMPOSE_POOL } = {}) {
   const { data: desc } = await supabase
     .from('cake_elements').select('id, description').in('id', ids);
   const byId = new Map((desc ?? []).map(d => [d.id, d.description]));
-  return hits.map(h => ({ ...h, description: byId.get(h.id) ?? '' }));
+  /* ⚠️ KEYS BECOME URLS HERE, because the row stores a KEY and anything downstream that wants to
+     DRAW the element needs a URL. The designer resolves keys against a storage base it is handed;
+     a bundle travelling to a harness, a script or a file has no such base, so it would render a
+     cake of invisible parts — which is exactly what the first eval render did, with the console
+     full of "Could not load elements/files/2D/….webp". Expanded through the one shared helper
+     (`lib/publicUrl.js`), which exists because this was seven near-copies that had already
+     drifted. */
+  return hits.map(h => ({
+    ...h,
+    description: byId.get(h.id) ?? '',
+    image_url: toPublicUrl(h.image_url),
+    thumbnail_url: toPublicUrl(h.thumbnail_url),
+  }));
 }
 
 /** One chat call, house style: a prose prompt describing the JSON, and a parse on the way back. */

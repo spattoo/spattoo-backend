@@ -10,8 +10,13 @@
  *   node scripts/compose-idea.mjs "mermaid cake for an 8 year old girl" --out /tmp/spec.json
  *   node scripts/compose-idea.mjs "..." --pool 80 --verbose
  *
- * `--out` writes the spec where the designer harness can read it:
- *   dev server in spattoo-core, then /cake-idea.html?spec=<url to that file>
+ * `--out` writes a BUNDLE — the spec AND the rows it names — where the designer harness can read
+ * it: dev server in spattoo-core, then /cake-idea.html?bundle=<url to that file>
+ *
+ * ⚠️ THE ROWS TRAVEL WITH THE SPEC, and without them the harness is useless for a real idea. A
+ * spec carries element IDS; the harness has no API, no session and no catalogue, so on its own it
+ * would drop every id as "not in this baker's library". We have already fetched those rows to
+ * build the prompt, so emitting both costs nothing and makes the output self-contained.
  *
  * ⚠️ IT SPENDS REAL MONEY — one embedding and one gpt-4o call per run. Pennies, but not free, and
  * it is not metered because nothing here is a baker-facing path yet.
@@ -80,4 +85,11 @@ if (args.includes('--verbose')) {
 }
 
 const dest = flag('--out');
-if (dest) { writeFileSync(dest, JSON.stringify(s, null, 2)); console.log(`\n✓ spec → ${dest}`); }
+if (dest) {
+  /* Only the rows the spec actually names — the other ~155 are prompt material, not part of the
+     cake, and a bundle carrying them would be mostly noise to read and to load. */
+  const used = new Set(s.elements.map(e => e.elementId));
+  const bundle = { spec: s, elements: out.shortlist.filter(r => used.has(r.id)) };
+  writeFileSync(dest, JSON.stringify(bundle, null, 2));
+  console.log(`\n✓ bundle (spec + ${bundle.elements.length} rows) → ${dest}`);
+}
