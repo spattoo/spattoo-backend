@@ -33,6 +33,11 @@ export async function registerJobSchedulers() {
     { name: 'send_trial_reminders', opts: { removeOnComplete: true, removeOnFail: 100 } },
   );
   await jobQueue.upsertJobScheduler(
+    'poll-ai3d',
+    { pattern: config.jobs.pollAi3dCron, tz: 'UTC' },
+    { name: 'poll_ai3d', opts: { removeOnComplete: true, removeOnFail: 100 } },
+  );
+  await jobQueue.upsertJobScheduler(
     'send-renewal-reminders',
     { pattern: config.jobs.renewalReminderCron, tz: 'UTC' },
     { name: 'send_renewal_reminders', opts: { removeOnComplete: true, removeOnFail: 100 } },
@@ -43,6 +48,7 @@ export async function registerJobSchedulers() {
     `erase_expired_accounts: "${config.jobs.eraseAccountsCron}" UTC; ` +
     `send_delivery_digest: "${config.jobs.deliveryDigestCron}" UTC, day in ${config.jobs.deliveryDigestTz}; ` +
     `send_trial_reminders: "${config.jobs.trialReminderCron}" UTC, day in ${config.jobs.trialReminderTz}; ` +
-    `send_renewal_reminders: "${config.jobs.renewalReminderCron}" UTC, day in ${config.jobs.renewalReminderTz})`,
+    `send_renewal_reminders: "${config.jobs.renewalReminderCron}" UTC, day in ${config.jobs.renewalReminderTz}; ` +
+    `poll_ai3d: "${config.jobs.pollAi3dCron}" UTC)`,
   );
 }

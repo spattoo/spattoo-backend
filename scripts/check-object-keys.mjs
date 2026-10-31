@@ -59,14 +59,19 @@ const REVIEWED = new Map([
   // (`-nobg-<ts>.webp`), the baker row repointed at it, and the previous object deleted.
   // Reviewed 2026-10-31. `ai3d/runs/<generation id>.glb` — the row's own uuid, minted once by the
   // insert, so the key is written once per generation. The guard is `!row.glb_key`, so a re-poll of
-  // an already-mirrored run does not write again; a FAILED mirror leaves the key null and the next
+  // an already-stored run does not write again; a FAILED store leaves the key null and the next
   // poll retries, which overwrites nothing because nothing was written.
-  // ⚠️ AND THE IMMUTABLE HEADER IS CORRECT HERE DESPITE THE 30-DAY LIFECYCLE RULE. The bytes at
-  // this key never change — expiry deletes the object, it does not replace it — so a cached copy
-  // can never be stale. Promotion COPIES the file to the permanent element path rather than moving
-  // it, so an element never points at an object with an expiry on it.
+  // ⚠️ AND IT NOW HAS TWO CALLERS, WHICH IS WHY THE GUARD MATTERS MORE THAN IT DID. The studio's
+  // browser poll and the background sweep both advance a run, so two writes can be in flight for
+  // the same key at once. They write identical bytes to a key derived from the row id, so the race
+  // is harmless — but it is a race, and the guard is what keeps it one.
+  // ⚠️ THE IMMUTABLE HEADER IS CORRECT: the bytes at this key never change, so a cached copy can
+  // never be stale. (This note previously said expiry was 30 days and that promotion copies the
+  // file out to the element path. Neither is true: retention is null — nothing sweeps the prefix
+  // today — and promotion copies nothing, because GlbStudio writes its own finished build to
+  // `elements/files/3D/`. Corrected rather than deleted, because both claims read as reassurance.)
   ['routes/bakerLogos.js',           'derived + generation: <logoKey>-nobg-<timestamp>.webp; caller deletes the previous object'],
-  ['routes/ai3d.js',                 'derived: ai3d/runs/<generation uuid>.glb, guarded by !row.glb_key'],
+  ['services/ai3dAdvance.js',        'derived: ai3d/runs/<generation uuid>.glb, guarded by !row.glb_key'],
   ['services/thumbnails.js',         'derived: <thumbnailKey>-<maxDim>.webp'],
   ['services/imageOptimize.js',      'derived: <key>.webp'],
   // Reviewed 2026-09-16. WhatsApp headers accept only JPEG/PNG and our thumbnails are WebP, so the

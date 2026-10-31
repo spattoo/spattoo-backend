@@ -181,6 +181,15 @@ export const config = {
     // trial's is — and it matters MORE here: `current_period_end` is an instant, and Razorpay's tend
     // to land in the evening UTC, which is already the next calendar day in India.
     renewalReminderTz: process.env.RENEWAL_REMINDER_TZ || 'Asia/Kolkata',
+    /* Finishing 3D generations nobody is watching. Every FIVE MINUTES, not daily like the rest of
+       these, and the difference is the point: the others send a message that is equally good an
+       hour late, this one settles money. A baker's credits are reserved while a run is in flight,
+       so the gap between "the vendor finished" and "we noticed" is a gap in which their balance is
+       wrong. Both vendors finish in minutes; a daily tick would hold a reservation open overnight
+       for a run that completed before dinner.
+       Retunable per environment without a deploy, which is how it should be found if the vendors
+       get slower or we get busier. */
+    pollAi3dCron: process.env.POLL_AI3D_CRON || '*/5 * * * *',
     // Which timezone "today" means when the digest runs. SEPARATE from the cron, because they answer
     // different questions: the cron says WHEN to look, this says WHICH DAY to look at. Run at 01:30
     // UTC and ask the server what day it is and you get the right answer by luck — 01:30 UTC and

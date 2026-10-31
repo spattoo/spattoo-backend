@@ -11,6 +11,7 @@ import { eraseExpiredAccounts } from './processors/eraseExpiredAccounts.js';
 import { sendDeliveryDigest } from './processors/sendDeliveryDigest.js';
 import { sendTrialReminders } from './processors/sendTrialReminders.js';
 import { sendRenewalReminders } from './processors/sendRenewalReminders.js';
+import { pollAi3d } from './processors/pollAi3d.js';
 
 const processors = {
   extract_image:           extractImage,
@@ -24,6 +25,7 @@ const processors = {
   send_delivery_digest:    sendDeliveryDigest,
   send_trial_reminders:    sendTrialReminders,
   send_renewal_reminders:  sendRenewalReminders,
+  poll_ai3d:               pollAi3d,
 };
 
 export function startWorker() {

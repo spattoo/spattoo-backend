@@ -1,12 +1,12 @@
 import { Router } from 'express';
 import { serverError } from '../lib/httpError.js';
-import { putObject } from '../services/r2.js';
 import { FOLDER_RETENTION_DAYS } from '../lib/folders.js';
 import { supabase } from '../services/supabase.js';
 import { requireAuth } from '../middleware/auth.js';
 import { requireCapability } from '../middleware/rbac.js';
 import { config } from '../config.js';
 import * as meshy from '../services/meshy.js';
+import { advanceGeneration, poll, TERMINAL } from '../services/ai3dAdvance.js';
 import * as tripo from '../services/tripo.js';
 
 // ── 3D Element Studio — one flow, two vendors ───────────────────────────────────────────────────
@@ -43,7 +43,6 @@ import * as tripo from '../services/tripo.js';
 // and it is answered by looking at real output, not by reading their docs.
 
 const router = Router();
-const TERMINAL = ['SUCCEEDED', 'FAILED', 'CANCELED'];
 const publicUrl = (key) => `${config.r2.publicUrl}/${key}`;
 
 /* When our copy is swept. Dated from the ROW rather than the object, which is a few minutes early —
@@ -126,11 +125,8 @@ const present = (row) => ({
   createdAt: row.created_at,
 });
 
-/** Ask whichever vendor owns this row. Both services normalise to one shape. */
-function poll(row) {
-  if (row.provider === 'tripo') return tripo.getTask(row.vendor_task_id);
-  return meshy.getAnyTask(row.vendor_task_id, row.mode === 'text' ? 'text' : 'image');
-}
+/* `poll` and the advance-and-store logic moved to services/ai3dAdvance.js — a background job polls
+   too now, and the screen and the job must not answer differently about the same run. */
 
 // POST /admin/ai3d/generate
 // body: { provider, mode, prompt?, sourceImageKey?, parts?, texture? }
@@ -214,9 +210,9 @@ router.get('/admin/ai3d/:id', requireAuth, requireCapability('catalog:admin'), a
       }
     }
 
-    let task;
+    let advanced;
     try {
-      task = await poll(row);
+      advanced = await advanceGeneration(row);
     } catch (pollErr) {
       // ⚠️ A POLL FAILURE IS NOT A ROW FAILURE. The vendor being briefly unreachable must not mark
       // a running generation dead — the studio keeps showing the last known state and tries again.
@@ -224,63 +220,8 @@ router.get('/admin/ai3d/:id', requireAuth, requireCapability('catalog:admin'), a
       return res.json(present(row));
     }
 
-    const update = {
-      status: task.status,
-      progress: task.progress,
-      updated_at: new Date().toISOString(),
-      ...(task.credits != null ? { consumed_credits: task.credits } : {}),
-      ...(task.thumbnailUrl ? { thumbnail_url: task.thumbnailUrl } : {}),
-      ...(task.error ? { error: task.error } : {}),
-      // Stored on the first poll that sees them. Without the seed a second attempt is an unrelated
-      // model; with it, one answer can change and the rest hold still — the only form of "edit"
-      // Tripo offers, since refine_model refuses anything current.
-      ...(task.modelSeed   != null && row.model_seed   == null ? { model_seed:   task.modelSeed }   : {}),
-      ...(task.textureSeed != null && row.texture_seed == null ? { texture_seed: task.textureSeed } : {}),
-    };
-
-    /* ⚠️ MIRROR THE MODEL THE MOMENT IT EXISTS. This used to hand the vendor URL straight back and
-       keep no copy, on the argument that "studio runs are experiments that get looked at once and
-       thrown away". That is true of STAFF measuring a vendor, and false of a baker who paid credits
-       to put something on a cake tomorrow. ⚠️ AND THE REASON IS NOT THAT THE VENDOR'S LINK DIES.
-       Sandeep: *"we are nothing to do with meshy or tripo url expiry. we anyways need to store them
-       and cahe them in cloudflair."* We serve our own assets from our own bucket behind our own
-       CDN; we would copy the file in even if the vendor kept theirs for ever. Measured on
-       dev 2026-10-31: 8 successful runs, ONE with a copy, and that one came through the older
-       routes/meshy.js which mirrors and says why.
-
-       Into `ai3d/runs/`, expired by a lifecycle rule at FOLDER_RETENTION_DAYS['ai3d/runs']
-       (lib/folders.js, applied by scripts/set-r2-lifecycle.mjs). The number is NOT repeated here —
-       a comment that restates it is a second answer waiting to go stale, and this one already did,
-       saying 30 after the value moved to 90.
-
-       ⚠️ IT GOVERNS ONE POPULATION ONLY: generations nobody turned into a decoration
-       (`promoted_element_id is null`). A converted model is NOT at risk and needs no copy-out — the
-       element carries its own finished build at `elements/files/3D/`, written by GlbStudio, which
-       nothing here expires. (An earlier version of this note claimed promotion copies the file out
-       of this prefix. It does not, and it does not need to.)
-
-       ⚠️ A FAILED STORE MUST NOT FAIL THE POLL. The generation succeeded, the baker's credits are
-       already spent, and the vendor URL still works right now — reporting failure here would turn a
-       storage hiccup into a lost model. Logged, left unstored, and retried on the next poll
-       because `glb_key` is still null. */
-    if (task.status === 'SUCCEEDED' && task.modelUrl && !row.glb_key) {
-      try {
-        const upstream = await fetch(task.modelUrl);
-        if (!upstream.ok) throw new Error(`vendor returned ${upstream.status}`);
-        const buf = Buffer.from(await upstream.arrayBuffer());
-        const glbKey = `ai3d/runs/${row.id}.glb`;
-        await putObject(glbKey, buf, 'model/gltf-binary');
-        update.glb_key = glbKey;
-      } catch (copyErr) {
-        console.error(`ai3d store failed for ${row.id}:`, copyErr.message);
-      }
-    }
-
-    const { data: saved } = await supabase
-      .from('ai3d_generations').update(update).eq('id', row.id).select('*').single();
-
-    res.json({ ...present(saved ?? { ...row, ...update }), vendorModelUrl: task.modelUrl ?? null,
-               partNames: task.partNames ?? null });
+    res.json({ ...present(advanced.row), vendorModelUrl: advanced.task.modelUrl ?? null,
+               partNames: advanced.task.partNames ?? null });
   } catch (err) {
     serverError(req, res, err);
   }
