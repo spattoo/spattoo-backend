@@ -108,6 +108,14 @@ const present = (row) => ({
   // A generation is NOT an element until somebody says so. Null means "generated, yours, not in the
   // catalogue" — which is a state the maker must still be able to see.
   promotedElementId: row.promoted_element_id ?? null,
+  /* Who decided, and on whose behalf (158). Surfaced so a screen can say "already a decoration,
+     added by …" rather than only that it was — the difference between a baker adding their own
+     model and us lifting it into the shared catalogue is the whole reason these columns exist. */
+  promotedAt: row.promoted_at ?? null,
+  promotedBy: row.promoted_by ?? null,
+  promotedByBakerId: row.promoted_by_baker_id ?? null,
+  /* The bakery whose credits paid (157). NULL is a staff run, not missing data. */
+  bakerId: row.baker_id ?? null,
   sourceImageUrl: row.source_image_key ? publicUrl(row.source_image_key) : null,
   createdAt: row.created_at,
 });
@@ -267,6 +275,54 @@ router.get('/admin/ai3d/:id', requireAuth, requireCapability('catalog:admin'), a
 
     res.json({ ...present(saved ?? { ...row, ...update }), vendorModelUrl: task.modelUrl ?? null,
                partNames: task.partNames ?? null });
+  } catch (err) {
+    serverError(req, res, err);
+  }
+});
+
+// POST /admin/ai3d/:id/promoted — record that this generation became an element.
+//
+// ⚠️ IT RECORDS, IT DOES NOT CREATE. The element is made by AddElement through the one path that
+// already does it properly — thumbnail, R2 copy, row, guide, reindex. A second creation path here
+// would be exactly the drift the studio's own header refuses ("it saves nothing, and that is not an
+// oversight"). So this is the last line of that flow, not an alternative to it.
+//
+// ⚠️ WHO, AND ON WHOSE BEHALF (migration 158). `promoted_by` is the person; `promoted_by_baker_id`
+// is their bakery, NULL for staff — the same pair as creation, resolved at write time for the same
+// reason: `baker_appusers` is a hard delete, so deriving it later stops working the day they leave.
+//
+// ⚠️ FIRST PROMOTION WINS. If the row already points at an element, this reports that rather than
+// repointing it. Re-running Add Element on the same generation is a normal accident — an admin
+// going back a page, a double submit — and silently moving the link would orphan the first element
+// from its provenance while leaving it in the catalogue. A second element from one generation is a
+// legitimate thing to want; quietly forgetting the first is not.
+router.post('/admin/ai3d/:id/promoted', requireAuth, requireCapability('catalog:admin'), async (req, res) => {
+  try {
+    const { elementId } = req.body ?? {};
+    if (!elementId) return res.status(400).json({ error: 'elementId is required' });
+
+    const { data: row, error } = await supabase
+      .from('ai3d_generations').select('*').eq('id', req.params.id).single();
+    if (error || !row) return res.status(404).json({ error: 'Not found' });
+
+    if (row.promoted_element_id) {
+      return res.json({ ok: true, alreadyPromoted: true, ...present(row) });
+    }
+
+    const { data: saved, error: upErr } = await supabase
+      .from('ai3d_generations')
+      .update({
+        promoted_element_id:  elementId,
+        promoted_by:          req.user.id,
+        promoted_by_baker_id: await bakerIdFor(req.user.id),
+        promoted_at:          new Date().toISOString(),
+      })
+      .eq('id', row.id)
+      .select('*').single();
+    // A bad elementId fails the FK here rather than storing a dangling link.
+    if (upErr) return res.status(400).json({ error: upErr.message });
+
+    res.json({ ok: true, alreadyPromoted: false, ...present(saved) });
   } catch (err) {
     serverError(req, res, err);
   }
