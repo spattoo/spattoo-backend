@@ -54,6 +54,16 @@ const publicUrl = (key) => `${config.r2.publicUrl}/${key}`;
    Sandeep: *"are we having 2 copies of generated one?"* — no: one copy, ours. (After conversion
    there are two of OUR files, but they are different things: this raw output, and the finished
    build GlbStudio writes to `elements/files/3D/`.) */
+/* Whose generation is this? `created_by` is the PERSON; this is the bakery whose credits paid.
+   Resolved at write time and stored, never derived at read time — `baker_appusers` is a hard delete
+   (bakerProvisioning.js:224), so a staff member who leaves would otherwise take the only link to
+   their bakery's paid models with them. Null for staff, who have no bakery and never will. */
+async function bakerIdFor(authUserId) {
+  const { data } = await supabase
+    .from('baker_appusers').select('baker_id').eq('auth_user_id', authUserId).maybeSingle();
+  return data?.baker_id ?? null;
+}
+
 const RUN_PREFIX = 'ai3d/runs/';
 const RUN_RETENTION_DAYS = FOLDER_RETENTION_DAYS['ai3d/runs'];
 /* ⚠️ ONLY KEYS UNDER THE SWEPT PREFIX HAVE AN EXPIRY, and the first version of this missed it:
@@ -150,6 +160,7 @@ router.post('/admin/ai3d/generate', requireAuth, requireCapability('catalog:admi
       .from('ai3d_generations')
       .insert({
         created_by: req.user.id,
+        baker_id:   await bakerIdFor(req.user.id),
         provider, mode,
         prompt: prompt ?? null,
         source_image_key: sourceImageKey ?? null,
@@ -297,17 +308,29 @@ router.get('/admin/ai3d/:id/model', requireAuth, requireCapability('catalog:admi
 // in my decorations?)."* A generation they paid for must be findable whether or not they promoted
 // it — otherwise the only record of it is a browser tab, and closing that loses the money.
 //
-// ⚠️ SCOPED TO THE MAKER, NOT THE BAKERY. `created_by` is who pressed the button, and a generation
-// is a draft rather than a catalogue entry — a half-finished idea does not belong in front of a
-// colleague until its maker promotes it.
+// ⚠️ SCOPED TO THE BAKERY, AND IT USED TO BE SCOPED TO THE MAKER. The old reasoning was that a
+// generation is a draft, and a half-finished idea does not belong in front of a colleague until its
+// maker promotes it. That is a decent instinct about DRAFTS and the wrong answer about OWNERSHIP:
+// the credits are the bakery's, so the model is the bakery's. Scoping it to one person meant a
+// bakery that paid for a model could not see it while that person was off shift, and lost it
+// entirely when they left — `baker_appusers` is a hard delete.
+//
+// `created_by` is still returned, so a screen can say who made each one, and filtering back down to
+// one person stays available as a VIEW rather than as ownership.
+//
+// Staff have no bakery (null `baker_id`), so they fall back to their own rows — which is the same
+// set they saw before.
 router.get('/admin/ai3d/mine', requireAuth, requireCapability('element:manage'), async (req, res) => {
   try {
     const limit = Math.min(Math.max(Number.parseInt(req.query.limit, 10) || 30, 1), 100);
-    const { data, error } = await supabase
+    const bakerId = await bakerIdFor(req.user.id);
+    const q = supabase
       .from('ai3d_generations')
       .select('*')
-      .eq('created_by', req.user.id)
-      .eq('status', 'SUCCEEDED')
+      .eq('status', 'SUCCEEDED');
+    // One or the other, never neither: an unscoped query here would hand every bakery's work to
+    // whoever asked.
+    const { data, error } = await (bakerId ? q.eq('baker_id', bakerId) : q.eq('created_by', req.user.id))
       .order('created_at', { ascending: false })
       .limit(limit);
     if (error) return serverError(req, res, error);
@@ -353,6 +376,9 @@ router.post('/admin/ai3d/:id/segment', requireAuth, requireCapability('catalog:a
       .from('ai3d_generations')
       .insert({
         created_by: req.user.id,
+        /* Re-resolved rather than copied off `row`: this is a NEW generation and the person running
+           it may not be the person who ran the original. */
+        baker_id:   await bakerIdFor(req.user.id),
         provider: 'tripo', mode: row.mode,
         prompt: hint ?? row.prompt,
         source_image_key: row.source_image_key,
