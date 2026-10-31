@@ -75,6 +75,34 @@ export const ENTITLEMENTS = {
      bullet for it means adding the same bullet to marketing's Pricing.tsx, or check:plan-copy
      fails; the two surfaces agreeing to say nothing is consistent. */
   rail_skins:             { type: 'bool', fallback: false, label: 'Choose how your menu bar looks' },
+  /* Generate a 3D decoration from a description — the baker types what they want and a vendor
+     (Tripo today) returns a coloured, ready-to-use model. Blaze and above, asked for as such:
+     Sandeep: *"generating the 3d elements is allowed from blaze and above subscription only."*
+
+     ⚠️ THIS ONE IS COST CONTROL, NOT PACKAGING, AND THAT MAKES IT UNLIKE EVERY OTHER FLAG HERE.
+     `reel_capture`, `build_film` and `rail_skins` are all free to give away — they render on the
+     baker's own GPU and we pay nothing per use, which is why two of them are allowed to be advisory
+     and client-side. A generation spends real money at a vendor the moment the button is pressed,
+     and there is no meter under it: `routes/ai3d.js` does not import `services/aiCredits.js`, so
+     nothing reserves, counts or refuses. Until a credit action exists for it (AI_ACTION has no 3D
+     key), THIS FLAG IS THE ONLY THING STANDING BETWEEN A SIGNED-IN BAKER AND OUR VENDOR BILL. So
+     it is enforced server-side on the route, never only by hiding a button.
+
+     ⚠️ fallback false IS LOAD-BEARING, for two separate reasons. A lapsed Blaze subscription
+     collapses every key to its fallback, so it stops generating — correct, since the spending is
+     ours. And an environment where migration 156 has not run yet grants this to NOBODY rather than
+     to everybody, which is the right way round for a key with money behind it.
+
+     ⚠️ IT GATES GENERATING, NEVER SEEING. A baker who drops to Flame keeps every model they already
+     made and can still open it — same split as `premium_themes` (gates choosing a theme, never
+     rendering one a shop already runs). Taking back work somebody already paid for is not a thing a
+     price change should do. `lib/generate3d.js` holds both halves of that rule.
+
+     ⚠️ STAFF DO NOT COME THROUGH HERE. An admin is a row in `admins`, never in `baker_appusers`, so
+     ctxEntitlements resolves them to status 'no_baker' / active false — a bare requireEntitlement on
+     the admin studio's route would 402 our own catalogue team. lib/generate3d.js keeps that
+     asymmetry in one place instead of in each route that grows one. */
+  generate_3d_decorations:{ type: 'bool', fallback: false, label: 'Generate 3D decorations with AI' },
   // numeric limits — null (in a plan's features) = unlimited
   max_team_members:       { type: 'int',  fallback: 1, label: 'Team members' },
   max_saved_templates:    { type: 'int',  fallback: 0, label: 'Saved templates (custom)' },                     // Spark 3 / Flame 30 / Blaze+ unlimited

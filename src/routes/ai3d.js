@@ -18,6 +18,18 @@ import * as tripo from '../services/tripo.js';
 // for staff would be trading a live path for an experiment. The two share the `ai3d_generations`
 // table (148 gave it `provider` / `mode` / `prompt`) and nothing else.
 //
+// ⚠️ AND NO PLAN GATE HERE EITHER, FOR THE SAME REASON: every route in this file is mounted under
+// `/api/admin`, which server.js gates with `requireAdmin` at the mount, so no baker can reach any
+// of them — including `/admin/ai3d/mine`, whose `element:manage` capability reads like it was meant
+// for bakers and is covered by the admin boundary regardless. Staff have no subscription to check.
+//
+// THE BAKER PATH IS BLAZE AND ABOVE. Sandeep: *"generating the 3d elements is allowed from blaze
+// and above subscription only."* The rule lives in `lib/generate3d.js` and the baker-facing routes
+// will sit OUTSIDE `/api/admin` (the way `uploads` does) and must ask it — `npm run
+// check:generate-3d` fails on a generate route outside `/admin` that does not. It matters more here
+// than for any other paid flag: this file does not import `services/aiCredits.js`, and `AI_ACTION`
+// has no 3D key, so nothing meters a run. The plan flag is the only cost control there is.
+//
 // ⚠️ NO GPT-4o GATE HERE, UNLIKE THE WIZARD. That gate exists to stop a baker spending credits on a
 // photo of a dog. This studio is `catalog:admin` only and its whole purpose is to try things that
 // might not work — gating it would block the experiments it exists to run. Staff spend staff
